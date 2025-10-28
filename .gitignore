@@ -1,1 +1,4 @@
-data/*
+data/
+*__pycache__*
+*.pth
+src/lightning_logs/
