@@ -1,3 +1,6 @@
 [submodule "searchless_chess"]
 	path = searchless_chess
 	url = https://github.com/google-deepmind/searchless_chess.git
+[submodule "chessformers"]
+	path = chessformers
+	url = https://github.com/Atenrev/chessformers.git
