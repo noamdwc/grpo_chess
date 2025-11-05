@@ -4,3 +4,6 @@
 [submodule "chessformers"]
 	path = chessformers
 	url = https://github.com/Atenrev/chessformers.git
+[submodule "chess-transformer"]
+	path = chess-transformer
+	url = https://github.com/Mtrya/chess-transformer.git
