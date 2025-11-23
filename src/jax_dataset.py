@@ -11,6 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 from tqdm import tqdm
 from huggingface_hub import snapshot_download
+from model_wrapper import create_predict_func
 
 # --- 2. PATH SETUP ---
 # Download the model if not present
@@ -21,12 +22,14 @@ print(f"Model path: {model_path}")
 # Add the bundled code to python path to import internal modules
 sys.path.insert(0, f"{model_path}/searchless_chess_code")
 import hf_model
+import utils
+import tokenizer
 
 # --- 3. CONFIGURATION ---
 BATCH_SIZE = 4096
 # Adjust these paths to match your folder structure
-DATA_PATH = os.path.join('..', 'data', 'numpy_arrays', 'state_value_train_sequences.npy')
-SAVE_PATH = os.path.join('..', 'data', 'numpy_arrays', 'distillation_dataset.npz')
+DATA_PATH = os.path.join('..', 'data', 'numpy_arrays', 'action_value_test_sequences.npy')
+SAVE_PATH = os.path.join('..', 'data', 'numpy_arrays', 'distillation_dataset_test.npz')
 
 def main():
     print(f"JAX Devices: {jax.devices()}")
@@ -35,6 +38,7 @@ def main():
     print("Loading JAX Teacher Model...")
     # Load the wrapper class
     teacher_wrapper = hf_model.SearchlessChessModel.from_pretrained(model_path)
+    teacher_wrapper.predict = create_predict_func(teacher_wrapper, utils, tokenizer)
     
     # Extract the raw Haiku components required for pure JAX execution
     params = teacher_wrapper.params
@@ -102,11 +106,14 @@ def main():
         
         # 5. Move back to CPU
         batch_logits_np = np.array(batch_logits_jax)
+        print(batch_logits_np[0].shape)
+        exit()
         all_logits.append(batch_logits_np)
 
     # --- 8. SAVE RESULTS ---
     print("Concatenating logits...")
     final_logits = np.concatenate(all_logits, axis=0)
+    print(f"Final logits shape: {final_logits.shape}, dtype: {final_logits.dtype}")
     
     print(f"Saving dataset to {SAVE_PATH}...")
     np.savez_compressed(
