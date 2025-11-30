@@ -13,7 +13,7 @@ class ChessTransformerConfig:
     embed_dim: int = 256
     num_layers: int = 4
     num_heads: int = 8
-    action_dim: int =1968
+    action_dim: int = 1968
 
 
 class ChessTransformer(nn.Module):

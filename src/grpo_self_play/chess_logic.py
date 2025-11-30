@@ -1,7 +1,10 @@
 import chess
 import random
 import torch
+from torch.utils.data import IterableDataset
 from src.grpo_self_play.searchless_chess_imports import MOVE_TO_ACTION, tokenize as deepmind_tokenize
+
+
 def generate_random_board(step_num=30):
     board = chess.Board()
     random_steps = random.randint(0, step_num)
@@ -46,3 +49,23 @@ def get_legal_moves_indices(board):
         # Fallback: unlikely if MOVE_TO_ACTION is complete
         raise ValueError(f"Invalid move: {uci_str}")
   return legal_indices
+
+
+class ChessStartStatesDataset(IterableDataset):
+  """
+  Infinite dataset that yields random mid-game FEN strings.
+  """
+  def __init__(self, max_steps=10000, random_walk_gen_steps=30):
+      self.max_steps = max_steps
+      self.random_walk_gen_steps = random_walk_gen_steps
+
+  def __iter__(self):
+      worker_info = torch.utils.data.get_worker_info()
+      if worker_info is not None:
+          # Seed workers differently to get diverse games
+          random.seed(worker_info.id + random.randint(0, 10000))
+
+      for _ in range(self.max_steps):
+          board = generate_random_board(self.random_walk_gen_steps)
+          if not board.is_game_over():
+              yield board.fen()

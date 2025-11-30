@@ -1,5 +1,4 @@
 import torch
-import torch.nn.functional as F
 
 def grpo_chess_loss(
     logprobs_new: torch.Tensor,   # [G, T]  log πθ(a_{g,k,t} | s_{g,k,t})
