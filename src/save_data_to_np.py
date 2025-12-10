@@ -14,7 +14,7 @@ def save_dataset_as_numpy(config: config_lib.DataConfig, output_path: str, max_s
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
  # Save as separate .npy files for fastest loading
-    base_path = output_path.replace('.npz', '')
+    base_path = output_path.replace('.npz', '').replace('.np', '')
     sequences_path = f"{base_path}_sequences.npy"
     masks_path = f"{base_path}_masks.npy"
     
@@ -83,8 +83,8 @@ def save_dataset_as_numpy(config: config_lib.DataConfig, output_path: str, max_s
 if __name__ == "__main__":
     # Create config for state_value training data
     config = config_lib.DataConfig(
-        policy='state_value',
-        split='train',
+        policy='action_value',
+        split='test',
         batch_size=4096,  # adjust as needed
         shuffle=False,  # set to False to maintain order
         worker_count=0,
@@ -95,6 +95,6 @@ if __name__ == "__main__":
     # Save as numpy array
     save_dataset_as_numpy(
         config=config,
-        output_path='../data/numpy_arrays/state_value_train.npy',
+        output_path='../data/numpy_arrays/action_value_test.npy',
         max_size=56e2  # limit to first 1 million batches for testing
     )

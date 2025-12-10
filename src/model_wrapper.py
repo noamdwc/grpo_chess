@@ -22,7 +22,9 @@ def download_model(model_path: str = './searchless_chess_model') -> str:
     return model_path
 
 
-def create_predict_func(model, utils, tokenizer):
+
+
+def _create_base_predict_func(model, utils, tokenizer):
     """
     Create a predict function that returns Q-values and action probabilities over the 1968 action space.
     - Batches all legal next positions into a single model call.
@@ -34,7 +36,13 @@ def create_predict_func(model, utils, tokenizer):
     ACTION_TO_MOVE = utils.ACTION_TO_MOVE
     MOVE_TO_ACTION = utils.MOVE_TO_ACTION
     bucket_values = jnp.asarray(self.return_buckets_values)  # [128], jnp for math
-
+    if not hasattr(model, "_predict_one"):
+        model._predict_one = jax.jit(
+            lambda params, targets:
+                model.predictor.predict(params=params, targets=targets, rng=None)
+        )
+    else:
+        print("Using cached _predict_one jitted function.")
     def _value_from_bucket_log_probs(bucket_log_probs_2d):
         """
         bucket_log_probs_2d: jnp[seq_len, num_buckets] (log-probs)
@@ -46,7 +54,7 @@ def create_predict_func(model, utils, tokenizer):
         probs = jax.nn.softmax(bucket_log_probs_2d[idx])  # [num_buckets]
         return jnp.vdot(probs, bucket_values)  # scalar
 
-    def predict(fen: str, temperature: float = 1.0) -> Dict:
+    def _base_predict(fen: str) -> Dict:
         if self.params is None:
             raise ValueError("Model parameters not loaded. Call load_params() first.")
 
@@ -96,11 +104,11 @@ def create_predict_func(model, utils, tokenizer):
         # Pad to common length if tokenizer returns ragged sequences
         max_len = max(len(t) for t in token_batch)
         token_batch = np.stack([np.pad(t, (0, max_len - len(t))) for t in token_batch], axis=0)
+        token_batch = jnp.asarray(token_batch)  # instead of np.stack(...), use jnp
+
 
         # One batched forward pass
-        bucket_log_probs_batch = self.predictor.predict(
-            params=self.params, targets=token_batch, rng=None
-        )  # [B, seq_len, num_buckets]
+        bucket_log_probs_batch = model._predict_one(model.params, token_batch) # [B, seq_len, num_buckets]
 
         # Compute q-values for each next position and flip perspective
         q_next = []
@@ -140,11 +148,12 @@ def create_predict_func(model, utils, tokenizer):
             "best_move": best_move,
         }
 
-    return predict
+    return _base_predict
 
 
 
-
+def create_predict_func(model, utils, tokenizer):
+    return _create_base_predict_func(model, utils, tokenizer)
 
 
 def load_model(model_path: str, add_to_path: bool = True):

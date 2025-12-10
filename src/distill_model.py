@@ -1,3 +1,4 @@
+from cgi import test
 import os
 import sys
 
@@ -12,7 +13,7 @@ sys.path.insert(0, path)
 
 # import our new pytorch model and data components
 from transformer_pytorch import PytorchStateValueModel
-from data_pytorch import get_dataloaders
+from data_numpy import NumpyChessDataset
 
 
 class LitDistillationModule(L.LightningModule):
@@ -80,8 +81,12 @@ if __name__ == "__main__":
 
     # define where your downloaded data is
     # adjust these paths to where your 'data/train' and 'data/test' directories are
-    train_data_path = os.path.join(os.getcwd(), 'data', 'train')
-    test_data_path = os.path.join(os.getcwd(), 'data', 'test')
+    data_path = os.path.join('..', 'data')
+    
+    # build datasets
+    train_dataset = NumpyChessDataset(os.path.join(data_path, 'numpy_arrays', 'state_value_train_sequences.npy'))
+    test_dataset = NumpyChessDataset(os.path.join(data_path, 'numpy_arrays', 'state_value_train_sequences.npy'))
+
 
     # hyperparameters for distillation
     teacher_input_dim = 77 # assuming this from the deepmind models
@@ -91,8 +96,22 @@ if __name__ == "__main__":
     batch_size = 4096
     num_epochs = 5
 
-    # get data loaders
-    train_loader, val_loader = get_dataloaders(batch_size=batch_size)
+    # build dataloaders
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+    )
+    val_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+    )
+
 
     # instantiate the distillation module
     model = LitDistillationModule(
