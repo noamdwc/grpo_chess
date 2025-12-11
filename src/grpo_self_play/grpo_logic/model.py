@@ -47,27 +47,17 @@ class GRPOChessTransformer(pl.LightningModule):
         boards = [board for board in boards if not board.is_game_over()]
         if not boards: return 0.0 # Skip if game over
 
-        traj_sample = []
-        for board_start in boards:
-            trajectories_sample = sample_trajectories(self.old_policy_model,
-                                                      self.hparams.grpo_config.num_trajectories,
-                                                      self.hparams.grpo_config.trajectory_depth,
-                                                      board_start)
-            if trajectories_sample is None: continue # Skip if no moves
-            traj_sample.append(trajectories_sample)
-        if not traj_sample: return 0.0 # Skip if no trajectories
+        trajectories_sample = sample_trajectories_batched(self.old_policy_model,
+                                                          boards,
+                                                          self.hparams.grpo_config.num_trajectories,
+                                                          self.hparams.grpo_config.trajectory_depth)
+        if trajectories_sample is None: return 0 # Skip if no moves
 
-        # Stack tensors
-        trajectories_old_log_probs = torch.stack(
-            [sample.trajectories_log_probs for sample in traj_sample], dim=0) # [B, G, T]
-        trajectories_actinos = torch.stack(
-            [sample.trajectories_actinos for sample in traj_sample], dim=0) # [B, G, T]
-        trajectories_states = torch.stack(
-            [sample.trajectories_states for sample in traj_sample], dim=0) # [B, G, T, SEQ]
-        batch_group_rewards = torch.stack(
-            [sample.group_rewards for sample in traj_sample], dim=0) # [B, G]
-        pad_mask = torch.stack(
-            [sample.pad_mask for sample in traj_sample], dim=0) # [B, G, T]
+        trajectories_old_log_probs = trajectories_sample.trajectories_log_probs # [B, G, T]
+        trajectories_actinos = trajectories_sample.trajectories_actinos # [B, G, T]
+        trajectories_states = trajectories_sample.trajectories_states # [B, G, T, SEQ]
+        batch_group_rewards = trajectories_sample.group_rewards # [B, G]
+        pad_mask = trajectories_sample.pad_mask # [B, G, T]
 
         B, G, T = trajectories_old_log_probs.shape
 

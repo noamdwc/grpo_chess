@@ -50,7 +50,7 @@ def batched_policy_step(model, boards, temperature: float = 1.0):
   return action_idx, chosen_log_probs, moves, states_tensor
 
 
-def sample_trajectories(model, boards, num_trajectories, trajectory_depth):
+def sample_trajectories_batched(model, boards, num_trajectories, trajectory_depth):
   device = next(model.parameters()).device
   B, G, T = len(boards), num_trajectories, trajectory_depth
   if B == 0: return None
@@ -58,36 +58,38 @@ def sample_trajectories(model, boards, num_trajectories, trajectory_depth):
   envs = [boards[b].copy() for b in range(B) for _ in range(G)] # Lenght of B*G
   # Per (b, g) storage as nested lists
   traj_log_probs = [[[] for _ in range(G)] for _ in range(B)]
-  traj_actions   = [[[] for _ in range(G)] for _ in range(B)]
-  traj_states    = [[[] for _ in range(G)] for _ in range(B)]
+  traj_actions = [[[] for _ in range(G)] for _ in range(B)]
+  traj_states = [[[] for _ in range(G)] for _ in range(B)]
+
   # Rollout (sample trajectoris at batches)
   for _ in range(T):
     active_env_idx = [i for i, e in enumerate(envs) if not e.is_game_over()]
     if not active_env_idx: break
 
     active_boards = [envs[i] for i in active_env_idx]
-    batch_step = batched_policy_step(model, active_boards,temperature=1.0)
-    if batch_step is None: break # No active boards
-    action_indices, log_probs, moves, states_batch = batch_step
+    roll_out_step = batched_policy_step(model, active_boards, temperature=1.0)
+    if roll_out_step is None: break
+
+    action_indices, log_probs, moves, states_batch = roll_out_step
     if action_indices is None: break
 
     for j, env_idx_j in enumerate(active_env_idx):
       move_j = moves[j]
-      if move_j is None: break # End of game
+      if move_j is None: continue # End of game for this env
       b_idx = env_idx_j // G
       g_idx = env_idx_j % G
       state_j = states_batch[j]
       traj_log_probs[b_idx][g_idx].append(log_probs[j])
       traj_actions[b_idx][g_idx].append(int(action_indices[j].item()))
       traj_states[b_idx][g_idx].append(state_j)
-      envs[j].push(move_j)
+      envs[env_idx_j].push(move_j)
 
   # Reward per final state
   group_rewards = torch.zeros(B, G, dtype=torch.float32, device=device)
   for env_idx, env in enumerate(envs):
     b_idx = env_idx // G
     g_idx = env_idx % G
-    group_rewards[b_idx, g_idx] = reward_board(env, boards[env_idx])
+    group_rewards[b_idx, g_idx] = reward_board(env, boards[b_idx])
 
   # Allocate padded tensors
   trajectories_log_probs = torch.zeros(B, G, T, dtype=torch.float32, device=device)
@@ -100,7 +102,7 @@ def sample_trajectories(model, boards, num_trajectories, trajectory_depth):
       assert L <= T, f"Trajectory length {L} exceeds pad_length {T}"
       pad_mask[b, g, :L] = True
       trajectories_log_probs[b, g, :L] = torch.stack(traj_log_probs[b][g], dim=0)
-      trajectories_actions[b, g, :L] = torch.tensor(traj_actions, dtype=torch.long, device=device)
+      trajectories_actions[b, g, :L] = torch.tensor(traj_actions[b][g], dtype=torch.long, device=device)
       trajectories_states[b, g, :L] = torch.stack(traj_states[b][g], dim=0)
 
   return TrajectoriesSample(trajectories_log_probs,
@@ -108,6 +110,4 @@ def sample_trajectories(model, boards, num_trajectories, trajectory_depth):
                             trajectories_states,
                             group_rewards,
                             pad_mask)
-
-
-
+                            

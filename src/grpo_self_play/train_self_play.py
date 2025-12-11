@@ -11,11 +11,11 @@ from src.grpo_self_play.grpo_logic.model import GRPOChessTransformer, GRPOConfig
 from src.grpo_self_play.models import ChessTransformerConfig
 
 
-GRPO_CONFIG = GRPOConfig(lr=1e-6, num_trajectories=4, trajectory_depth=16)
+GRPO_CONFIG = GRPOConfig(lr=1e-6, num_trajectories=8, trajectory_depth=32)
 TRANSFORMER_CONFIG = ChessTransformerConfig()
 NUM_EPOCHS = 5000
-BATCH_SIZE = 128
-STEPS_PER_EPOCH = 1000
+BATCH_SIZE = 32
+STEPS_PER_EPOCH = 1024
 
 def generate_run_name(project="chess-grpo"):
     timestamp = time.strftime("%Y%m%d-%H%M")
@@ -27,7 +27,6 @@ def generate_run_name(project="chess-grpo"):
 def train(): 
     run_name = generate_run_name()
     print(f"Generated run name: {run_name}")
-
 
     wandb_logger = WandbLogger(project="Chess-GRPO-Bot", log_model=True, name=run_name)
     dataset = ChessStartStatesDataset(max_steps=STEPS_PER_EPOCH)

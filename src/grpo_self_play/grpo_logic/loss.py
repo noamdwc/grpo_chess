@@ -55,7 +55,8 @@ def ppo_chess_loss(
     policy_loss = torch.max(pg_unclipped, pg_clipped) * pad_mask.float()
     return policy_loss
 
-def kl_penalty(logprobs_new: torch.Tensor, 
+
+def kl_penalty(logprobs_new: torch.Tensor,
                logprobs_old: torch.Tensor,
                pad_mask=None):
     if pad_mask is None:
@@ -87,7 +88,7 @@ def grpo_ppo_loss(
     advantages = advantages * pad_mask.float()
     ppo_lose = ppo_chess_loss(logprobs_new,
                               logprobs_old,
-                              advantages, 
+                              advantages,
                               clip_ratio,
                               pad_mask)
     valid_steps = pad_mask.sum().clamp_min(1)
@@ -95,3 +96,4 @@ def grpo_ppo_loss(
     kl_div = kl_penalty(logprobs_new, logprobs_old, pad_mask)
     loss = ppo_lose + kl_coef * kl_div
     return loss
+    
