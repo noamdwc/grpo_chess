@@ -26,12 +26,11 @@ def get_trainer(num_epochos=5000, checkpoint_dir="drive/MyDrive/data/grpo-chess/
         monitor="train_total_loss",  # metric to track
         mode="min"
     )
-    trainer = pl.Trainer(
-            max_epochs=num_epochos,
-            accelerator="auto",
-            devices=1,
-            logger=wandb_logger,
-            callbacks=[checkpoint_cb],
-            log_every_n_steps=1 # Log every step for GRPO debug
-        )
+    return pl.Trainer(max_epochs=num_epochos,
+                      accelerator="auto",
+                      devices=1,
+                      logger=wandb_logger,
+                      callbacks=[checkpoint_cb],
+                      log_every_n_steps=1) # Log every step for GRPO debug
+                      
 
