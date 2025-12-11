@@ -6,7 +6,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 from torch.utils.data import DataLoader
-from src.grpo_self_play.chess_logic import ChessStartStatesDataset
+from src.grpo_self_play.chess.chess_logic import ChessStartStatesDataset
 from src.grpo_self_play.grpo_logic.model import GRPOChessTransformer, GRPOConfig
 from src.grpo_self_play.models import ChessTransformerConfig
 
