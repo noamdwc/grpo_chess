@@ -4,15 +4,16 @@ This code is for evluating a chess bot using stockfish
 import math
 import chess
 import chess.engine
+import random
 
 import torch
 
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
-from src.grpo_self_play.chess_engine import StockfishPlayer, StockfishConfig, STOCKFISH_PATH
-from src.grpo_self_play.policy_player import PolicyPlayer, PolicyConfig
-from src.grpo_self_play.chess_logic import (get_legal_moves_indices, action_to_move, MOVE_TO_ACTION)
+from src.grpo_self_play.chess.chess_logic import MOVE_TO_ACTION
+from src.grpo_self_play.chess.policy_player import PolicyPlayer, PolicyConfig
+from src.grpo_self_play.chess.chess_engine import StockfishPlayer, StockfishConfig, STOCKFISH_PATH
 
 
 @dataclass
