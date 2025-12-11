@@ -3,7 +3,7 @@ import pytorch_lightning as pl
 import chess
 from src.grpo_self_play.models import ChessTransformer, ChessTransformerConfig
 from src.grpo_self_play.grpo_logic.loss import grpo_ppo_loss
-from src.grpo_self_play.grpo_logic.sampling import sample_trajectories
+from src.grpo_self_play.grpo_logic.sampling import sample_trajectories_batched
 from dataclasses import dataclass
 
 
