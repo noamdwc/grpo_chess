@@ -1,8 +1,14 @@
 import chess
 import random
 import torch
+
+from typing import Optional
 from torch.utils.data import IterableDataset
-from src.grpo_self_play.searchless_chess_imports import MOVE_TO_ACTION, tokenize as deepmind_tokenize
+from src.grpo_self_play.searchless_chess_imports import (MOVE_TO_ACTION, 
+                                                         ACTION_TO_MOVE,
+                                                         tokenize as deepmind_tokenize)
+
+MAX_ACTION = max(ACTION_TO_MOVE.keys())
 
 
 def generate_random_board(step_num=30):
@@ -51,21 +57,15 @@ def get_legal_moves_indices(board):
   return legal_indices
 
 
-def action_to_move(board: chess.Board, action_idx: int) -> Optional[chess.Move]:
-    """
-    Default mapping: action_idx -> UCI string -> chess.Move if legal.
-    """
-    if not ACTION_TO_UCI:
-        raise NotImplementedError("Provide ACTION_TO_UCI or replace action_to_move().")
-    if action_idx < 0 or action_idx >= len(ACTION_TO_UCI):
+def action_to_move(board: chess.Board, action_idx: int):
+    uci = ACTION_TO_MOVE.get(action_idx)
+    if uci is None:
         return None
-    uci = ACTION_TO_UCI[action_idx]
     try:
-        move = chess.Move.from_uci(uci)
+        mv = chess.Move.from_uci(uci)
     except ValueError:
         return None
-    return move if move in board.legal_moves else None
-
+    return mv if mv in board.legal_moves else None
 
 class ChessStartStatesDataset(IterableDataset):
   """
