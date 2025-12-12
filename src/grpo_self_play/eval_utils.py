@@ -13,6 +13,7 @@ from typing import Dict, Optional, Tuple
 
 from src.grpo_self_play.chess.chess_logic import MOVE_TO_ACTION
 from src.grpo_self_play.chess.policy_player import PolicyPlayer, PolicyConfig
+from src.grpo_self_play.chess.searcher import TrajectorySearcher
 from src.grpo_self_play.chess.chess_engine import StockfishPlayer, StockfishConfig, STOCKFISH_PATH
 
 
@@ -96,17 +97,12 @@ def estimate_elo_diff(score: float) -> float:
 
 
 def evaluate_policy_vs_stockfish(
-    model: torch.nn.Module,
-    stockfish_cfg: StockfishConfig,
+    policy: PolicyPlayer | TrajectorySearcher,
+    sf: StockfishPlayer,
     eval_cfg: EvalConfig,
-    policy_cfg: PolicyConfig = PolicyConfig(),
-    device: Optional[torch.device] = None
-) -> Dict:
+) -> Tuple[Dict, PolicyPlayer | TrajectorySearcher]:
     random.seed(eval_cfg.seed)
     torch.manual_seed(eval_cfg.seed)
-
-    policy = PolicyPlayer(model, device=device, cfg=policy_cfg)
-    sf = StockfishPlayer(stockfish_cfg)
 
     wins = draws = losses = 0
     term_reasons = {}
@@ -146,8 +142,6 @@ def evaluate_policy_vs_stockfish(
         "score": score,
         "elo_diff_vs_stockfish_approx": elo_diff,
         "termination_reasons": term_reasons,
-        "policy_cfg": policy_cfg,
-        "stockfish_cfg": stockfish_cfg,
         "eval_cfg": eval_cfg,
     }, policy
 
