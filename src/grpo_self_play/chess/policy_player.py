@@ -3,7 +3,10 @@ import random
 from shutil import move
 import torch
 import torch.nn.functional as F
-from src.grpo_self_play.chess.chess_logic import board_to_tensor, get_legal_moves_indices, action_to_move
+from src.grpo_self_play.chess.chess_logic import (board_to_tensor, 
+                                                  get_legal_moves_indices,
+                                                  action_to_move,
+                                                  ChessPlayer)
 
 from dataclasses import dataclass
 
@@ -15,7 +18,7 @@ class PolicyConfig:
     search_depth: int = 2  # for search; 0 = no search
 
 
-class PolicyPlayer:
+class PolicyPlayer(ChessPlayer):
     def __init__(self, model, device=None, cfg=PolicyConfig()):
         self.model = model.eval()
         self.device = device or next(model.parameters()).device
@@ -88,5 +91,5 @@ class PolicyPlayer:
         )
         li = torch.tensor(legal_moves_indices, device=self.device, dtype=torch.long)
         masked[li] = logits[-1, li]
-        best_logit = float(torch.max(F.sigmoid(masked)).item())
+        best_logit = float(torch.max(F.tanh(masked)).item())
         return best_logit if board.turn == root_color else -best_logit

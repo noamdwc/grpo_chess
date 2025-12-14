@@ -20,23 +20,6 @@ def generate_random_board(step_num=30):
     return board
 
 
-def reward_board(env, board_start):
-  score = 0
-  piece_vals = {chess.PAWN:1, chess.KNIGHT:3, chess.BISHOP:3, chess.ROOK:5, chess.QUEEN:9, chess.KING:0}
-  for sq, piece in env.piece_map().items():
-      val = piece_vals.get(piece.piece_type, 0)
-      if piece.color == board_start.turn: # Friendly piece
-          score += val
-      else:
-          score -= val
-
-  # Add outcome bonus
-  result = env.result()
-  if result == "1-0" and board_start.turn == chess.WHITE: score += 100
-  elif result == "0-1" and board_start.turn == chess.BLACK: score += 100
-  return score
-
-
 def board_to_tensor(board, device: str | torch.device ='cpu') -> torch.Tensor:
   fen = board.fen()
   token_ids = deepmind_tokenize(fen) # Returns list of ints
@@ -66,6 +49,18 @@ def action_to_move(board: chess.Board, action_idx: int):
     except ValueError:
         return None
     return mv if mv in board.legal_moves else None
+
+
+class ChessPlayer:
+    """
+    An abstract chess player interface.
+    """
+    def act(self, board: chess.Board) -> Optional[chess.Move]:
+        """
+        Given a chess.Board, return a chess.Move or None to resign.
+        """
+        raise NotImplementedError()
+
 
 class ChessStartStatesDataset(IterableDataset):
   """

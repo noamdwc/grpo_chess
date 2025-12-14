@@ -5,7 +5,9 @@ Implement search method to choose moves based on a policy network.
 import chess
 import torch
 
+from typing import Optional
 from dataclasses import dataclass
+from src.grpo_self_play.chess.chess_logic import ChessPlayer
 from src.grpo_self_play.chess.policy_player import PolicyPlayer
 
 @dataclass
@@ -14,7 +16,7 @@ class SearchConfig:
     trajectory_depth: int = 1 # T: max plies per trajectory
 
 
-class TrajectorySearcher:
+class TrajectorySearcher(ChessPlayer):
     """
     Searcher that uses a PolicyPlayer to:   
       - sample trajectories using the policy
@@ -26,8 +28,9 @@ class TrajectorySearcher:
         self.policy = policy
         self.cfg = cfg
 
+
     @torch.no_grad()
-    def choose_move(self, board: chess.Board):
+    def act(self, board: chess.Board) -> Optional[chess.Move]:
         """
         If n_trajectories or trajectory_depth <= 1:
           Just use the policy's one-step act() (no search).
@@ -76,3 +79,8 @@ class TrajectorySearcher:
             return self.policy.act(board)
 
         return best_first_move
+
+
+    @property
+    def stats(self) -> dict:
+        return self.policy.stats

@@ -2,6 +2,7 @@
 This code is for evluating a chess bot using stockfish
 '''
 import math
+from turtle import st
 import chess
 import chess.engine
 import random
@@ -13,8 +14,8 @@ from typing import Dict, Optional, Tuple
 
 from src.grpo_self_play.chess.chess_logic import MOVE_TO_ACTION
 from src.grpo_self_play.chess.policy_player import PolicyPlayer, PolicyConfig
-from src.grpo_self_play.chess.searcher import TrajectorySearcher
-from src.grpo_self_play.chess.chess_engine import StockfishPlayer, StockfishConfig, STOCKFISH_PATH
+from src.grpo_self_play.chess.searcher import TrajectorySearcher, SearchConfig
+from src.grpo_self_play.chess.stockfish import StockfishPlayer, StockfishConfig, DEFAULT_STOCKFISH_PATH as STOCKFISH_PATH
 
 
 @dataclass
@@ -43,7 +44,7 @@ def debug_legal_coverage(board):
 
      
 def play_one_game(
-    policy: PolicyPlayer,
+    policy: PolicyPlayer | TrajectorySearcher,
     stockfish: StockfishPlayer,
     policy_is_white: bool,
     cfg: EvalConfig
@@ -70,10 +71,11 @@ def play_one_game(
         policy_turn = (is_white_to_move and policy_is_white) or ((not is_white_to_move) and (not policy_is_white))
 
         if policy_turn:
-            move = policy.choose_move(board)
+            move = policy.act(board)
         else:
-            move = stockfish.choose_move(board)
-
+            move = stockfish.act(board)
+        if move is None: break  # no legal moves
+        
         board.push(move)
 
     # Determine result
@@ -159,15 +161,19 @@ def eval_ladder(model, device):
             seed=0,
             randomize_opening=False
         )
-        policy_cfg = PolicyConfig(temperature=0.3, greedy=False)
+        policy = PolicyPlayer(model=model, 
+                              device=device,
+                              cfg=PolicyConfig(temperature=0.3, greedy=False))
+        searcher_policy = TrajectorySearcher(policy=policy,
+                                             cfg=SearchConfig(n_trajectories=8,
+                                                              trajectory_depth=2))
+        stockfish_player = StockfishPlayer(StockfishConfig(path=STOCKFISH_PATH,
+                                                           skill_level=skill,
+                                                           movetime_ms=20))
 
-        r, policy = evaluate_policy_vs_stockfish(
-            model=model,
-            stockfish_cfg=stockfish_cfg,
-            eval_cfg=eval_cfg,
-            policy_cfg=policy_cfg,
-            device=device
-        )
+        r, policy = evaluate_policy_vs_stockfish(searcher_policy,
+                                                 stockfish_player,
+                                                 eval_cfg)
         results[skill] = r["score"]
         print("skill", skill, r)
         print('policy stats', policy.stats)

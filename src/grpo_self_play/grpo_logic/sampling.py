@@ -4,8 +4,9 @@ import torch
 import torch.nn.functional as F
 from dataclasses import dataclass
 
+from src.grpo_self_play.chess.rewards import reward_board
 from src.grpo_self_play.searchless_chess_imports import ACTION_TO_MOVE, SEQUENCE_LENGTH
-from src.grpo_self_play.chess.chess_logic import board_to_tensor, reward_board, get_legal_moves_indices 
+from src.grpo_self_play.chess.chess_logic import board_to_tensor, get_legal_moves_indices 
 
 
 # Trajectories sampling logic

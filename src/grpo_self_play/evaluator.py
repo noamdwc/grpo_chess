@@ -4,7 +4,7 @@ import torch
 
 from src.grpo_self_play.chess.policy_player import PolicyPlayer, PolicyConfig
 from src.grpo_self_play.chess.searcher import TrajectorySearcher, SearchConfig
-from src.grpo_self_play.chess.chess_engine import StockfishPlayer, StockfishConfig
+from src.grpo_self_play.chess.stockfish import StockfishPlayer, StockfishConfig
 from src.grpo_self_play.eval_utils import EvalConfig, play_one_game, estimate_elo_diff, evaluate_policy_vs_stockfish
 
 
