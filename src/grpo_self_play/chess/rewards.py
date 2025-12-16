@@ -1,4 +1,3 @@
-from typing import Optional
 import chess
 import chess.engine
 import math
@@ -46,7 +45,7 @@ def _eval_fen_cached(fen: str, pov_is_white: bool, movetime_ms: int, depth: int)
     # Scale chosen so ~400cp is already a strong signal
     return float(math.tanh(cp / 400.0))
 
-def reward_board(env: chess.Board, board_start: chess.Board, movetime_ms: int = 5, depth: int = 0):
+def reward_board(env: chess.Board, board_start: chess.Board, movetime_ms: int = 10, depth: int = 0):
     """
     Stockfish-based reward from the perspective of board_start.turn,
     matching your original intent.
@@ -68,3 +67,4 @@ def old_reward_board(env, board_start):
           score += val
       else:
           score -= val
+  return score # Normalize to [-1, 1] (max material difference is 39 points)

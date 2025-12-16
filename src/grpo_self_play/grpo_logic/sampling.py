@@ -13,7 +13,7 @@ from src.grpo_self_play.chess.chess_logic import board_to_tensor, get_legal_move
 @dataclass
 class TrajectoriesSample:
     trajectories_log_probs: torch.Tensor # [B, G, T]
-    trajectories_actinos: torch.Tensor   # [B, G, T]
+    trajectories_actions: torch.Tensor   # [B, G, T]
     trajectories_states: torch.Tensor    # [B, G, T, SEQ]
     group_rewards: torch.Tensor          # [B, G]
     pad_mask: torch.Tensor               # [B, G, T]
@@ -56,13 +56,13 @@ def sample_trajectories_batched(model, boards, num_trajectories, trajectory_dept
   B, G, T = len(boards), num_trajectories, trajectory_depth
   if B == 0: return None
 
-  envs = [boards[b].copy() for b in range(B) for _ in range(G)] # Lenght of B*G
+  envs = [boards[b].copy() for b in range(B) for _ in range(G)] # Length of B*G
   # Per (b, g) storage as nested lists
   traj_log_probs = [[[] for _ in range(G)] for _ in range(B)]
   traj_actions = [[[] for _ in range(G)] for _ in range(B)]
   traj_states = [[[] for _ in range(G)] for _ in range(B)]
 
-  # Rollout (sample trajectoris at batches)
+  # Rollout (sample trajectories at batches)
   for _ in range(T):
     active_env_idx = [i for i, e in enumerate(envs) if not e.is_game_over()]
     if not active_env_idx: break

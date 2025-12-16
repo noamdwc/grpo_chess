@@ -30,7 +30,7 @@ def grpo_chess_loss(
     return loss, approx_kl
 
 
-# Utils funcstions for GRPO
+# Utils functions for GRPO
 def group_advantage(group_rewards):
     mean_reward = group_rewards.mean(dim=-1, keepdim=True)
     std_reward = group_rewards.std(dim=-1, unbiased=False, keepdim=True) + 1e-8

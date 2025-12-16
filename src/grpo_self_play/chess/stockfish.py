@@ -1,6 +1,6 @@
 import chess
 import chess.engine
-
+import warnings
 from dataclasses import dataclass
 from src.grpo_self_play.chess.chess_logic import ChessPlayer
 
@@ -21,7 +21,7 @@ class StockfishConfig:
 class StockfishManager:
   '''
   Manage stockfish engine instances by name for player, eval and reward engines.
-  For example, We will use sevral enignes at diffrenet levels for evaluation,
+  For example, We will use several enignes at diffrenet levels for evaluation,
   or for reward we will limit by time.
   '''
   _engines: dict[str, chess.engine.SimpleEngine] = {}
@@ -33,17 +33,17 @@ class StockfishManager:
       try:
           engine.configure({"Threads": cfg.threads})
       except Exception:
-          pass
+          warnings.warn("Failed to set Stockfish threads", RuntimeWarning)
 
       try:
           engine.configure({"Hash": cfg.hash_mb})
       except Exception:
-          pass
+          warnings.warn("Failed to set Stockfish hash size", RuntimeWarning)
 
       try:
           engine.configure({"Skill Level": cfg.skill_level})
       except Exception:
-          pass
+          warnings.warn("Failed to set Stockfish skill level", RuntimeWarning)
 
       if cfg.use_elo_limit:
           try:
@@ -52,7 +52,7 @@ class StockfishManager:
                   "UCI_Elo": cfg.elo,
               })
           except Exception:
-              pass
+              warnings.warn("Failed to set Stockfish ELO limit", RuntimeWarning)
 
 
   @classmethod
@@ -79,7 +79,7 @@ class StockfishManager:
           try:
               engine.quit()
           except Exception:
-              pass
+              warnings.warn(f"Failed to close Stockfish engine '{name}' in StockfishManager", RuntimeWarning)
           finally:
               cls._engines.pop(name, None)
               cls._cfgs.pop(name, None)
@@ -105,7 +105,7 @@ class StockfishPlayer(ChessPlayer):
         try:
             self.engine.quit()
         except Exception:
-            pass
+            warnings.warn("Failed to close Stockfish engine in StockfishPlayer", RuntimeWarning)
 
     def act(self, board: chess.Board) -> chess.Move | None:
         limit = chess.engine.Limit(time=self.cfg.movetime_ms / 1000.0)

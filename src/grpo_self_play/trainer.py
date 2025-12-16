@@ -14,7 +14,7 @@ def generate_run_name(project="chess-grpo"):
 
 
 
-def get_trainer(num_epochos=5000, checkpoint_dir="drive/MyDrive/data/grpo-chess/checkpoints/"): 
+def get_trainer(num_epochs=5000, checkpoint_dir="drive/MyDrive/data/grpo-chess/checkpoints/"): 
     run_name = generate_run_name()
     print(f"Generated run name: {run_name}")
 
@@ -26,7 +26,7 @@ def get_trainer(num_epochos=5000, checkpoint_dir="drive/MyDrive/data/grpo-chess/
         monitor="train_total_loss",  # metric to track
         mode="min"
     )
-    return pl.Trainer(max_epochs=num_epochos,
+    return pl.Trainer(max_epochs=num_epochs
                       accelerator="auto",
                       devices=1,
                       logger=wandb_logger,

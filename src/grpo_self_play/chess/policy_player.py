@@ -1,6 +1,5 @@
 
 import random
-from shutil import move
 import torch
 import torch.nn.functional as F
 from src.grpo_self_play.chess.chess_logic import (board_to_tensor, 

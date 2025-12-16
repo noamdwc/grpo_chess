@@ -17,13 +17,13 @@ class ChessTransformerConfig:
 
 
 class ChessTransformer(nn.Module):
-    def __init__(self, transformer_confg: ChessTransformerConfig):
+    def __init__(self, transformer_config: ChessTransformerConfig):
         super().__init__()
-        vocab_size = transformer_confg.vocab_size
-        embed_dim = transformer_confg.embed_dim
-        num_layers = transformer_confg.num_layers
-        num_heads = transformer_confg.num_heads
-        action_dim = transformer_confg.action_dim
+        vocab_size = transformer_config.vocab_size
+        embed_dim = transformer_config.embed_dim
+        num_layers = transformer_config.num_layers
+        num_heads = transformer_config.num_heads
+        action_dim = transformer_config.action_dim
 
         self.embedding = nn.Embedding(vocab_size, embed_dim)
 
@@ -111,7 +111,7 @@ class ChessTransformer(nn.Module):
 
 
 def select_action_greedy(model, board, temperature=1.0):
-    '''Funcation to play with the bot'''
+    '''Function to play with the bot'''
     logits = model._get_action_logits(board, temperature)
     if logits is None: return None
     logits = logits.squeeze(0) # We don't have a batch when selection actions

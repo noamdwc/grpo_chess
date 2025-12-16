@@ -18,12 +18,12 @@ class GRPOConfig:
 
 class GRPOChessTransformer(pl.LightningModule):
     def __init__(self,
-                 transformer_confg: ChessTransformerConfig,
+                 transformer_config: ChessTransformerConfig,
                  grpo_config: GRPOConfig):
         super().__init__()
         self.save_hyperparameters()
-        self.policy_model = ChessTransformer(transformer_confg)
-        self.old_policy_model = ChessTransformer(transformer_confg)
+        self.policy_model = ChessTransformer(transformer_config)
+        self.old_policy_model = ChessTransformer(transformer_config)
         self._sync_old_policy()
 
     def forward(self, x):
@@ -42,7 +42,6 @@ class GRPOChessTransformer(pl.LightningModule):
         self._sync_old_policy()
 
     def training_step(self, batch_fens, batch_idx):
-        batch_size = len(batch_fens)
         boards = [chess.Board(start_fen) for start_fen in batch_fens]
         boards = [board for board in boards if not board.is_game_over()]
         if not boards: return 0.0 # Skip if game over
@@ -54,16 +53,15 @@ class GRPOChessTransformer(pl.LightningModule):
         if trajectories_sample is None: return 0 # Skip if no moves
 
         trajectories_old_log_probs = trajectories_sample.trajectories_log_probs # [B, G, T]
-        trajectories_actinos = trajectories_sample.trajectories_actinos # [B, G, T]
+        trajectories_actions = trajectories_sample.trajectories_actions # [B, G, T]
         trajectories_states = trajectories_sample.trajectories_states # [B, G, T, SEQ]
         batch_group_rewards = trajectories_sample.group_rewards # [B, G]
         pad_mask = trajectories_sample.pad_mask # [B, G, T]
 
-        B, G, T = trajectories_old_log_probs.shape
 
         # Compute loss
         new_log_probs = self.policy_model.get_group_log_probs(trajectories_states,
-                                                              trajectories_actinos)
+                                                              trajectories_actions)
 
         loss = grpo_ppo_loss(new_log_probs,
                              trajectories_old_log_probs,

@@ -14,7 +14,7 @@ STEPS_PER_EPOCH = 1024
 
 
 def train():
-    trainer = get_trainer(num_epochos=NUM_EPOCHS)
+    trainer = get_trainer(num_epochs=NUM_EPOCHS)
     dataset = ChessStartStatesDataset(max_steps=STEPS_PER_EPOCH)
     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, num_workers=2)
     model = GRPOChessTransformer(TRANSFORMER_CONFIG, GRPO_CONFIG)#, num_trajectories=16, trajectory_depth=32))

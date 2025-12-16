@@ -1,8 +1,7 @@
 '''
-This code is for evluating a chess bot using stockfish
+This code is for evaluating a chess bot using stockfish
 '''
 import math
-from turtle import st
 import chess
 import chess.engine
 import random
@@ -10,7 +9,7 @@ import random
 import torch
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict, Tuple
 
 from src.grpo_self_play.chess.chess_logic import MOVE_TO_ACTION
 from src.grpo_self_play.chess.policy_player import PolicyPlayer, PolicyConfig
@@ -146,35 +145,4 @@ def evaluate_policy_vs_stockfish(
         "termination_reasons": term_reasons,
         "eval_cfg": eval_cfg,
     }, policy
-
-
-def eval_ladder(model, device):
-    results = {}
-    for skill in [1, 3, 5, 8, 10]:
-        stockfish_cfg = StockfishConfig(
-            path=STOCKFISH_PATH,
-            skill_level=skill,
-            movetime_ms=20,
-        )
-        eval_cfg = EvalConfig(
-            games=50,
-            seed=0,
-            randomize_opening=False
-        )
-        policy = PolicyPlayer(model=model, 
-                              device=device,
-                              cfg=PolicyConfig(temperature=0.3, greedy=False))
-        searcher_policy = TrajectorySearcher(policy=policy,
-                                             cfg=SearchConfig(n_trajectories=8,
-                                                              trajectory_depth=2))
-        stockfish_player = StockfishPlayer(StockfishConfig(path=STOCKFISH_PATH,
-                                                           skill_level=skill,
-                                                           movetime_ms=20))
-
-        r, policy = evaluate_policy_vs_stockfish(searcher_policy,
-                                                 stockfish_player,
-                                                 eval_cfg)
-        results[skill] = r["score"]
-        print("skill", skill, r)
-        print('policy stats', policy.stats)
-    return results
+    
