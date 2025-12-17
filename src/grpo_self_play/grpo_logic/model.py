@@ -106,6 +106,7 @@ class GRPOChessTransformer(pl.LightningModule):
 
         self.log("train_total_loss", loss, prog_bar=True)
         self.log("pad_fraction", 1.0 - valid_mask.mean())
+        self.log('avg_trajectory_length', pad_mask.float().sum(dim=-1).mean())
 
         self.log("mean_kl_divergence", loss_info.kl_div)
         self.log("mean_ratio", loss_info.mean_ratio)
