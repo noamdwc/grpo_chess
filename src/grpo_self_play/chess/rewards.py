@@ -54,6 +54,14 @@ def reward_board(env: chess.Board, board_start: chess.Board, movetime_ms: int = 
     board_start: board at trajectory start (used for POV)
     """
     pov_is_white = (board_start.turn == chess.WHITE)
+    if env.is_game_over(): # Terminal state
+        result = env.result()
+        if result == '1/2-1/2': # If draw
+            return 0.0
+        is_white_won = (result == '1-0')
+        is_pov_won = (is_white_won and pov_is_white) or ((not is_white_won) and (not pov_is_white))
+        return 1.0 if is_pov_won else -1.0
+
     fen = env.fen()
     return _eval_fen_cached(fen, pov_is_white, movetime_ms, depth)
     

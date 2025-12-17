@@ -1,3 +1,4 @@
+from bdb import effective
 from typing import Optional
 import torch
 import pytorch_lightning as pl
@@ -89,6 +90,12 @@ class GRPOChessTransformer(pl.LightningModule):
         trajectories_states = trajectories_sample.trajectories_states # [B, G, T, SEQ]
         batch_group_rewards = trajectories_sample.group_rewards # [B, G]
         pad_mask = trajectories_sample.pad_mask # [B, G, T]
+        
+        # Add starting player mask
+        B, G, T = pad_mask.shape
+        t = torch.arange(T, device=pad_mask.device)
+        start_player_mask = (t % 2 == 0)[None, None, :] # [1, 1, T]
+        effective_pad_mask = pad_mask & start_player_mask  # [B, G, T]
 
         # Compute loss
         new_log_probs = self.policy_model.get_group_log_probs(trajectories_states,
@@ -97,12 +104,12 @@ class GRPOChessTransformer(pl.LightningModule):
         loss, loss_info = grpo_ppo_loss(new_log_probs,
                              trajectories_old_log_probs,
                              batch_group_rewards,
-                             pad_mask,
+                             effective_pad_mask,
                              clip_ratio=self.hparams.grpo_config.clip_ratio,
                              kl_coef=self.hparams.grpo_config.kl_coef,
                              return_info=True)
         # Standard Logging
-        valid_mask = (~pad_mask).float()  # [B, G, T] 1 = real step
+        valid_mask = pad_mask.float()  # [B, G, T] 1 = real step
 
         self.log("train_total_loss", loss, prog_bar=True)
         self.log("pad_fraction", 1.0 - valid_mask.mean())
