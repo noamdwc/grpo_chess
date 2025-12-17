@@ -26,7 +26,7 @@ def get_trainer(num_epochs=5000, checkpoint_dir="drive/MyDrive/data/grpo-chess/c
         monitor="train_total_loss",  # metric to track
         mode="min"
     )
-    return pl.Trainer(max_epochs=num_epochs
+    return pl.Trainer(max_epochs=num_epochs,
                       accelerator="auto",
                       devices=1,
                       logger=wandb_logger,
