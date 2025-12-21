@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from src.grpo_self_play.chess.rewards import reward_board
 from src.grpo_self_play.models import ChessTransformer
 from src.grpo_self_play.searchless_chess_imports import ACTION_TO_MOVE, SEQUENCE_LENGTH
-from src.grpo_self_play.chess.chess_logic import board_to_tensor, get_legal_moves_indices, get_legal_moves_mask
+from src.grpo_self_play.chess.chess_logic import board_to_tensor,  get_legal_moves_mask
 
 
 # Trajectories sampling logic
@@ -31,10 +31,13 @@ def batched_policy_step(model: ChessTransformer, boards: List[chess.Board], temp
   for board in boards:
     state = board_to_tensor(board, device=device)
     states_list.append(state)
-    legal_masks.append(get_legal_moves_mask(board))
+    legal_masks.append(get_legal_moves_mask(board, device=device))
 
   states_tensor = torch.cat(states_list, dim=0) # [N, SEQ]
   legal_mask = torch.cat(legal_masks, dim=0)    # [N, A] bool
+  assert legal_mask.dtype == torch.bool, "legal_mask must be bool dtype"
+  assert legal_mask.shape[0] == N, "legal_mask batch size mismatch"
+  assert legal_mask.shape[1] == model.action_size, "legal_mask action size mismatch"
   if not legal_mask.any(dim=1).all():
       bad = (~legal_mask.any(dim=1)).nonzero(as_tuple=False).flatten().tolist()
       raise ValueError(f"Empty legal mask for boards: {bad}")
@@ -84,7 +87,7 @@ def sample_trajectories_batched(model, boards, num_trajectories, trajectory_dept
       if move_j is None: continue # End of game for this env
       b_idx = env_idx_j // G
       g_idx = env_idx_j % G
-      state_j = states_batch[j].clone() # For safety (avoid overwriting)
+      state_j = states_batch[j]
       traj_log_probs[b_idx][g_idx].append(log_probs[j])
       traj_actions[b_idx][g_idx].append(int(action_indices[j].item()))
       traj_states[b_idx][g_idx].append(state_j)

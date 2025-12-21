@@ -1,3 +1,4 @@
+from math import isfinite
 from typing import Optional
 import torch
 import pytorch_lightning as pl
@@ -89,7 +90,7 @@ class GRPOChessTransformer(pl.LightningModule):
         trajectories_states = trajectories_sample.trajectories_states # [B, G, T, SEQ]
         batch_group_rewards = trajectories_sample.group_rewards # [B, G]
         pad_mask = trajectories_sample.pad_mask # [B, G, T]
-        legal_masks = trajectories_sample.trajectories_legal_masks # [B, G, T, A] or None
+        trajectories_legal_masks = trajectories_sample.trajectories_legal_masks # [B, G, T, A] or None
         
         # Add starting player mask
         B, G, T = pad_mask.shape
@@ -100,7 +101,7 @@ class GRPOChessTransformer(pl.LightningModule):
         # Compute loss
         new_log_probs = self.policy_model.get_group_log_probs(trajectories_states,
                                                               trajectories_actions,
-                                                              legal_masks)
+                                                              trajectories_legal_masks)
 
         loss, loss_info = grpo_ppo_loss(new_log_probs,
                              trajectories_old_log_probs,
@@ -109,6 +110,8 @@ class GRPOChessTransformer(pl.LightningModule):
                              clip_ratio=self.hparams.grpo_config.clip_ratio,
                              kl_coef=self.hparams.grpo_config.kl_coef,
                              return_info=True)
+        if not torch.isfinite(loss):
+            raise ValueError(f"Non-finite loss encountered: {loss.item()}")
         # Standard Logging
         valid_mask = pad_mask.float()  # [B, G, T] 1 = real step
 

@@ -40,7 +40,7 @@ def get_legal_moves_indices(board):
   return legal_indices
 
 
-def get_legal_moves_mask(board):
+def get_legal_moves_mask(board, device: str | torch.device ='cpu') -> torch.Tensor:
     legal_moves = list(board.legal_moves)
     mask = torch.zeros(MAX_ACTION + 1, dtype=torch.bool)
     for move in legal_moves:
@@ -48,7 +48,7 @@ def get_legal_moves_mask(board):
         action_idx = MOVE_TO_ACTION.get(uci_str)
         if action_idx is not None:
             mask[action_idx] = True
-    return mask
+    return mask.to(device)
 
 
 def action_to_move(board: chess.Board, action_idx: int):

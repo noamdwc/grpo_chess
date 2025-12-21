@@ -63,7 +63,7 @@ class ChessTransformer(nn.Module):
       return next(self.parameters()).device
 
     @property
-    def action_dim(self):
+    def action_size(self) -> int:
         return self.policy_head[-1].out_features
 
     def get_legal_moves_logits(self, tensor_state, legal_moves_mask, temperature=1.0):
@@ -71,6 +71,7 @@ class ChessTransformer(nn.Module):
         tensor_state = [B, SEQ]
         legal_moves_mask = [B, A]
         '''
+        assert legal_moves_mask is not None, "legal_moves_mask cannot be None"
         logits = self(tensor_state) / temperature
         return logits.masked_fill(~legal_moves_mask, -float('inf'))
     
@@ -90,8 +91,10 @@ class ChessTransformer(nn.Module):
         '''
         trajectories_states = [B, G, T, SEQ]
         action_idx = [B, G, T]
-        legal_moves_mask = [B, G, T, A] or None
+        legal_moves_mask = [B, G, T, A]
         '''
+        assert legal_moves_mask is not None, "legal_moves_mask cannot be None"
+        assert legal_moves_mask.dtype == torch.bool, "legal_moves_mask must be bool dtype"
         x = trajectories_states  # [B, G, T, SEQ]
         B, G, T, L = x.shape
         x_flat = x.view(B * G * T, L) # [B*G*T, SEQ]
@@ -130,7 +133,7 @@ class ChessTransformer(nn.Module):
         # Sample
         action_idx = int(torch.multinomial(probs, 1).item())
         chosen_move = ACTION_TO_MOVE[action_idx]
-        log_prob = torch.log(probs[action_idx] + 1e-12).item() # avoid log(0)
+        log_prob = torch.log(probs[action_idx] + 1e-12) # avoid log(0)
 
         return chess.Move.from_uci(chosen_move), log_prob, action_idx
 
