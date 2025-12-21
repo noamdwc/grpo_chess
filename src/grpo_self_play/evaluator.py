@@ -1,9 +1,10 @@
 from typing import Dict, Optional, Tuple
+from chess import engine
 import torch.nn as nn
 
 from src.grpo_self_play.chess.policy_player import PolicyPlayer, PolicyConfig
 from src.grpo_self_play.chess.searcher import TrajectorySearcher, SearchConfig
-from src.grpo_self_play.chess.stockfish import StockfishPlayer, StockfishConfig
+from src.grpo_self_play.chess.stockfish import StockfishPlayer, StockfishConfig, StockfishManager
 from src.grpo_self_play.eval_utils import EvalConfig, evaluate_policy_vs_stockfish
 
 
@@ -54,7 +55,8 @@ class Evaluator:
                 skill_level=skill,
                 movetime_ms=self.default_stockfish_cfg.movetime_ms,
             )
-            stockfish_player = StockfishPlayer(stockfish_cfg)
+            engine_name = f"stockfish_skill_{skill}"
+            stockfish_player = StockfishPlayer(stockfish_cfg, engine_name=engine_name)
 
             r, policy_wrapper  = evaluate_policy_vs_stockfish(
                 policy,
@@ -64,6 +66,7 @@ class Evaluator:
             results[skill] = r["score"]
             print("skill", skill, r)
             print('policy stats', policy_wrapper.stats)
+            StockfishManager.close(engine_name) # Close engine to free resources
         return results
 
 

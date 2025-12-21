@@ -1,6 +1,7 @@
 import chess
 import chess.engine
 import warnings
+from typing import Optional
 from dataclasses import dataclass
 from src.grpo_self_play.chess.chess_logic import ChessPlayer
 
@@ -96,14 +97,20 @@ class StockfishPlayer(ChessPlayer):
     '''
     A chess player that uses Stockfish engine to select moves.
     '''
-    def __init__(self, cfg: StockfishConfig):
+    
+    DEFUALT_PLAYER_ENGINE_NAME = "player_engine"
+
+    def __init__(self, cfg: StockfishConfig, engine_name: Optional[str] = None):
+        if engine_name is None:
+            engine_name = self.DEFUALT_PLAYER_ENGINE_NAME
+        self.engine_name = engine_name
         self.cfg = cfg
-        self.engine = StockfishManager.get_engine("player_engine", cfg)
+        self.engine = StockfishManager.get_engine(self.engine_name, cfg)
 
 
     def close(self):
         try:
-            self.engine.quit()
+            StockfishManager.close(self.engine_name)
         except Exception:
             warnings.warn("Failed to close Stockfish engine in StockfishPlayer", RuntimeWarning)
 
