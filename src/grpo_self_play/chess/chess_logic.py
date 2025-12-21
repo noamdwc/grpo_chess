@@ -40,6 +40,17 @@ def get_legal_moves_indices(board):
   return legal_indices
 
 
+def get_legal_moves_mask(board):
+    legal_moves = list(board.legal_moves)
+    mask = torch.zeros(MAX_ACTION + 1, dtype=torch.bool)
+    for move in legal_moves:
+        uci_str = move.uci()
+        action_idx = MOVE_TO_ACTION.get(uci_str)
+        if action_idx is not None:
+            mask[action_idx] = True
+    return mask
+
+
 def action_to_move(board: chess.Board, action_idx: int):
     uci = ACTION_TO_MOVE.get(action_idx)
     if uci is None:

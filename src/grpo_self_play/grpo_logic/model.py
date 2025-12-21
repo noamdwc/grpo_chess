@@ -1,4 +1,3 @@
-from bdb import effective
 from typing import Optional
 import torch
 import pytorch_lightning as pl
@@ -90,6 +89,7 @@ class GRPOChessTransformer(pl.LightningModule):
         trajectories_states = trajectories_sample.trajectories_states # [B, G, T, SEQ]
         batch_group_rewards = trajectories_sample.group_rewards # [B, G]
         pad_mask = trajectories_sample.pad_mask # [B, G, T]
+        legal_masks = trajectories_sample.trajectories_legal_masks # [B, G, T, A] or None
         
         # Add starting player mask
         B, G, T = pad_mask.shape
@@ -99,7 +99,8 @@ class GRPOChessTransformer(pl.LightningModule):
 
         # Compute loss
         new_log_probs = self.policy_model.get_group_log_probs(trajectories_states,
-                                                              trajectories_actions)
+                                                              trajectories_actions,
+                                                              legal_masks)
 
         loss, loss_info = grpo_ppo_loss(new_log_probs,
                              trajectories_old_log_probs,
