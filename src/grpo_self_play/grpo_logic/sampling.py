@@ -36,8 +36,8 @@ def batched_policy_step(model: ChessTransformer, boards: List[chess.Board], temp
   states_tensor = torch.cat(states_list, dim=0) # [N, SEQ]
   legal_mask = torch.cat(legal_masks, dim=0)    # [N, A] bool
   assert legal_mask.dtype == torch.bool, "legal_mask must be bool dtype"
-  assert legal_mask.shape[0] == N, "legal_mask batch size mismatch"
-  assert legal_mask.shape[1] == model.action_size, "legal_mask action size mismatch"
+  assert legal_mask.shape[0] == N, f"legal_mask batch size mismatch {legal_mask.shape[0]} vs {N}"
+  assert legal_mask.shape[1] == model.action_size, "legal_mask action size mismatch {legal_mask.shape[1]} vs {model.action_size}"
   if not legal_mask.any(dim=1).all():
       bad = (~legal_mask.any(dim=1)).nonzero(as_tuple=False).flatten().tolist()
       raise ValueError(f"Empty legal mask for boards: {bad}")
