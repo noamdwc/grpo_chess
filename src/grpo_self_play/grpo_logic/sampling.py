@@ -31,10 +31,14 @@ def batched_policy_step(model: ChessTransformer, boards: List[chess.Board], temp
   for board in boards:
     state = board_to_tensor(board, device=device)
     states_list.append(state)
-    legal_masks.append(get_legal_moves_mask(board, device=device))
+    mask = get_legal_moves_mask(board, device=device)
+    if mask.ndim == 2:
+        mask = mask.squeeze(0)
+    assert mask.ndim == 1, f"legal_moves_mask must be 1D [A], got {mask.shape}"
+    legal_masks.append(mask)
 
   states_tensor = torch.cat(states_list, dim=0) # [N, SEQ]
-  legal_mask = torch.cat(legal_masks, dim=0)    # [N, A] bool
+  legal_mask = torch.stack(legal_masks, dim=0)    # [N, A] bool
   assert legal_mask.dtype == torch.bool, "legal_mask must be bool dtype"
   assert legal_mask.shape[0] == N, f"legal_mask batch size mismatch {legal_mask.shape[0]} vs {N}"
   assert legal_mask.shape[1] == model.action_size, "legal_mask action size mismatch {legal_mask.shape[1]} vs {model.action_size}"
