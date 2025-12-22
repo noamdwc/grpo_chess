@@ -103,7 +103,7 @@ def sample_trajectories_batched(model, boards, num_trajectories, trajectory_dept
   for env_idx, env in enumerate(envs):
     b_idx = env_idx // G
     g_idx = env_idx % G
-    group_rewards[b_idx, g_idx] = reward_board(env, boards[b_idx])
+    group_rewards[b_idx, g_idx] = reward_board(env, boards[b_idx], depth=4, movetime_ms=0)
 
   # Allocate padded tensors
   trajectories_log_probs = torch.zeros(B, G, T, dtype=torch.float32, device=device)

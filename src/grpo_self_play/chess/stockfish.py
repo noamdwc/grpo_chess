@@ -57,13 +57,17 @@ class StockfishManager:
 
 
   @classmethod
+  def is_name_registered(cls, name: str) -> bool:
+      return name in cls._engines
+
+  @classmethod
   def get_engine(cls, name: str, cfg: StockfishConfig | None = None) -> chess.engine.SimpleEngine:
       """
       Get (or create) a named engine instance.
       - name: e.g. "reward", "player"
       - cfg: config to use when creating it (ignored later calls).
       """
-      if name not in cls._engines:
+      if not cls.is_name_registered(name):
           if cfg is None:
               cfg = StockfishConfig()
           engine = chess.engine.SimpleEngine.popen_uci(cfg.path)

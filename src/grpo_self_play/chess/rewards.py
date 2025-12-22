@@ -9,43 +9,50 @@ _engine: chess.engine.SimpleEngine | None = None
 def get_engine(cfg: StockfishConfig | None = None) -> chess.engine.SimpleEngine:
     global _engine
     if _engine is None:
-        _engine = StockfishManager.get_engine("reward_engine")
+        _engine = StockfishManager.get_engine("reward_engine", cfg)
     return _engine
 
 
+def _raw_white_reward(fen: str,movetime_ms: int, depth: int) -> float:
+  if depth and depth > 0:
+      limit = chess.engine.Limit(depth=depth)
+  else:
+      limit = chess.engine.Limit(time=movetime_ms / 1000.0)
+  engine = get_engine()
+  info = engine.analyse(chess.Board(fen), limit)
+  score = info["score"].pov(chess.WHITE)
+  if score.is_mate():
+    return 10000.0 if score.mate() > 0 else -10000.0
+  return float(score.score())
+
+
 @lru_cache(maxsize=200_000)
-def _eval_fen_cached(fen: str, pov_is_white: bool, movetime_ms: int, depth: int):
+def cached_raw_reward_white(fen: str, depth: int) -> float:
+    """
+    Cached Stockfish raw eval for a given FEN from White's POV.
+    Returns centipawn score (positive = White is better).
+    Only caches by depth, not movetime since movetime is not deterministic.
+    """
+    return _raw_white_reward(fen, movetime_ms=10, depth=depth)
+
+
+def _eval_fen(fen: str, pov_is_white: bool, movetime_ms: int, depth: int):
     """
     Cached Stockfish eval for a given FEN and settings.
     Returns a normalized reward in [-1, 1].
     """
-    board = chess.Board(fen)
-    engine = get_engine()
-
     if depth and depth > 0:
-      limit = chess.engine.Limit(depth=depth)
+      raw_score = cached_raw_reward_white(fen, depth)
     else:
-      limit = chess.engine.Limit(time=movetime_ms / 1000.0)
+      raw_score = _raw_white_reward(fen, movetime_ms, depth)
 
-    info = engine.analyse(board, limit)
-    pov_color = chess.WHITE if pov_is_white else chess.BLACK
-    score = info["score"].pov(pov_color)
+    if not pov_is_white: # Flip sign for black POV
+        raw_score = -raw_score
+    # Normalize raw score to [-1, 1] using tanh
+    return float(math.tanh(raw_score / 600.0))
 
-    if score.is_mate():
-      m = score.mate()
-      if m is None:
-        return 0.0
-      return 1.0 if m > 0 else -1.0
 
-    cp = score.score() # centi-pawn score
-    if cp is None:
-      return 0.0
-
-    # Normalize centipawns to [-1,1] smoothly
-    # Scale chosen so ~400cp is already a strong signal
-    return float(math.tanh(cp / 400.0))
-
-def reward_board(env: chess.Board, board_start: chess.Board, movetime_ms: int = 10, depth: int = 0):
+def reward_board(env: chess.Board, board_start: chess.Board, movetime_ms: int = 0, depth: int = 16) -> float:
     """
     Stockfish-based reward from the perspective of board_start.turn,
     matching your original intent.
@@ -54,25 +61,16 @@ def reward_board(env: chess.Board, board_start: chess.Board, movetime_ms: int = 
     board_start: board at trajectory start (used for POV)
     """
     pov_is_white = (board_start.turn == chess.WHITE)
-    if env.is_game_over(): # Terminal state
-        result = env.result()
-        if result == '1/2-1/2': # If draw
-            return 0.0
-        is_white_won = (result == '1-0')
-        is_pov_won = (is_white_won and pov_is_white) or ((not is_white_won) and (not pov_is_white))
-        return 1.0 if is_pov_won else -1.0
+    if env.is_game_over(claim_draw=True): # Terminal state
+        if env.is_checkmate():
+          pov_loses = (env.turn == (chess.WHITE if pov_is_white else chess.BLACK))
+          r_t = -1.0 if pov_loses else 1.0
+        else:
+          r_t = 0.0 # Draw
+    else:
+      fen_t = env.fen()
+      r_t = _eval_fen(fen_t, pov_is_white, movetime_ms, depth)
 
-    fen = env.fen()
-    return _eval_fen_cached(fen, pov_is_white, movetime_ms, depth)
-    
-
-def old_reward_board(env, board_start):
-  score = 0
-  piece_vals = {chess.PAWN:1, chess.KNIGHT:3, chess.BISHOP:3, chess.ROOK:5, chess.QUEEN:9, chess.KING:0}
-  for sq, piece in env.piece_map().items():
-      val = piece_vals.get(piece.piece_type, 0)
-      if piece.color == board_start.turn: # Friendly piece
-          score += val
-      else:
-          score -= val
-  return score # Normalize to [-1, 1] (max material difference is 39 points)
+    fen_0 = board_start.fen()
+    r_0 = _eval_fen(fen_0, pov_is_white, movetime_ms, depth)
+    return r_t - r_0 # Reward is the change in eval
