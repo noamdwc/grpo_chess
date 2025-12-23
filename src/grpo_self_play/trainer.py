@@ -14,7 +14,7 @@ def generate_run_name(project="chess-grpo"):
 
 
 
-def get_trainer(num_epochs=5000, checkpoint_dir="drive/MyDrive/data/grpo-chess/checkpoints/"): 
+def get_trainer(num_epochs=5000, checkpoint_dir="/content/drive/MyDrive/data/grpo-chess/checkpoints/"): 
     run_name = generate_run_name()
     print(f"Generated run name: {run_name}")
 
