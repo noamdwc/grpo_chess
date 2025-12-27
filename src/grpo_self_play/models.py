@@ -52,11 +52,12 @@ class ChessTransformer(nn.Module):
         # Pass the padding mask to the transformer
         out = self.transformer(x, src_key_padding_mask=src_key_padding_mask)
 
-        # Pool: usually [CLS] token or Mean.
-        # If DeepMind tokenizer puts [CLS] at index 0:
-        cls_token = out[:, 0, :]
+        # Pool: Mean of the non-masked tokens
+        mask = ~src_key_padding_mask
+        mask_expanded = mask.unsqueeze(-1).float()  # [B, SEQ, 1]
+        pooled = (out * mask_expanded).sum(dim=1) / mask_expanded.sum(dim=1).clamp_min(1)
 
-        return self.policy_head(cls_token)
+        return self.policy_head(pooled)
     
     @property
     def device(self):
