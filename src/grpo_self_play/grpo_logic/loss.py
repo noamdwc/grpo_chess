@@ -5,10 +5,11 @@ from dataclasses import dataclass
 
 @dataclass
 class GRPOLossInfo:
+    """Information about GRPO loss components for logging and debugging."""
     kl_div: torch.Tensor
     mean_ratio: torch.Tensor
     mean_clip_fraction: torch.Tensor
-    ppo_lose: torch.Tensor
+    ppo_loss: torch.Tensor
 
 def grpo_chess_loss(
     logprobs_new: torch.Tensor,   # [G, T]  log πθ(a_{g,k,t} | s_{g,k,t})
@@ -16,7 +17,21 @@ def grpo_chess_loss(
     advantages: torch.Tensor,        # [G, T]
     clip_eps: float = 0.2,  # ε in the formula
     beta_kl: float = 0.0,   # β in the formula (0 = no explicit KL penalty)
-    eps: float = 1e-8):
+    eps: float = 1e-8) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Compute GRPO chess loss (legacy function, consider using grpo_ppo_loss instead).
+    
+    Args:
+        logprobs_new: New policy log probabilities [G, T]
+        logprobs_old: Old policy log probabilities [G, T]
+        advantages: Advantage values [G, T]
+        clip_eps: PPO clipping epsilon
+        beta_kl: KL penalty coefficient
+        eps: Numerical stability epsilon
+        
+    Returns:
+        Tuple of (loss, approximate_kl_divergence)
+    """
 
     # ------------------------------------------------------------
     # 3. Probability ratio r_{g,k,t}(θ)
@@ -41,7 +56,16 @@ def grpo_chess_loss(
 
 
 # Utils functions for GRPO
-def group_advantage(group_rewards):
+def group_advantage(group_rewards: torch.Tensor) -> torch.Tensor:
+    """
+    Compute normalized advantages from group rewards using standardization.
+    
+    Args:
+        group_rewards: Group rewards tensor [B, G] or [G]
+        
+    Returns:
+        Normalized advantages with same shape as input
+    """
     mean_reward = group_rewards.mean(dim=-1, keepdim=True)
     std_reward = group_rewards.std(dim=-1, unbiased=False, keepdim=True) + 1e-8
     advantages = (group_rewards - mean_reward) / std_reward
@@ -56,6 +80,21 @@ def ppo_chess_loss(
     pad_mask: torch.Tensor | None = None,  # [G, T], True = real, False = pad
     return_info: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Compute PPO-clip loss for chess policy optimization.
+    
+    Args:
+        logprobs_new: New policy log probabilities [B, G, T] or [G, T]
+        logprobs_old: Old policy log probabilities [B, G, T] or [G, T]
+        advantages: Advantage values [B, G, T] or [G, T]
+        clip_eps: PPO clipping epsilon (default: 0.2)
+        pad_mask: Mask indicating valid steps, True=valid, False=padding
+        return_info: If True, return additional statistics
+        
+    Returns:
+        If return_info=False: policy loss tensor [B, G, T] or [G, T]
+        If return_info=True: tuple of (policy_loss, mean_ratio, mean_clip_fraction)
+    """
     if pad_mask is None:
       pad_mask = torch.ones_like(logprobs_new, dtype=torch.bool)
     ratio = (logprobs_new - logprobs_old).exp() # [G, T]
@@ -75,22 +114,53 @@ def ppo_chess_loss(
 
 def kl_penalty(logprobs_new: torch.Tensor,
                logprobs_old: torch.Tensor,
-               pad_mask=None):
+               pad_mask: torch.Tensor | None = None) -> torch.Tensor:
+    """
+    Compute KL divergence penalty between old and new policies.
+    
+    Args:
+        logprobs_new: New policy log probabilities
+        logprobs_old: Old policy log probabilities
+        pad_mask: Optional mask for valid steps
+        
+    Returns:
+        Mean KL divergence over valid steps
+    """
     if pad_mask is None:
       pad_mask = torch.ones_like(logprobs_new, dtype=torch.bool)
     return (logprobs_old - logprobs_new)[pad_mask].mean()
 
 
 def grpo_ppo_loss(
-    logprobs_new: torch.Tensor,     # [G, T]
-    logprobs_old: torch.Tensor,     # [G, T]
-    group_rewards: torch.Tensor,    # [G,]
-    pad_mask: torch.Tensor | None = None,  # [G, T]
-    clip_ratio: float = 0.2,        # in paper this epsilon
-    kl_coef: float = 0.01,          # in paper this is beta
-    return_info: bool = False, # return extra info foe logging
+    logprobs_new: torch.Tensor,     # [B, G, T] or [G, T]
+    logprobs_old: torch.Tensor,     # [B, G, T] or [G, T]
+    group_rewards: torch.Tensor,    # [B, G] or [G]
+    pad_mask: torch.Tensor | None = None,  # [B, G, T] or [G, T]
+    clip_ratio: float = 0.2,        # PPO clipping ratio (epsilon in paper)
+    kl_coef: float = 0.01,          # KL penalty coefficient (beta in paper)
+    return_info: bool = False,      # Return extra info for logging
     ) -> torch.Tensor | Tuple[torch.Tensor, GRPOLossInfo]:
-    if logprobs_new.ndim == 2: # No batch input - unsqueeze
+    """
+    Compute GRPO (Group Relative Policy Optimization) loss with PPO clipping.
+    
+    This combines PPO-clip loss with KL divergence penalty. Advantages are computed
+    by normalizing group rewards within each batch.
+    
+    Args:
+        logprobs_new: New policy log probabilities [B, G, T] or [G, T]
+        logprobs_old: Old policy log probabilities [B, G, T] or [G, T]
+        group_rewards: Group rewards for each trajectory group [B, G] or [G]
+        pad_mask: Mask indicating valid steps, True=valid, False=padding
+        clip_ratio: PPO clipping ratio (default: 0.2)
+        kl_coef: KL divergence penalty coefficient (default: 0.01)
+        return_info: If True, return GRPOLossInfo for logging
+        
+    Returns:
+        If return_info=False: scalar loss tensor
+        If return_info=True: tuple of (loss, GRPOLossInfo)
+    """
+    # Handle 2D input (no batch dimension) by adding batch dimension
+    if logprobs_new.ndim == 2:
         logprobs_new = logprobs_new.unsqueeze(0)
         logprobs_old = logprobs_old.unsqueeze(0)
         group_rewards = group_rewards.unsqueeze(0)
@@ -104,20 +174,20 @@ def grpo_ppo_loss(
     advantages_2d = group_advantage(group_rewards).detach()
     advantages = advantages_2d.unsqueeze(-1).expand(B, G, T)
     advantages = advantages * pad_mask.float()
-    ppo_lose, mean_ratio, mean_clip_fraction = ppo_chess_loss(logprobs_new,
+    ppo_loss, mean_ratio, mean_clip_fraction = ppo_chess_loss(logprobs_new,
                                                               logprobs_old,
                                                               advantages,
                                                               clip_ratio,
                                                               pad_mask,
                                                               return_info=True)
     valid_steps = pad_mask.sum().clamp_min(1)
-    ppo_lose = ppo_lose.sum() / valid_steps
+    ppo_loss = ppo_loss.sum() / valid_steps
     kl_div = kl_penalty(logprobs_new, logprobs_old, pad_mask)
-    loss = ppo_lose + kl_coef * kl_div
+    loss = ppo_loss + kl_coef * kl_div
     if return_info:
         return loss, GRPOLossInfo(kl_div.detach(),
                                   mean_ratio.detach(),
                                   mean_clip_fraction.detach(),
-                                  ppo_lose.detach())
+                                  ppo_loss.detach())
     return loss
     

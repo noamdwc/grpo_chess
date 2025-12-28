@@ -1,6 +1,4 @@
-'''
-This code is for evaluating a chess bot using stockfish
-'''
+"""Utilities for evaluating chess policies against Stockfish."""
 import math
 import chess
 import chess.engine
@@ -26,7 +24,15 @@ class EvalConfig:
     opening_plies: int = 6  # random legal moves to diversify early positions
 
 
-def debug_legal_coverage(board):
+def debug_legal_coverage(board: chess.Board) -> tuple[int, int, list[str]]:
+    """Debug function to check coverage of legal moves in action space.
+    
+    Args:
+        board: Chess board position
+        
+    Returns:
+        Tuple of (covered_count, total_legal_moves, list_of_missing_moves)
+    """
     legals = list(board.legal_moves)
     covered = 0
     missing = []
@@ -48,9 +54,17 @@ def play_one_game(
     policy_is_white: bool,
     cfg: EvalConfig
 ) -> Tuple[str, str]:
-    """
-    Returns (result_str, termination_reason)
-    result_str in {"1-0","0-1","1/2-1/2"}
+    """Play a single game between policy and Stockfish.
+    
+    Args:
+        policy: Policy player to evaluate
+        stockfish: Stockfish player
+        policy_is_white: Whether policy plays as white
+        cfg: Evaluation configuration
+        
+    Returns:
+        Tuple of (result_str, termination_reason)
+        result_str in {"1-0", "0-1", "1/2-1/2"}
     """
 
     board = chess.Board()
@@ -87,10 +101,16 @@ def play_one_game(
 
 
 def estimate_elo_diff(score: float) -> float:
-    """
-    Rough Elo difference estimate from match score S in [0,1].
-    Uses logistic model: S = 1/(1+10^(-d/400))  => d = -400*log10(1/S - 1)
+    """Estimate Elo difference from match score.
+    
+    Uses logistic model: S = 1/(1+10^(-d/400)) => d = -400*log10(1/S - 1)
     Clamped for numeric stability.
+    
+    Args:
+        score: Win rate score in [0, 1]
+        
+    Returns:
+        Estimated Elo difference
     """
     eps = 1e-6
     s = min(max(score, eps), 1 - eps)
@@ -102,6 +122,17 @@ def evaluate_policy_vs_stockfish(
     sf: StockfishPlayer,
     eval_cfg: EvalConfig,
 ) -> Tuple[Dict, PolicyPlayer | TrajectorySearcher]:
+    """Evaluate a policy by playing multiple games against Stockfish.
+    
+    Args:
+        policy: Policy player to evaluate
+        sf: Stockfish player
+        eval_cfg: Evaluation configuration
+        
+    Returns:
+        Tuple of (results_dict, policy_player)
+        results_dict contains: games, wins, draws, losses, score, elo_diff, etc.
+    """
     random.seed(eval_cfg.seed)
     torch.manual_seed(eval_cfg.seed)
 
