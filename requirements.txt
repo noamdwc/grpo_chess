@@ -1,0 +1,5 @@
+pytorch_lightning
+wandb
+python-chess 
+jaxtyping
+datasets
