@@ -143,6 +143,14 @@ async def get_run_summary(run_id: str) -> str:
         
         # Add best/worst/final values for key metrics
         history = run.history()
+        
+        # Handle pandas DataFrame
+        if hasattr(history, 'empty'):
+            if not history.empty:
+                history = history.to_dict('records')
+            else:
+                history = []
+        
         if history:
             metric_keys = [k for k in history[0].keys() if not k.startswith("_")]
             summary["metric_statistics"] = {}
