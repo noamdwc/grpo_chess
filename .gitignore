@@ -1,2 +1,3 @@
 # Cursor MCP configuration (contains API keys)
 .cursor-mcp-config.json
+*__pycache__/
