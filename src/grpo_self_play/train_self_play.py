@@ -3,7 +3,7 @@ from torch.utils.data import DataLoader
 
 from src.grpo_self_play.trainer import get_trainer
 from src.grpo_self_play.models import ChessTransformerConfig
-from src.grpo_self_play.chess.chess_logic import ChessStartStatesDataset
+from src.grpo_self_play.boards_dataset import ChessStartStatesDataset, ChessDatasetConfig
 from src.grpo_self_play.grpo_logic.model import GRPOChessTransformer, GRPOConfig
 
 
