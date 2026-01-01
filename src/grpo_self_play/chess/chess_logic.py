@@ -1,14 +1,10 @@
 import chess
-import random
 import torch
-from collections import deque
 
-from typing import Optional, Dict
-from torch.utils.data import IterableDataset
+from typing import Optional
 from src.grpo_self_play.searchless_chess_imports import (MOVE_TO_ACTION, 
                                                          ACTION_TO_MOVE,
                                                          tokenize as deepmind_tokenize)
-from src.grpo_self_play.chess.rewards import evaluate_fen
 
 MAX_ACTION = max(ACTION_TO_MOVE.keys())
 
