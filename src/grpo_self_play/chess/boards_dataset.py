@@ -348,7 +348,7 @@ class ChessStartStatesDataset(IterableDataset):
           self.phase_distribution = {k: v / total_weight for k, v in self.phase_distribution.items()}
       
       # Position cache
-      self._position_cache: deque = deque(maxlen=config.cache_size)
+      self._position_cache: deque = deque[Any](maxlen=self.cache_size)
       self._cache_stats = {"hits": 0, "misses": 0, "generated": 0}
       
       # Statistics tracking
