@@ -342,10 +342,11 @@ class ChessStartStatesDataset(IterableDataset):
       self.cache_size = config.cache_size
       self.quality_filter = config.quality_filter
      
-      # Normalize phase distribution
-      total_weight = sum(self.phase_distribution.values())
-      if total_weight > 0:
-          self.phase_distribution = {k: v / total_weight for k, v in self.phase_distribution.items()}
+      # Normalize phase distribution (only if not None)
+      if self.phase_distribution is not None:
+          total_weight = sum(self.phase_distribution.values())
+          if total_weight > 0:
+              self.phase_distribution = {k: v / total_weight for k, v in self.phase_distribution.items()}
       
       # Position cache
       self._position_cache: deque = deque[Any](maxlen=self.cache_size)
