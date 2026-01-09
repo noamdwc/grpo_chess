@@ -70,10 +70,11 @@ def create_mcp_config(project_root: Path, api_key: str = None) -> dict:
     Returns:
         MCP configuration dictionary
     """
+    # Use the currently running Python (e.g., your conda env) so Cursor calls the same environment
     config = {
         "mcpServers": {
             "wandb": {
-                "command": "python",
+                "command": sys.executable,
                 "args": ["-m", "mcp_wandb_server.server"],
                 "cwd": str(project_root)
             }

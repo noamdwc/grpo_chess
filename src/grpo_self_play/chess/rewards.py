@@ -36,7 +36,7 @@ def cached_raw_reward_white(fen: str, depth: int) -> float:
     return _raw_white_reward(fen, movetime_ms=10, depth=depth)
 
 
-def _eval_fen(fen: str, pov_is_white: bool, movetime_ms: int, depth: int):
+def evaluate_fen(fen: str, pov_is_white: bool, movetime_ms: int, depth: int, normalize: bool = True):
     """
     Cached Stockfish eval for a given FEN and settings.
     Returns a normalized reward in [-1, 1].
@@ -49,7 +49,10 @@ def _eval_fen(fen: str, pov_is_white: bool, movetime_ms: int, depth: int):
     if not pov_is_white: # Flip sign for black POV
         raw_score = -raw_score
     # Normalize raw score to [-1, 1] using tanh
-    return float(math.tanh(raw_score / 600.0))
+    if normalize:
+      return float(math.tanh(raw_score / 600.0))
+    else:
+      return raw_score
 
 
 def reward_board(env: chess.Board, board_start: chess.Board, movetime_ms: int = 0, depth: int = 16) -> float:
@@ -69,8 +72,8 @@ def reward_board(env: chess.Board, board_start: chess.Board, movetime_ms: int = 
           r_t = 0.0 # Draw
     else:
       fen_t = env.fen()
-      r_t = _eval_fen(fen_t, pov_is_white, movetime_ms, depth)
+      r_t = evaluate_fen(fen_t, pov_is_white, movetime_ms, depth)
 
     fen_0 = board_start.fen()
-    r_0 = _eval_fen(fen_0, pov_is_white, movetime_ms, depth)
+    r_0 = evaluate_fen(fen_0, pov_is_white, movetime_ms, depth)
     return r_t - r_0 # Reward is the change in eval

@@ -8,16 +8,23 @@ import tempfile
 import shutil
 
 
-def format_metric_history(history: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, float]]]:
+def format_metric_history(history: Any) -> Dict[str, List[Dict[str, float]]]:
     """
     Format wandb history into metric name -> list of {step, value} pairs.
     
     Args:
-        history: List of dictionaries from run.history()
+        history: List of dictionaries or pandas DataFrame from run.history()
         
     Returns:
         Dictionary mapping metric names to lists of {step, value} pairs
     """
+    # Handle pandas DataFrame
+    if hasattr(history, 'empty'):
+        if history.empty:
+            return {}
+        # Convert DataFrame to list of dicts
+        history = history.to_dict('records')
+    
     if not history:
         return {}
     
@@ -48,11 +55,19 @@ def format_run_summary(run: Any) -> Dict[str, Any]:
     Returns:
         Dictionary with run summary information
     """
+    # Handle created_at - it might be a datetime object or a string
+    created_at = None
+    if run.created_at:
+        if hasattr(run.created_at, 'isoformat'):
+            created_at = run.created_at.isoformat()
+        else:
+            created_at = str(run.created_at)
+    
     summary = {
         "id": run.id,
         "name": run.name,
         "state": run.state,
-        "created_at": run.created_at.isoformat() if run.created_at else None,
+        "created_at": created_at,
         "tags": run.tags or [],
         "hyperparameters": dict(run.config) if run.config else {},
         "summary_metrics": dict(run.summary) if run.summary else {},
