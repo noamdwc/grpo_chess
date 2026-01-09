@@ -441,11 +441,19 @@ class ChessStartStatesDataset(IterableDataset):
 
   def __iter__(self):
       worker_info = torch.utils.data.get_worker_info()
+      
+      # Set deterministic seed per worker for reproducibility and isolation
       if worker_info is not None:
-          # Seed workers differently to get diverse games
-          random.seed(worker_info.id + random.randint(0, 10000))
-
-      for _ in range(self.max_steps):
+          # Use worker_id + a fixed base seed for deterministic but diverse seeds
+          # This ensures each worker gets a unique seed that's consistent across epochs
+          worker_seed = 42 + worker_info.id * 1000
+          random.seed(worker_seed)
+      
+      # Generate exactly max_steps positions (some may be skipped, but we iterate max_steps times)
+      # This ensures the iterator always terminates cleanly after max_steps iterations
+      for step in range(self.max_steps):
           board = self._generate_position()
           if board is not None and not board.is_game_over():
               yield board.fen()
+      
+      # Iterator terminates here, allowing PyTorch to detect epoch completion
