@@ -59,16 +59,40 @@ def grpo_chess_loss(
 def group_advantage(group_rewards: torch.Tensor) -> torch.Tensor:
     """
     Compute normalized advantages from group rewards using standardization.
-    
+
     Args:
         group_rewards: Group rewards tensor [B, G] or [G]
-        
+
     Returns:
         Normalized advantages with same shape as input
     """
     mean_reward = group_rewards.mean(dim=-1, keepdim=True)
     std_reward = group_rewards.std(dim=-1, unbiased=False, keepdim=True) + 1e-8
     advantages = (group_rewards - mean_reward) / std_reward
+    return advantages
+
+
+def step_group_advantage(step_rewards: torch.Tensor, pad_mask: torch.Tensor | None = None) -> torch.Tensor:
+    """
+    Compute per-step normalized advantages from step rewards.
+    For each timestep t, normalizes across the G dimension (trajectories).
+
+    Args:
+        step_rewards: Per-step rewards tensor [B, G, T]
+        pad_mask: Optional mask for valid steps [B, G, T], True=valid
+
+    Returns:
+        Normalized advantages [B, G, T] where each timestep is normalized across G
+    """
+    # Normalize across G dimension for each (batch, timestep)
+    # step_rewards: [B, G, T]
+    mean_t = step_rewards.mean(dim=1, keepdim=True)  # [B, 1, T]
+    std_t = step_rewards.std(dim=1, unbiased=False, keepdim=True) + 1e-8  # [B, 1, T]
+    advantages = (step_rewards - mean_t) / std_t  # [B, G, T]
+
+    if pad_mask is not None:
+        advantages = advantages * pad_mask.float()
+
     return advantages
 
 
@@ -134,7 +158,7 @@ def kl_penalty(logprobs_new: torch.Tensor,
 def grpo_ppo_loss(
     logprobs_new: torch.Tensor,     # [B, G, T] or [G, T]
     logprobs_old: torch.Tensor,     # [B, G, T] or [G, T]
-    group_rewards: torch.Tensor,    # [B, G] or [G]
+    step_rewards: torch.Tensor,     # [B, G, T] or [G, T] - per-step rewards
     pad_mask: torch.Tensor | None = None,  # [B, G, T] or [G, T]
     clip_ratio: float = 0.2,        # PPO clipping ratio (epsilon in paper)
     kl_coef: float = 0.01,          # KL penalty coefficient (beta in paper)
@@ -142,19 +166,19 @@ def grpo_ppo_loss(
     ) -> torch.Tensor | Tuple[torch.Tensor, GRPOLossInfo]:
     """
     Compute GRPO (Group Relative Policy Optimization) loss with PPO clipping.
-    
+
     This combines PPO-clip loss with KL divergence penalty. Advantages are computed
-    by normalizing group rewards within each batch.
-    
+    per-step by normalizing step rewards across trajectories (G dimension) for each timestep.
+
     Args:
         logprobs_new: New policy log probabilities [B, G, T] or [G, T]
         logprobs_old: Old policy log probabilities [B, G, T] or [G, T]
-        group_rewards: Group rewards for each trajectory group [B, G] or [G]
+        step_rewards: Per-step rewards [B, G, T] or [G, T]
         pad_mask: Mask indicating valid steps, True=valid, False=padding
         clip_ratio: PPO clipping ratio (default: 0.2)
         kl_coef: KL divergence penalty coefficient (default: 0.01)
         return_info: If True, return GRPOLossInfo for logging
-        
+
     Returns:
         If return_info=False: scalar loss tensor
         If return_info=True: tuple of (loss, GRPOLossInfo)
@@ -163,17 +187,16 @@ def grpo_ppo_loss(
     if logprobs_new.ndim == 2:
         logprobs_new = logprobs_new.unsqueeze(0)
         logprobs_old = logprobs_old.unsqueeze(0)
-        group_rewards = group_rewards.unsqueeze(0)
+        step_rewards = step_rewards.unsqueeze(0)
         if pad_mask is not None:
             pad_mask = pad_mask.unsqueeze(0)
 
     if pad_mask is None:
         pad_mask = torch.ones_like(logprobs_new, dtype=torch.bool)
 
-    B, G, T = logprobs_new.shape
-    advantages_2d = group_advantage(group_rewards).detach()
-    advantages = advantages_2d.unsqueeze(-1).expand(B, G, T)
-    advantages = advantages * pad_mask.float()
+    # Compute per-step advantages (normalized across G for each timestep)
+    advantages = step_group_advantage(step_rewards, pad_mask).detach()  # [B, G, T]
+
     ppo_loss, mean_ratio, mean_clip_fraction = ppo_chess_loss(logprobs_new,
                                                               logprobs_old,
                                                               advantages,

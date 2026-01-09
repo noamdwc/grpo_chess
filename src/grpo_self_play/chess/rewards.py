@@ -49,10 +49,26 @@ def evaluate_fen(fen: str, pov_is_white: bool, movetime_ms: int, depth: int, nor
     if not pov_is_white: # Flip sign for black POV
         raw_score = -raw_score
     # Normalize raw score to [-1, 1] using tanh
+    # Using /200.0 for 3x stronger gradient signal (was /600.0)
     if normalize:
-      return float(math.tanh(raw_score / 600.0))
+      return float(math.tanh(raw_score / 200.0))
     else:
       return raw_score
+
+
+def evaluate_board(board: chess.Board, pov_is_white: bool, depth: int = 16) -> float:
+    """
+    Evaluate a board position from a given POV.
+    Returns normalized reward in [-1, 1], or terminal reward for game-over positions.
+    """
+    if board.is_game_over(claim_draw=True):
+        if board.is_checkmate():
+            pov_loses = (board.turn == (chess.WHITE if pov_is_white else chess.BLACK))
+            return -1.0 if pov_loses else 1.0
+        else:
+            return 0.0  # Draw
+    else:
+        return evaluate_fen(board.fen(), pov_is_white, movetime_ms=0, depth=depth)
 
 
 def reward_board(env: chess.Board, board_start: chess.Board, movetime_ms: int = 0, depth: int = 16) -> float:

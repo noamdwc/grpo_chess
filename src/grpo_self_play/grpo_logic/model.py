@@ -159,10 +159,11 @@ class GRPOChessTransformer(pl.LightningModule):
         trajectories_old_log_probs = trajectories_sample.trajectories_log_probs  # [B, G, T]
         trajectories_actions = trajectories_sample.trajectories_actions  # [B, G, T]
         trajectories_states = trajectories_sample.trajectories_states  # [B, G, T, SEQ]
-        batch_group_rewards = trajectories_sample.group_rewards  # [B, G]
+        batch_group_rewards = trajectories_sample.group_rewards  # [B, G] (for logging)
+        step_rewards = trajectories_sample.step_rewards  # [B, G, T]
         pad_mask = trajectories_sample.pad_mask  # [B, G, T]
         trajectories_legal_masks = trajectories_sample.trajectories_legal_masks  # [B, G, T, A] or None
-        
+
         # Add starting player mask (only consider moves from the starting player's perspective)
         B, G, T = pad_mask.shape
         t = torch.arange(T, device=pad_mask.device)
@@ -176,7 +177,7 @@ class GRPOChessTransformer(pl.LightningModule):
 
         loss, loss_info = grpo_ppo_loss(new_log_probs,
                              trajectories_old_log_probs,
-                             batch_group_rewards,
+                             step_rewards,
                              effective_pad_mask,
                              clip_ratio=self.hparams.grpo_config.clip_ratio,
                              kl_coef=self.hparams.grpo_config.kl_coef,
@@ -196,6 +197,12 @@ class GRPOChessTransformer(pl.LightningModule):
         self.log("mean_clip_fraction", loss_info.mean_clip_fraction)
         self.log("ppo_loss", loss_info.ppo_loss)
         self._log_rewards_metrics(batch_group_rewards, prefix="train/")
+
+        # Log step rewards statistics (only for valid steps)
+        valid_step_rewards = step_rewards[pad_mask]
+        self.log("train/step_reward_mean", valid_step_rewards.mean())
+        self.log("train/step_reward_std", valid_step_rewards.std())
+
         return loss
 
     def configure_optimizers(self) -> torch.optim.Adam:
