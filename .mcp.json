@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "wandb": {
+      "command": "/Users/noamc/miniconda3/bin/conda",
+      "args": ["run", "-n", "grpo_chess", "--no-capture-output", "python", "-m", "mcp_wandb_server.server"],
+      "cwd": "/Users/noamc/repos/grpo_chess"
+    }
+  }
+}
