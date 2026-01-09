@@ -72,6 +72,25 @@ grpo_config = GRPOConfig(
 train()
 ```
 
+### Running Training in Google Colab
+
+**Note for AI agents and contributors**: The primary way this code is run is through the `chess_model_run_git.ipynb` notebook in Google Colab. This notebook is the actual workflow used for training and evaluation.
+
+The `chess_model_run_git.ipynb` notebook provides:
+
+- **Automated Setup**: Clones the repository, installs dependencies, and downloads the searchless chess model
+- **Complete Configuration**: Pre-configured settings for GRPO training, dataset generation, and evaluation
+- **Phase-Aware Dataset**: Example configuration using `ChessDatasetConfig` with `phase_distribution` for balanced training across opening, middlegame, and endgame positions
+- **Evaluation Pipeline**: Integrated evaluation against Stockfish at multiple skill levels
+
+The notebook handles all setup steps including:
+1. Repository cloning and branch checkout
+2. Dependency installation (PyTorch Lightning, WandB, python-chess, etc.)
+3. Downloading the searchless chess model from HuggingFace
+4. Stockfish installation
+5. Training configuration with phase-distributed dataset sampling
+6. Model training and periodic evaluation
+
 ### Evaluation
 
 ```python
