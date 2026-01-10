@@ -8,9 +8,6 @@ from collections import deque
 from typing import Any, Optional, Dict
 from dataclasses import dataclass
 from torch.utils.data import IterableDataset
-from src.grpo_self_play.searchless_chess_imports import (MOVE_TO_ACTION, 
-                                                         ACTION_TO_MOVE,
-                                                         tokenize as deepmind_tokenize)
 from src.grpo_self_play.chess.rewards import evaluate_fen
 
 
@@ -451,9 +448,11 @@ class ChessStartStatesDataset(IterableDataset):
       
       # Generate exactly max_steps positions (some may be skipped, but we iterate max_steps times)
       # This ensures the iterator always terminates cleanly after max_steps iterations
+      print(f"Generating {self.max_steps} positions -- START")
       for step in range(self.max_steps):
           board = self._generate_position()
           if board is not None and not board.is_game_over():
               yield board.fen()
+      print(f"Generated {self.max_steps} positions -- END")
       
       # Iterator terminates here, allowing PyTorch to detect epoch completion
