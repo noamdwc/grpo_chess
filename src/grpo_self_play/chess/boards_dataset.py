@@ -438,21 +438,28 @@ class ChessStartStatesDataset(IterableDataset):
 
   def __iter__(self):
       worker_info = torch.utils.data.get_worker_info()
-      
-      # Set deterministic seed per worker for reproducibility and isolation
+
+      # Determine how many steps this worker should generate
       if worker_info is not None:
-          # Use worker_id + a fixed base seed for deterministic but diverse seeds
-          # This ensures each worker gets a unique seed that's consistent across epochs
-          worker_seed = 42 + worker_info.id * 1000
+          # Split work among workers
+          num_workers = worker_info.num_workers
+          worker_id = worker_info.id
+          per_worker = self.max_steps // num_workers
+          # Give remainder to the last worker
+          if worker_id == num_workers - 1:
+              per_worker += self.max_steps % num_workers
+
+          # Set deterministic seed per worker for reproducibility and isolation
+          worker_seed = 42 + worker_id * 1000
           random.seed(worker_seed)
-      
-      # Generate exactly max_steps positions (some may be skipped, but we iterate max_steps times)
-      # This ensures the iterator always terminates cleanly after max_steps iterations
-      print(f"Generating {self.max_steps} positions -- START")
-      for step in range(self.max_steps):
+          torch.manual_seed(worker_seed)
+          steps_to_generate = per_worker
+      else:
+          # Single process mode
+          steps_to_generate = self.max_steps
+
+      # Generate positions for this worker's share
+      for step in range(steps_to_generate):
           board = self._generate_position()
           if board is not None and not board.is_game_over():
               yield board.fen()
-      print(f"Generated {self.max_steps} positions -- END")
-      
-      # Iterator terminates here, allowing PyTorch to detect epoch completion
