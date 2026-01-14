@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 from dataclasses import dataclass
 
-from src.grpo_self_play.chess.rewards import reward_board, evaluate_board
+from src.grpo_self_play.chess.rewards import reward_board, evaluate_board, normalize_cp
 from src.grpo_self_play.models import ChessTransformer
 from src.grpo_self_play.searchless_chess_imports import ACTION_TO_MOVE, SEQUENCE_LENGTH
 from src.grpo_self_play.chess.chess_logic import board_to_tensor,  get_legal_moves_mask
@@ -24,6 +24,7 @@ class TrajectoriesSample:
         step_rewards: Per-step rewards [B, G, T] where step_rewards[b,g,t] = eval(s_{t+1}) - eval(s_t)
         pad_mask: Mask indicating valid steps, True=valid, False=padding [B, G, T]
         trajectories_legal_masks: Legal moves masks [B, G, T, A]
+        raw_step_cp: Raw centipawn step rewards [B, G, T] (for logging, not normalized)
     """
     trajectories_log_probs: torch.Tensor  # [B, G, T]
     trajectories_actions: torch.Tensor    # [B, G, T]
@@ -32,6 +33,7 @@ class TrajectoriesSample:
     step_rewards: torch.Tensor            # [B, G, T]
     pad_mask: torch.Tensor                # [B, G, T]
     trajectories_legal_masks: torch.Tensor  # [B, G, T, A]
+    raw_step_cp: torch.Tensor             # [B, G, T] - raw centipawn differences
 
 
 def batched_policy_step(model: ChessTransformer, boards: List[chess.Board], temperature: float = 1.0) -> Optional[tuple]:
@@ -115,11 +117,12 @@ def sample_trajectories_batched(model: ChessTransformer,
     traj_states = [[[] for _ in range(G)] for _ in range(B)]
     traj_legal_masks = [[[] for _ in range(G)] for _ in range(B)]
     traj_step_rewards = [[[] for _ in range(G)] for _ in range(B)]
+    traj_raw_step_cp = [[[] for _ in range(G)] for _ in range(B)]  # Raw centipawn differences for logging
 
-    # Track POV and previous eval for each trajectory
+    # Track POV and previous raw eval for each trajectory (we normalize step rewards later)
     pov_is_white = [(boards[b].turn == chess.WHITE) for b in range(B) for _ in range(G)]
-    prev_evals = [evaluate_board(boards[b], pov_is_white[b * G], depth=reward_depth)
-                  for b in range(B) for _ in range(G)]
+    prev_evals_raw = [evaluate_board(boards[b], pov_is_white[b * G], depth=reward_depth, normalize=False)
+                      for b in range(B) for _ in range(G)]
 
     # Rollout: sample trajectories in batches
     for _ in range(T):
@@ -150,10 +153,13 @@ def sample_trajectories_batched(model: ChessTransformer,
             envs[env_idx_j].push(move_j)
 
             # Compute step reward: eval(new_state) - eval(prev_state)
-            new_eval = evaluate_board(envs[env_idx_j], pov_is_white[env_idx_j], depth=reward_depth)
-            step_reward = new_eval - prev_evals[env_idx_j]
+            # Get raw centipawn value, then normalize for step_rewards
+            new_eval_raw = evaluate_board(envs[env_idx_j], pov_is_white[env_idx_j], depth=reward_depth, normalize=False)
+            raw_step_cp = new_eval_raw - prev_evals_raw[env_idx_j]
+            step_reward = normalize_cp(new_eval_raw) - normalize_cp(prev_evals_raw[env_idx_j])
             traj_step_rewards[b_idx][g_idx].append(step_reward)
-            prev_evals[env_idx_j] = new_eval
+            traj_raw_step_cp[b_idx][g_idx].append(raw_step_cp)
+            prev_evals_raw[env_idx_j] = new_eval_raw
 
     # Compute group_rewards for logging (sum of step rewards = final - initial)
     group_rewards = torch.zeros(B, G, dtype=torch.float32, device=device)
@@ -169,6 +175,7 @@ def sample_trajectories_batched(model: ChessTransformer,
     trajectories_legal_masks = torch.zeros(B, G, T, model.action_size, dtype=torch.bool, device=device)
     trajectories_legal_masks[..., 0] = True  # Ensure at least one legal move (to avoid empty legal masks -> NaNs in log_softmax)
     step_rewards = torch.zeros(B, G, T, dtype=torch.float32, device=device)
+    raw_step_cp = torch.zeros(B, G, T, dtype=torch.float32, device=device)
     pad_mask = torch.zeros(B, G, T, dtype=torch.bool, device=device)
     for b in range(B):
         for g in range(G):
@@ -181,6 +188,7 @@ def sample_trajectories_batched(model: ChessTransformer,
             if L > 0:
                 trajectories_legal_masks[b, g, :L] = torch.stack(traj_legal_masks[b][g], dim=0)
                 step_rewards[b, g, :L] = torch.tensor(traj_step_rewards[b][g], dtype=torch.float32, device=device)
+                raw_step_cp[b, g, :L] = torch.tensor(traj_raw_step_cp[b][g], dtype=torch.float32, device=device)
 
     return TrajectoriesSample(trajectories_log_probs,
                               trajectories_actions,
@@ -188,5 +196,6 @@ def sample_trajectories_batched(model: ChessTransformer,
                               group_rewards,
                               step_rewards,
                               pad_mask,
-                              trajectories_legal_masks)
+                              trajectories_legal_masks,
+                              raw_step_cp)
                             

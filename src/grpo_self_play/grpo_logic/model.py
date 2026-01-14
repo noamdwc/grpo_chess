@@ -19,13 +19,14 @@ from src.grpo_self_play.chess.stockfish import StockfishConfig
 @dataclass
 class GRPOConfig:
     """Configuration for GRPO (Group Relative Policy Optimization) training.
-    
+
     Attributes:
         lr: Learning rate for optimizer
         num_trajectories: Number of trajectory groups to sample per batch
         trajectory_depth: Maximum depth of each trajectory
         clip_ratio: PPO clipping ratio (epsilon)
         kl_coef: KL divergence penalty coefficient (beta)
+        entropy_coef: Entropy bonus coefficient (encourages exploration, prevents policy collapse)
         eval_every_n_epochs: Frequency of evaluation runs (not used in model, but useful for trainer)
     """
     lr: float = 1e-4
@@ -33,6 +34,7 @@ class GRPOConfig:
     trajectory_depth: int = 5
     clip_ratio: float = 0.2
     kl_coef: float = 0.01
+    entropy_coef: float = 0.01  # Entropy bonus to prevent policy collapse
     eval_every_n_epochs: int = 10  # Not used in model, but useful for trainer
 
 
@@ -181,6 +183,7 @@ class GRPOChessTransformer(pl.LightningModule):
                              effective_pad_mask,
                              clip_ratio=self.hparams.grpo_config.clip_ratio,
                              kl_coef=self.hparams.grpo_config.kl_coef,
+                             entropy_coef=self.hparams.grpo_config.entropy_coef,
                              return_info=True)
         if not torch.isfinite(loss):
             raise ValueError(f"Non-finite loss encountered: {loss.item()}")
@@ -196,12 +199,20 @@ class GRPOChessTransformer(pl.LightningModule):
         self.log("mean_ratio", loss_info.mean_ratio)
         self.log("mean_clip_fraction", loss_info.mean_clip_fraction)
         self.log("ppo_loss", loss_info.ppo_loss)
+        self.log("entropy", loss_info.entropy)
         self._log_rewards_metrics(batch_group_rewards, prefix="train/")
 
         # Log step rewards statistics (only for valid steps)
         valid_step_rewards = step_rewards[pad_mask]
         self.log("train/step_reward_mean", valid_step_rewards.mean())
         self.log("train/step_reward_std", valid_step_rewards.std())
+
+        # Log raw centipawn step rewards (before normalization) for debugging
+        raw_step_cp = trajectories_sample.raw_step_cp
+        valid_raw_step_cp = raw_step_cp[pad_mask]
+        self.log("train/raw_step_cp_mean", valid_raw_step_cp.mean())
+        self.log("train/raw_step_cp_std", valid_raw_step_cp.std())
+        self.log("train/raw_step_cp_abs_mean", valid_raw_step_cp.abs().mean())
 
         return loss
 
@@ -213,18 +224,19 @@ class GRPOChessTransformer(pl.LightningModule):
         """
         return torch.optim.Adam(self.parameters(), lr=self.hparams.grpo_config.lr)
 
-    def _evaluate_against_stockfish(self) -> Optional[dict]:
+    def _evaluate_against_stockfish(self) -> Optional[tuple[dict, list[str]]]:
         """Run a single game evaluation against Stockfish with current policy model.
-        
+
         Returns:
-            Dictionary of evaluation results, or None if evaluation failed
+            Tuple of (results_dict, pgns) or None if evaluation failed
+            pgns is a list of PGN strings for all games played
         """
         was_training = self.training
         self.eval()
         try:
             with torch.no_grad():
-                results, _ = self.evaluator.single_evaluation(self.policy_model)
-            return results
+                results, _, pgns = self.evaluator.single_evaluation(self.policy_model)
+            return results, pgns
         except Exception as e:
             self.logger.warning(f"Evaluation against Stockfish failed: {e}") if hasattr(self, 'logger') else print(f"Evaluation against Stockfish failed: {e}")
             return None
@@ -259,9 +271,35 @@ class GRPOChessTransformer(pl.LightningModule):
             frac = cnt / games
             self.log(f"eval_stockfish/term_{reason}", frac)
     
+    def _log_pgns(self, pgns: list[str]) -> None:
+        """Log PGNs to WandB as a text artifact.
+
+        Args:
+            pgns: List of PGN strings for all games played
+        """
+        if not pgns:
+            return
+
+        # Combine all PGNs into a single string
+        combined_pgn = "\n\n".join(pgns)
+
+        # Log to WandB if available
+        if self.logger and hasattr(self.logger, 'experiment'):
+            try:
+                import wandb
+                # Log as a text artifact
+                self.logger.experiment.log({
+                    "eval_stockfish/pgns": wandb.Html(f"<pre>{combined_pgn}</pre>"),
+                    "eval_stockfish/pgn_text": combined_pgn,
+                })
+            except Exception as e:
+                print(f"Failed to log PGNs to WandB: {e}")
+
     def on_train_epoch_end(self) -> None:
         """Called at the end of each training epoch. Runs evaluation if scheduled."""
         if (self.current_epoch + 1) % self.eval_every_n_epochs == 0:
-            results = self._evaluate_against_stockfish()
-            if results is not None:
+            eval_result = self._evaluate_against_stockfish()
+            if eval_result is not None:
+                results, pgns = eval_result
                 self._log_stockfish_eval(results)
+                self._log_pgns(pgns)

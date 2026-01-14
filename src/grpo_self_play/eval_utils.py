@@ -1,13 +1,15 @@
 """Utilities for evaluating chess policies against Stockfish."""
+import io
 import math
 import chess
+import chess.pgn
 import chess.engine
 import random
 
 import torch
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 from src.grpo_self_play.chess.chess_logic import MOVE_TO_ACTION
 from src.grpo_self_play.chess.policy_player import PolicyPlayer, PolicyConfig
@@ -52,29 +54,39 @@ def play_one_game(
     policy: PolicyPlayer | TrajectorySearcher,
     stockfish: StockfishPlayer,
     policy_is_white: bool,
-    cfg: EvalConfig
-) -> Tuple[str, str]:
+    cfg: EvalConfig,
+    game_number: int = 0,
+) -> Tuple[str, str, str]:
     """Play a single game between policy and Stockfish.
-    
+
     Args:
         policy: Policy player to evaluate
         stockfish: Stockfish player
         policy_is_white: Whether policy plays as white
         cfg: Evaluation configuration
-        
+        game_number: Game number for PGN metadata
+
     Returns:
-        Tuple of (result_str, termination_reason)
+        Tuple of (result_str, termination_reason, pgn_str)
         result_str in {"1-0", "0-1", "1/2-1/2"}
     """
 
     board = chess.Board()
+    game = chess.pgn.Game()
+    game.headers["Event"] = "Policy vs Stockfish Evaluation"
+    game.headers["White"] = "Policy" if policy_is_white else "Stockfish"
+    game.headers["Black"] = "Stockfish" if policy_is_white else "Policy"
+    game.headers["Round"] = str(game_number + 1)
+    node = game
 
     # Optional random opening to reduce overfitting to a single line
     if cfg.randomize_opening and cfg.opening_plies > 0:
         for _ in range(cfg.opening_plies):
             if board.is_game_over():
                 break
-            board.push(random.choice(list(board.legal_moves)))
+            move = random.choice(list(board.legal_moves))
+            board.push(move)
+            node = node.add_variation(move)
 
     for ply in range(cfg.max_plies):
         if board.is_game_over(claim_draw=True):
@@ -87,17 +99,30 @@ def play_one_game(
             move = policy.act(board)
         else:
             move = stockfish.act(board)
-        if move is None: break  # no legal moves
-        
+        if move is None:
+            break  # no legal moves
+
         board.push(move)
+        node = node.add_variation(move)
 
     # Determine result
     if board.is_game_over(claim_draw=True):
         res = board.result(claim_draw=True)
-        return res, "game_over"
+        reason = "game_over"
     else:
         # Reached max plies: treat as draw
-        return "1/2-1/2", "max_plies"
+        res = "1/2-1/2"
+        reason = "max_plies"
+
+    game.headers["Result"] = res
+
+    # Generate PGN string
+    pgn_output = io.StringIO()
+    exporter = chess.pgn.FileExporter(pgn_output)
+    game.accept(exporter)
+    pgn_str = pgn_output.getvalue()
+
+    return res, reason, pgn_str
 
 
 def estimate_elo_diff(score: float) -> float:
@@ -121,29 +146,32 @@ def evaluate_policy_vs_stockfish(
     policy: PolicyPlayer | TrajectorySearcher,
     sf: StockfishPlayer,
     eval_cfg: EvalConfig,
-) -> Tuple[Dict, PolicyPlayer | TrajectorySearcher]:
+) -> Tuple[Dict, PolicyPlayer | TrajectorySearcher, List[str]]:
     """Evaluate a policy by playing multiple games against Stockfish.
-    
+
     Args:
         policy: Policy player to evaluate
         sf: Stockfish player
         eval_cfg: Evaluation configuration
-        
+
     Returns:
-        Tuple of (results_dict, policy_player)
+        Tuple of (results_dict, policy_player, pgns)
         results_dict contains: games, wins, draws, losses, score, elo_diff, etc.
+        pgns is a list of PGN strings for all games played
     """
     random.seed(eval_cfg.seed)
     torch.manual_seed(eval_cfg.seed)
 
     wins = draws = losses = 0
     term_reasons = {}
+    pgns: List[str] = []
 
     try:
         for g in range(eval_cfg.games):
             policy_is_white = (g % 2 == 0)
-            res, reason = play_one_game(policy, sf, policy_is_white, eval_cfg)
+            res, reason, pgn = play_one_game(policy, sf, policy_is_white, eval_cfg, game_number=g)
             term_reasons[reason] = term_reasons.get(reason, 0) + 1
+            pgns.append(pgn)
 
             # From policy perspective
             if res == "1-0":
@@ -175,5 +203,5 @@ def evaluate_policy_vs_stockfish(
         "elo_diff_vs_stockfish_approx": elo_diff,
         "termination_reasons": term_reasons,
         "eval_cfg": eval_cfg,
-    }, policy
+    }, policy, pgns
     

@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from chess import engine
 import torch.nn as nn
 
@@ -56,23 +56,24 @@ class Evaluator:
         """
         return StockfishPlayer(self.default_stockfish_cfg)
 
-    def single_evaluation(self, model: nn.Module) -> Tuple[Dict, PolicyPlayer | TrajectorySearcher]:
+    def single_evaluation(self, model: nn.Module) -> Tuple[Dict, PolicyPlayer | TrajectorySearcher, List[str]]:
         """Evaluate the model by playing games against Stockfish.
-        
+
         Args:
             model: Neural network model to evaluate
-            
+
         Returns:
-            Tuple of (results_dict, policy_or_searcher)
+            Tuple of (results_dict, policy_or_searcher, pgns)
+            pgns is a list of PGN strings for all games played
         """
         stockfish_player = self._make_stockfish()
         policy = self._make_policy(model)
-        results, policy_or_searcher = evaluate_policy_vs_stockfish(
+        results, policy_or_searcher, pgns = evaluate_policy_vs_stockfish(
             policy,
             stockfish_player,
             self.eval_cfg,
         )
-        return results, policy_or_searcher
+        return results, policy_or_searcher, pgns
 
     def eval_ladder(self, model: nn.Module) -> Dict[int, float]:
         """Evaluate model against Stockfish at multiple skill levels.
@@ -96,7 +97,7 @@ class Evaluator:
             stockfish_player = StockfishPlayer(stockfish_cfg, engine_name=engine_name)
 
             try:
-                r, policy_wrapper = evaluate_policy_vs_stockfish(
+                r, policy_wrapper, _ = evaluate_policy_vs_stockfish(
                     policy,
                     stockfish_player,
                     self.eval_cfg,
