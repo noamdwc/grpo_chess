@@ -26,7 +26,6 @@ class GRPOConfig:
         trajectory_depth: Maximum depth of each trajectory
         clip_ratio: PPO clipping ratio (epsilon)
         kl_coef: KL divergence penalty coefficient (beta)
-        entropy_coef: Entropy bonus coefficient (encourages exploration, prevents policy collapse)
         eval_every_n_epochs: Frequency of evaluation runs (not used in model, but useful for trainer)
     """
     lr: float = 1e-4
@@ -34,7 +33,6 @@ class GRPOConfig:
     trajectory_depth: int = 5
     clip_ratio: float = 0.2
     kl_coef: float = 0.01
-    entropy_coef: float = 0.01  # Entropy bonus to prevent policy collapse
     eval_every_n_epochs: int = 10  # Not used in model, but useful for trainer
 
 
@@ -183,7 +181,6 @@ class GRPOChessTransformer(pl.LightningModule):
                              effective_pad_mask,
                              clip_ratio=self.hparams.grpo_config.clip_ratio,
                              kl_coef=self.hparams.grpo_config.kl_coef,
-                             entropy_coef=self.hparams.grpo_config.entropy_coef,
                              return_info=True)
         if not torch.isfinite(loss):
             raise ValueError(f"Non-finite loss encountered: {loss.item()}")
@@ -199,7 +196,6 @@ class GRPOChessTransformer(pl.LightningModule):
         self.log("mean_ratio", loss_info.mean_ratio)
         self.log("mean_clip_fraction", loss_info.mean_clip_fraction)
         self.log("ppo_loss", loss_info.ppo_loss)
-        self.log("entropy", loss_info.entropy)
         self._log_rewards_metrics(batch_group_rewards, prefix="train/")
 
         # Log step rewards statistics (only for valid steps)
