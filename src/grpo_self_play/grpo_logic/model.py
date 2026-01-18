@@ -1,4 +1,3 @@
-from math import isfinite
 from typing import Optional
 import torch
 import pytorch_lightning as pl
@@ -8,12 +7,197 @@ from dataclasses import dataclass
 
 from src.grpo_self_play.evaluator import Evaluator
 from src.grpo_self_play.models import ChessTransformer, ChessTransformerConfig
-from src.grpo_self_play.grpo_logic.loss import grpo_ppo_loss, GRPOLossInfo
+from src.grpo_self_play.grpo_logic.loss import grpo_ppo_loss
 from src.grpo_self_play.grpo_logic.sampling import sample_trajectories_batched
 from src.grpo_self_play.eval_utils import EvalConfig
 from src.grpo_self_play.chess.policy_player import PolicyConfig
 from src.grpo_self_play.chess.searcher import SearchConfig
 from src.grpo_self_play.chess.stockfish import StockfishConfig
+
+
+class EntropyFloorMonitor:
+    """Monitors entropy and takes action when it falls below a floor (Recommendation 1).
+
+    Tracks consecutive steps where entropy is below a threshold and triggers
+    configurable actions (warn, stop, or boost entropy_coef) when the threshold
+    is breached for too long.
+    """
+
+    def __init__(self, floor: float, steps_threshold: int, action: str, boost_factor: float):
+        """
+        Args:
+            floor: Minimum entropy threshold
+            steps_threshold: Consecutive steps below floor before action
+            action: Action to take ("warn", "stop", "boost")
+            boost_factor: Factor to multiply entropy_coef when boosting
+        """
+        self.floor = floor
+        self.steps_threshold = steps_threshold
+        self.action = action
+        self.boost_factor = boost_factor
+        self.consecutive_low_steps = 0
+        self.triggered = False
+
+    def check(self, entropy: float, current_entropy_coef: float) -> tuple[float, dict]:
+        """Check entropy and return updated entropy_coef and metrics.
+
+        Args:
+            entropy: Current entropy value
+            current_entropy_coef: Current entropy coefficient
+
+        Returns:
+            Tuple of (new_entropy_coef, metrics_dict)
+        """
+        metrics = {}
+        new_entropy_coef = current_entropy_coef
+
+        if entropy < self.floor:
+            self.consecutive_low_steps += 1
+
+            if self.consecutive_low_steps >= self.steps_threshold and not self.triggered:
+                self.triggered = True
+                if self.action == "warn":
+                    print(f"WARNING: Entropy collapse detected! Entropy={entropy:.4f} < floor={self.floor} "
+                          f"for {self.consecutive_low_steps} consecutive steps.")
+                elif self.action == "stop":
+                    raise RuntimeError(
+                        f"STOPPING: Entropy collapse detected! Entropy={entropy:.4f} < floor={self.floor} "
+                        f"for {self.consecutive_low_steps} consecutive steps.")
+                elif self.action == "boost":
+                    new_entropy_coef = current_entropy_coef * self.boost_factor
+                    print(f"BOOSTING entropy_coef: {current_entropy_coef:.4f} -> {new_entropy_coef:.4f} "
+                          f"(entropy={entropy:.4f} < floor={self.floor})")
+                    self.consecutive_low_steps = 0
+                    self.triggered = False
+        else:
+            self.consecutive_low_steps = 0
+            self.triggered = False
+
+        metrics["entropy_floor/consecutive_low_steps"] = self.consecutive_low_steps
+        metrics["entropy_floor/below_floor"] = float(entropy < self.floor)
+        metrics["entropy_floor/current_entropy_coef"] = new_entropy_coef
+
+        return new_entropy_coef, metrics
+
+
+def compute_group_collapse_metrics(
+    actions: torch.Tensor,
+    group_rewards: torch.Tensor,
+    step_rewards: torch.Tensor,
+    pad_mask: torch.Tensor,
+) -> dict:
+    """Compute within-board group collapse metrics (Recommendation 4).
+
+    These metrics directly measure whether all G trajectories from the same board
+    are converging to the same moves, which is the key failure mode in entropy collapse.
+
+    Args:
+        actions: Action indices [B, G, T]
+        group_rewards: Final rewards for each trajectory [B, G]
+        step_rewards: Per-step rewards [B, G, T]
+        pad_mask: Mask indicating valid steps [B, G, T], True=valid
+
+    Returns:
+        Dictionary of metrics for logging
+    """
+    B, _, T = actions.shape
+    metrics = {}
+
+    # 1. Action agreement: for each (b, t), what fraction of trajectories chose the most common action?
+    # agreement[b,t] = max_count(actions[b,:,t]) / G
+    action_agreement = torch.zeros(B, T, device=actions.device)
+    for b in range(B):
+        for t in range(T):
+            if pad_mask[b, :, t].any():  # At least one valid trajectory at this timestep
+                valid_actions = actions[b, pad_mask[b, :, t], t]
+                if len(valid_actions) > 0:
+                    # Count occurrences of each action
+                    _, counts = valid_actions.unique(return_counts=True)
+                    max_count = counts.max().item()
+                    num_valid = pad_mask[b, :, t].sum().item()
+                    action_agreement[b, t] = max_count / num_valid
+
+    # Mask to only consider valid (b, t) pairs
+    valid_bt_mask = pad_mask.any(dim=1)  # [B, T] - True if any trajectory valid at (b, t)
+    valid_agreements = action_agreement[valid_bt_mask]
+
+    if len(valid_agreements) > 0:
+        metrics["group_collapse/action_agreement_mean"] = valid_agreements.mean().item()
+        metrics["group_collapse/action_agreement_p90"] = valid_agreements.quantile(0.9).item()
+        metrics["group_collapse/action_agreement_max"] = valid_agreements.max().item()
+    else:
+        metrics["group_collapse/action_agreement_mean"] = 0.0
+        metrics["group_collapse/action_agreement_p90"] = 0.0
+        metrics["group_collapse/action_agreement_max"] = 0.0
+
+    # 2. Within-board reward diversity: std(group_rewards[b,:]) for each board b
+    # This measures whether trajectories from the same starting position get similar rewards
+    reward_std_within = group_rewards.std(dim=1)  # [B]
+    metrics["group_collapse/reward_std_within_mean"] = reward_std_within.mean().item()
+    metrics["group_collapse/reward_std_within_min"] = reward_std_within.min().item()
+
+    # 3. Within-board step reward diversity: std(step_rewards[b,:,t]) for each (b, t)
+    # Only compute for valid (b, t) pairs
+    step_reward_std_within = torch.zeros(B, T, device=step_rewards.device)
+    for b in range(B):
+        for t in range(T):
+            valid_mask_bt = pad_mask[b, :, t]
+            if valid_mask_bt.sum() > 1:  # Need at least 2 valid trajectories for std
+                step_reward_std_within[b, t] = step_rewards[b, valid_mask_bt, t].std().item()
+
+    valid_step_stds = step_reward_std_within[valid_bt_mask]
+    if len(valid_step_stds) > 0:
+        metrics["group_collapse/step_reward_std_within_mean"] = valid_step_stds.mean().item()
+        metrics["group_collapse/step_reward_std_within_min"] = valid_step_stds.min().item()
+    else:
+        metrics["group_collapse/step_reward_std_within_mean"] = 0.0
+        metrics["group_collapse/step_reward_std_within_min"] = 0.0
+
+    return metrics
+
+
+class AdaptiveKLController:
+    """Adapts KL coefficient to maintain target KL divergence (Recommendation 2).
+
+    Implements a simple multiplicative controller that increases kl_coef when
+    KL divergence exceeds target and decreases it when below target.
+    """
+
+    def __init__(self, initial_kl_coef: float, target_kl: float, adapt_rate: float,
+                 kl_coef_min: float, kl_coef_max: float):
+        """
+        Args:
+            initial_kl_coef: Starting KL coefficient
+            target_kl: Target KL divergence value
+            adapt_rate: Multiplicative factor for adjustment
+            kl_coef_min: Minimum allowed kl_coef
+            kl_coef_max: Maximum allowed kl_coef
+        """
+        self.current_kl_coef = initial_kl_coef
+        self.target_kl = target_kl
+        self.adapt_rate = adapt_rate
+        self.kl_coef_min = kl_coef_min
+        self.kl_coef_max = kl_coef_max
+
+    def update(self, kl_div: float) -> dict:
+        """Update KL coefficient based on current KL divergence.
+
+        Args:
+            kl_div: Current KL divergence value
+
+        Returns:
+            Metrics dict for logging
+        """
+        if kl_div > self.target_kl:
+            self.current_kl_coef = min(self.current_kl_coef * self.adapt_rate, self.kl_coef_max)
+        else:
+            self.current_kl_coef = max(self.current_kl_coef / self.adapt_rate, self.kl_coef_min)
+
+        return {
+            "adaptive_kl/current_kl_coef": self.current_kl_coef,
+            "adaptive_kl/target_kl": self.target_kl,
+            "adaptive_kl/kl_ratio": kl_div / self.target_kl if self.target_kl > 0 else 0.0,
+        }
 
 
 @dataclass
@@ -28,6 +212,20 @@ class GRPOConfig:
         kl_coef: KL divergence penalty coefficient (beta)
         entropy_coef: Entropy bonus coefficient (encourages exploration, prevents policy collapse)
         eval_every_n_epochs: Frequency of evaluation runs (not used in model, but useful for trainer)
+
+        # Entropy floor monitoring (Recommendation 1)
+        use_entropy_floor: Whether to enable entropy floor monitoring
+        entropy_floor: Minimum entropy threshold for collapse detection
+        entropy_floor_steps: Number of consecutive steps below floor before alert/action
+        entropy_floor_action: Action to take when entropy floor is breached ("warn", "stop", "boost")
+        entropy_boost_factor: Factor to multiply entropy_coef when boosting (if action="boost")
+
+        # Adaptive KL controller (Recommendation 2)
+        adaptive_kl: Whether to use adaptive KL coefficient
+        target_kl: Target KL divergence value
+        kl_adapt_rate: Rate at which to adjust kl_coef (higher = faster adaptation)
+        kl_coef_min: Minimum allowed kl_coef
+        kl_coef_max: Maximum allowed kl_coef
     """
     lr: float = 3e-5  # Lower LR to prevent entropy collapse
     num_trajectories: int = 4
@@ -37,19 +235,36 @@ class GRPOConfig:
     entropy_coef: float = 0.1  # Increased 10x to prevent policy collapse
     eval_every_n_epochs: int = 10  # Not used in model, but useful for trainer
 
+    # Entropy floor monitoring (Recommendation 1)
+    use_entropy_floor: bool = False  # Enable entropy floor monitoring
+    entropy_floor: float = 1.5  # Minimum entropy before triggering action
+    entropy_floor_steps: int = 200  # Consecutive steps below floor before action
+    entropy_floor_action: str = "warn"  # "warn", "stop", or "boost"
+    entropy_boost_factor: float = 2.0  # Multiply entropy_coef by this when boosting
+
+    # Adaptive KL controller (Recommendation 2)
+    adaptive_kl: bool = False  # Enable adaptive KL coefficient
+    target_kl: float = 0.015  # Target KL divergence (0.01-0.02 range)
+    kl_adapt_rate: float = 1.5  # Multiplicative factor for adjustment
+    kl_coef_min: float = 0.001  # Minimum kl_coef
+    kl_coef_max: float = 0.1  # Maximum kl_coef
+
 
 class GRPOChessTransformer(pl.LightningModule):
     """PyTorch Lightning module for training chess policy with GRPO.
-    
+
     This module implements Group Relative Policy Optimization (GRPO) for training
     a chess transformer policy. It maintains both a current policy and an old policy
     for computing importance sampling ratios in the PPO loss.
-    
+
     Attributes:
         policy_model: Current policy model being trained
         old_policy_model: Frozen copy of policy for importance sampling
         evaluator: Evaluator for running games against Stockfish
         eval_every_n_epochs: Frequency of evaluation runs
+        entropy_monitor: Optional entropy floor monitor (Recommendation 1)
+        kl_controller: Optional adaptive KL controller (Recommendation 2)
+        current_entropy_coef: Current entropy coefficient (mutable for entropy boosting)
     """
     def __init__(self,
                  transformer_config: ChessTransformerConfig,
@@ -60,7 +275,7 @@ class GRPOChessTransformer(pl.LightningModule):
                  searcher_cfg: SearchConfig | None = None):
         """
         Initialize GRPO Chess Transformer.
-        
+
         Args:
             transformer_config: Configuration for the chess transformer model
             grpo_config: GRPO training configuration
@@ -81,6 +296,28 @@ class GRPOChessTransformer(pl.LightningModule):
                                    policy_cfg=policy_cfg or PolicyConfig(),
                                    stockfish_cfg=stockfish_cfg or StockfishConfig(),
                                    searcher_cfg=searcher_cfg)
+
+        # Entropy floor monitor (Recommendation 1) - optional
+        self.entropy_monitor: EntropyFloorMonitor | None = None
+        if grpo_config.use_entropy_floor:
+            self.entropy_monitor = EntropyFloorMonitor(
+                floor=grpo_config.entropy_floor,
+                steps_threshold=grpo_config.entropy_floor_steps,
+                action=grpo_config.entropy_floor_action,
+                boost_factor=grpo_config.entropy_boost_factor,
+            )
+        self.current_entropy_coef = grpo_config.entropy_coef
+
+        # Adaptive KL controller (Recommendation 2) - optional
+        self.kl_controller: AdaptiveKLController | None = None
+        if grpo_config.adaptive_kl:
+            self.kl_controller = AdaptiveKLController(
+                initial_kl_coef=grpo_config.kl_coef,
+                target_kl=grpo_config.target_kl,
+                adapt_rate=grpo_config.kl_adapt_rate,
+                kl_coef_min=grpo_config.kl_coef_min,
+                kl_coef_max=grpo_config.kl_coef_max,
+            )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through the current policy model.
@@ -167,7 +404,7 @@ class GRPOChessTransformer(pl.LightningModule):
         trajectories_legal_masks = trajectories_sample.trajectories_legal_masks  # [B, G, T, A] or None
 
         # Add starting player mask (only consider moves from the starting player's perspective)
-        B, G, T = pad_mask.shape
+        _, _, T = pad_mask.shape
         t = torch.arange(T, device=pad_mask.device)
         start_player_mask = (t % 2 == 0)[None, None, :]  # [1, 1, T]
         effective_pad_mask = pad_mask & start_player_mask  # [B, G, T]
@@ -177,17 +414,41 @@ class GRPOChessTransformer(pl.LightningModule):
                                                               trajectories_actions,
                                                               trajectories_legal_masks)
 
+        # Use current (possibly adapted) coefficients
+        kl_coef = self.kl_controller.current_kl_coef if self.kl_controller else self.hparams.grpo_config.kl_coef
+
         loss, loss_info = grpo_ppo_loss(new_log_probs,
                              trajectories_old_log_probs,
                              step_rewards,
                              effective_pad_mask,
                              clip_ratio=self.hparams.grpo_config.clip_ratio,
-                             kl_coef=self.hparams.grpo_config.kl_coef,
-                             entropy_coef=self.hparams.grpo_config.entropy_coef,
+                             kl_coef=kl_coef,
+                             entropy_coef=self.current_entropy_coef,
                              return_info=True)
         if not torch.isfinite(loss):
             raise ValueError(f"Non-finite loss encountered: {loss.item()}")
-        
+
+        # Entropy floor monitoring (Recommendation 1)
+        if self.entropy_monitor is not None:
+            self.current_entropy_coef, entropy_metrics = self.entropy_monitor.check(
+                loss_info.entropy.item(), self.current_entropy_coef
+            )
+            for key, value in entropy_metrics.items():
+                self.log(key, value)
+
+        # Adaptive KL controller (Recommendation 2)
+        if self.kl_controller is not None:
+            kl_metrics = self.kl_controller.update(loss_info.kl_div.item())
+            for key, value in kl_metrics.items():
+                self.log(key, value)
+
+        # Within-board group collapse metrics (Recommendation 4)
+        collapse_metrics = compute_group_collapse_metrics(
+            trajectories_actions, batch_group_rewards, step_rewards, pad_mask
+        )
+        for key, value in collapse_metrics.items():
+            self.log(key, value)
+
         # Standard logging
         valid_mask = pad_mask.float()  # [B, G, T] 1 = real step
 
