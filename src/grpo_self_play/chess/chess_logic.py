@@ -11,7 +11,7 @@ MAX_ACTION = max(ACTION_TO_MOVE.keys())
 
 def board_to_tensor(board, device: str | torch.device ='cpu') -> torch.Tensor:
   fen = board.fen()
-  token_ids = deepmind_tokenize(fen) # Returns list of ints
+  token_ids = list[int](deepmind_tokenize(fen)) # Returns list of ints
   input_tensor = torch.tensor([token_ids], dtype=torch.long, device=device)
   return input_tensor
 
