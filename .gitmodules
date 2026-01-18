@@ -1,9 +1,0 @@
-[submodule "searchless_chess"]
-	path = searchless_chess
-	url = https://github.com/google-deepmind/searchless_chess.git
-[submodule "chessformers"]
-	path = chessformers
-	url = https://github.com/Atenrev/chessformers.git
-[submodule "chess-transformer"]
-	path = chess-transformer
-	url = https://github.com/Mtrya/chess-transformer.git
