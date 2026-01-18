@@ -1,15 +1,20 @@
+import os
 import chess
 import chess.engine
-import math
 
 from functools import lru_cache
 from src.grpo_self_play.chess.stockfish import StockfishManager, StockfishConfig
 
 _engine: chess.engine.SimpleEngine | None = None
+_engine_pid: int | None = None
 def get_engine(cfg: StockfishConfig | None = None) -> chess.engine.SimpleEngine:
-    global _engine
+    global _engine, _engine_pid
+    pid = os.getpid()
+    if pid != _engine_pid:
+        _engine = None
+        _engine_pid = pid
     if _engine is None:
-        _engine = StockfishManager.get_engine("reward_engine", cfg)
+        _engine = StockfishManager.get_engine(f"reward_engine_{_engine_pid}", cfg)
     return _engine
 
 

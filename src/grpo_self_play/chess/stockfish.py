@@ -1,3 +1,4 @@
+import os
 import chess
 import chess.engine
 import warnings
@@ -25,9 +26,20 @@ class StockfishManager:
   For example, We will use several enignes at diffrenet levels for evaluation,
   or for reward we will limit by time.
   '''
+  _pid: int = os.getpid()
   _engines: dict[str, chess.engine.SimpleEngine] = {}
   _cfgs: dict[str, StockfishConfig] = {}
 
+
+  @classmethod
+  def ensure_pid(cls) -> None:
+    pid = os.getpid()
+    if pid != cls._pid:
+      # We are in a forked/spawned child; discard inherited engine handles.
+      # This is a workaround to avoid issues with multiprocessing.
+      cls._pid = pid
+      cls._engines = {}
+      cls._cfgs = {}
 
   @classmethod
   def _configure_engine(cls, engine: chess.engine.SimpleEngine, cfg: StockfishConfig) -> None:
@@ -67,6 +79,7 @@ class StockfishManager:
       - name: e.g. "reward", "player"
       - cfg: config to use when creating it (ignored later calls).
       """
+      cls.ensure_pid() # Check if we are in a forked/spawned child and discard inherited engine handles.
       if not cls.is_name_registered(name):
           if cfg is None:
               cfg = StockfishConfig()
