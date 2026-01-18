@@ -29,12 +29,12 @@ class GRPOConfig:
         entropy_coef: Entropy bonus coefficient (encourages exploration, prevents policy collapse)
         eval_every_n_epochs: Frequency of evaluation runs (not used in model, but useful for trainer)
     """
-    lr: float = 1e-4
+    lr: float = 3e-5  # Lower LR to prevent entropy collapse
     num_trajectories: int = 4
     trajectory_depth: int = 5
     clip_ratio: float = 0.2
     kl_coef: float = 0.01
-    entropy_coef: float = 0.01  # Entropy bonus to prevent policy collapse
+    entropy_coef: float = 0.1  # Increased 10x to prevent policy collapse
     eval_every_n_epochs: int = 10  # Not used in model, but useful for trainer
 
 

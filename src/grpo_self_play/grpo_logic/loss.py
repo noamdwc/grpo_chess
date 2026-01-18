@@ -163,7 +163,7 @@ def grpo_ppo_loss(
     pad_mask: torch.Tensor | None = None,  # [B, G, T] or [G, T]
     clip_ratio: float = 0.2,        # PPO clipping ratio (epsilon in paper)
     kl_coef: float = 0.01,          # KL penalty coefficient (beta in paper)
-    entropy_coef: float = 0.0,      # Entropy bonus coefficient (encourages exploration)
+    entropy_coef: float = 0.1,      # Entropy bonus coefficient (prevents policy collapse)
     return_info: bool = False,      # Return extra info for logging
     ) -> torch.Tensor | Tuple[torch.Tensor, GRPOLossInfo]:
     """
