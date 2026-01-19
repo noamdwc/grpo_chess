@@ -14,7 +14,7 @@ training:
 # GRPO (Group Relative Policy Optimization) Config
 # =============================================================================
 grpo:
-  lr: 3e-5
+  lr: 0.00003
   num_trajectories: 16
   trajectory_depth: 16
   clip_ratio: 0.10
