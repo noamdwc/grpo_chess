@@ -482,6 +482,7 @@ class GRPOChessTransformer(pl.LightningModule):
             # Manual optimization step
             opt.zero_grad()
             self.manual_backward(loss)
+            self.clip_gradients(opt, gradient_clip_val=1.0, gradient_clip_algorithm="norm")
             opt.step()
 
             # Entropy floor monitoring (Recommendation 1) - only on last ppo_step

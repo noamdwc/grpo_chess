@@ -44,8 +44,7 @@ def get_trainer(num_epochs: int = 5000,
     )
     return pl.Trainer(
         max_epochs=num_epochs,
-        gradient_clip_val=1.0,
-        gradient_clip_algorithm="norm",
+        # Gradient clipping handled manually in GRPOChessTransformer.training_step
         accelerator="auto",
         devices=1,
         logger=wandb_logger,
