@@ -1,0 +1,102 @@
+# Default experiment configuration
+# This file contains all hyperparameters for a training run.
+# Copy this file and modify for new experiments.
+
+# =============================================================================
+# Training Loop Settings
+# =============================================================================
+training:
+  num_epochs: 400
+  batch_size: 32
+  steps_per_epoch: 512
+
+# =============================================================================
+# GRPO (Group Relative Policy Optimization) Config
+# =============================================================================
+grpo:
+  lr: 3e-5
+  num_trajectories: 16
+  trajectory_depth: 16
+  clip_ratio: 0.10
+  kl_coef: 0.01  # initial value; adaptive_kl will adjust it
+  entropy_coef: 0.10
+  eval_every_n_epochs: 10
+  ppo_steps: 4
+  rollout_temperature: 1.0  # >1 increases exploration during rollouts
+
+  # Entropy floor monitoring
+  use_entropy_floor: true
+  entropy_floor: 2.0
+  entropy_floor_steps: 150
+  entropy_floor_action: "boost"  # "warn", "stop", or "boost"
+  entropy_boost_factor: 1.5
+
+  # Adaptive KL controller
+  adaptive_kl: true
+  target_kl: 0.012
+  kl_adapt_rate: 1.5
+  kl_coef_min: 0.001
+  kl_coef_max: 0.2
+
+# =============================================================================
+# Transformer Model Config
+# =============================================================================
+transformer:
+  vocab_size: 300
+  embed_dim: 256
+  num_layers: 4
+  num_heads: 8
+  action_dim: 1968
+
+# =============================================================================
+# Evaluation Config (vs Stockfish)
+# =============================================================================
+eval:
+  games: 32
+  seed: 0
+  max_plies: 400
+  randomize_opening: true
+  opening_plies: 6
+
+# =============================================================================
+# Stockfish Config
+# =============================================================================
+stockfish:
+  path: "/usr/games/stockfish"  # Override in colab/local as needed
+  skill_level: 2
+  use_elo_limit: false
+  elo: 2500
+  movetime_ms: 50
+  threads: 1
+  hash_mb: 128
+
+# =============================================================================
+# Policy Player Config (for evaluation)
+# =============================================================================
+policy:
+  temperature: 0.8
+  greedy: true
+  branching_factor: 4
+  search_depth: 2
+
+# =============================================================================
+# Searcher Config (optional - set to null to disable)
+# =============================================================================
+searcher: null
+# searcher:
+#   n_trajectories: 4
+#   trajectory_depth: 8
+
+# =============================================================================
+# Dataset Config (Chess Start States)
+# =============================================================================
+dataset:
+  max_steps: 512  # Should match steps_per_epoch
+  phase_distribution:
+    opening: 0.33
+    middlegame: 0.34
+    endgame: 0.33
+  min_eval_cp: -200
+  max_eval_cp: 200
+  quality_filter: true
+  stockfish_filter_depth: 4

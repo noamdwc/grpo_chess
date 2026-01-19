@@ -47,30 +47,28 @@ pip install torch pytorch-lightning wandb chess python-chess
 
 ### Basic Training
 
+The easiest way to start training is using the YAML-based configuration system:
+
 ```python
-from src.grpo_self_play import GRPOChessTransformer, GRPOConfig, ChessTransformerConfig
 from src.grpo_self_play.train_self_play import train
 
-# Configure model and training
-transformer_config = ChessTransformerConfig(
-    vocab_size=300,
-    embed_dim=256,
-    num_layers=4,
-    num_heads=8,
-    action_dim=1968
-)
-
-grpo_config = GRPOConfig(
-    lr=1e-6,
-    num_trajectories=8,
-    trajectory_depth=32,
-    clip_ratio=0.2,
-    kl_coef=0.01
-)
-
-# Start training
+# Use default configuration (loads from configs/default.yaml)
 train()
+
+# Use a custom config file
+train(config_path="my_experiment.yaml")
+
+# Override specific hyperparameters programmatically
+train(
+    config_path="default.yaml",
+    overrides={
+        "grpo": {"lr": 1e-4, "num_trajectories": 8},
+        "training": {"num_epochs": 100},
+    }
+)
 ```
+
+All hyperparameters (learning rate, model architecture, training settings, etc.) are defined in YAML configuration files. See the [Configuration](#configuration) section below for details.
 
 ### Running Training in Google Colab
 
@@ -206,41 +204,121 @@ Trajectories have variable lengths due to game terminations. The implementation:
 
 ## Configuration
 
-### Model Configuration
+This module uses a **YAML-based configuration system** to manage all hyperparameters and experiment settings. All training hyperparameters, model architecture settings, and evaluation configurations are centralized in YAML files located in `configs/`.
+
+### Configuration Files
+
+The default configuration file is `configs/default.yaml`, which contains all hyperparameters organized into sections:
+
+- **`training`**: Training loop settings (epochs, batch size, steps per epoch)
+- **`grpo`**: GRPO algorithm hyperparameters (learning rate, trajectories, clipping, KL penalty, entropy regularization, adaptive KL control)
+- **`transformer`**: Model architecture (embedding dimension, layers, attention heads, vocabulary size, action space)
+- **`eval`**: Evaluation settings (number of games, max plies, opening randomization)
+- **`stockfish`**: Stockfish engine configuration (path, skill level, time limits, resource usage)
+- **`policy`**: Policy player settings (temperature, greedy mode, branching factor, search depth)
+- **`searcher`**: Optional trajectory search configuration
+- **`dataset`**: Dataset generation settings (position phases, quality filters, evaluation bounds)
+
+### Using Configurations
+
+#### Loading Configurations
 
 ```python
-@dataclass
-class ChessTransformerConfig:
-    vocab_size: int = 300      # Token vocabulary size
-    embed_dim: int = 256       # Transformer embedding dimension
-    num_layers: int = 4        # Number of transformer layers
-    num_heads: int = 8         # Attention heads
-    action_dim: int = 1968     # Action space size
+from src.grpo_self_play.configs.config_loader import load_experiment_config
+
+# Load default config
+config = load_experiment_config("default.yaml")
+
+# Load with overrides
+config = load_experiment_config("default.yaml", overrides={
+    "grpo": {"lr": 1e-4, "entropy_coef": 0.2},
+    "training": {"num_epochs": 100},
+})
+
+# Access config values
+print(config.grpo.lr)
+print(config.training.batch_size)
+print(config.transformer.embed_dim)
 ```
 
-### GRPO Configuration
+#### Training with Configurations
 
 ```python
-@dataclass
-class GRPOConfig:
-    lr: float = 1e-4              # Learning rate
-    num_trajectories: int = 4      # Trajectory groups per position
-    trajectory_depth: int = 5      # Max steps per trajectory
-    clip_ratio: float = 0.2       # PPO clipping epsilon
-    kl_coef: float = 0.01         # KL penalty coefficient
-    eval_every_n_epochs: int = 10  # Evaluation frequency
+from src.grpo_self_play.train_self_play import train
+
+# Use default config
+train()
+
+# Use custom config file
+train(config_path="my_experiment.yaml")
+
+# Override specific values
+train(
+    config_path="default.yaml",
+    overrides={
+        "grpo": {"lr": 1e-4},
+        "training": {"num_epochs": 50},
+    },
+    dataloader_kwargs={"num_workers": 4}  # Override DataLoader args
+)
 ```
 
-### Evaluation Configuration
+### Creating Custom Configurations
 
-```python
-@dataclass
-class EvalConfig:
-    games: int = 50                # Number of evaluation games
-    max_plies: int = 400          # Max moves per game
-    randomize_opening: bool = False # Random opening moves
-    opening_plies: int = 6         # Number of random opening moves
-```
+1. Copy the default config:
+   ```bash
+   cp configs/default.yaml configs/my_experiment.yaml
+   ```
+
+2. Edit `my_experiment.yaml` to modify hyperparameters
+
+3. Use your custom config:
+   ```python
+   train(config_path="my_experiment.yaml")
+   ```
+
+### Configuration Dataclasses
+
+The configuration system converts YAML files into typed dataclasses:
+
+- **`TrainingConfig`**: Training loop settings
+- **`GRPOConfig`**: GRPO algorithm hyperparameters
+- **`ChessTransformerConfig`**: Model architecture
+- **`EvalConfig`**: Evaluation settings
+- **`StockfishConfig`**: Stockfish engine settings
+- **`PolicyConfig`**: Policy player settings
+- **`SearchConfig`**: Trajectory search settings (optional)
+- **`ChessDatasetConfig`**: Dataset generation settings
+
+All configs are combined into an `ExperimentConfig` object that provides type-safe access to all settings.
+
+### Key Hyperparameters
+
+All hyperparameters are defined in YAML files. Key settings include:
+
+**GRPO Algorithm:**
+- `grpo.lr`: Learning rate for policy optimization
+- `grpo.num_trajectories`: Number of trajectory groups per starting position
+- `grpo.trajectory_depth`: Maximum moves per trajectory
+- `grpo.clip_ratio`: PPO clipping epsilon (prevents large policy updates)
+- `grpo.kl_coef`: KL divergence penalty coefficient
+- `grpo.entropy_coef`: Entropy regularization coefficient
+- `grpo.adaptive_kl`: Enable adaptive KL coefficient adjustment
+- `grpo.use_entropy_floor`: Monitor and respond to entropy collapse
+
+**Model Architecture:**
+- `transformer.embed_dim`: Transformer embedding dimension
+- `transformer.num_layers`: Number of transformer layers
+- `transformer.num_heads`: Number of attention heads
+- `transformer.vocab_size`: Token vocabulary size
+- `transformer.action_dim`: Action space size (1968 for chess)
+
+**Training:**
+- `training.num_epochs`: Total number of training epochs
+- `training.batch_size`: Batch size for training
+- `training.steps_per_epoch`: Number of training steps per epoch
+
+See `configs/default.yaml` for the complete list of all hyperparameters and their default values.
 
 ## Advanced Usage
 
