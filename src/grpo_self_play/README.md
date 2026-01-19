@@ -1,6 +1,6 @@
 # GRPO Self-Play Chess Module
 
-A production-ready implementation of **Group Relative Policy Optimization (GRPO)** for training transformer-based chess policies through self-play. This module implements a complete reinforcement learning pipeline for chess, combining modern transformer architectures with advanced policy optimization techniques.
+An experimental, research-grade implementation of **Group Relative Policy Optimization (GRPO)** for training transformer-based chess policies through self-play. This module implements a full reinforcement learning pipeline for chess, but training stability and final strength are still under active investigation.
 
 ## Overview
 
@@ -28,7 +28,7 @@ This module trains neural network chess policies using GRPO, a variant of Proxim
 - **Modular Design**: Clean separation between model, training logic, chess rules, and evaluation
 - **Efficient Batching**: Parallel trajectory sampling across multiple board positions
 - **Legal Move Masking**: Proper handling of chess rules with action space masking
-- **Trajectory Search**: Optional tree search wrapper for improved play strength
+- **Trajectory Search**: Optional trajectory search wrapper for improved play strength
 - **Resource Management**: Efficient Stockfish engine pooling and caching
 
 ## Installation
@@ -389,17 +389,17 @@ This implementation adapts these ideas specifically for chess, using Stockfish f
 
 ## Technical Highlights
 
-- ✅ **Production-Ready**: Error handling, resource management, logging
-- ✅ **Scalable**: Efficient batching, parallel trajectory sampling
+- ✅ **Practical Infrastructure**: Error handling, resource management, logging
+- ✅ **Scalable Design**: Efficient batching, parallel trajectory sampling
 - ✅ **Extensible**: Modular design allows easy customization
-- ✅ **Well-Tested**: Comprehensive evaluation framework
 - ✅ **Documented**: Type hints, docstrings, clear structure
+- ⚠️ **Status**: This is a research system, not a production-ready chess engine
 
 ## Future Enhancements
 
 Potential improvements:
 - Value function approximation for better advantage estimates
-- Monte Carlo tree search (MCTS) integration
+- More robust entropy and KL control for GRPO
 - Multi-GPU training support
 - Distributed self-play
 - Opening book integration

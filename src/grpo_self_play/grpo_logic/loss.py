@@ -11,6 +11,7 @@ class GRPOLossInfo:
     mean_clip_fraction: torch.Tensor
     ppo_loss: torch.Tensor
     entropy: torch.Tensor
+    loss_without_entropy: torch.Tensor
 
 def grpo_chess_loss(
     logprobs_new: torch.Tensor,   # [G, T]  log πθ(a_{g,k,t} | s_{g,k,t})
@@ -215,14 +216,20 @@ def grpo_ppo_loss(
     # We use the negative log_probs of selected actions as an estimate
     entropy = -logprobs_new[pad_mask].mean()
 
-    # Loss = PPO loss + KL penalty - entropy bonus (subtract to encourage higher entropy)
-    loss = ppo_loss + kl_coef * kl_div - entropy_coef * entropy
+    # Loss components:
+    # - loss_without_entropy = PPO loss + KL penalty
+    # - total loss           = loss_without_entropy - entropy bonus
+    loss_without_entropy = ppo_loss + kl_coef * kl_div
+    loss = loss_without_entropy - entropy_coef * entropy
 
     if return_info:
-        return loss, GRPOLossInfo(kl_div.detach(),
-                                  mean_ratio.detach(),
-                                  mean_clip_fraction.detach(),
-                                  ppo_loss.detach(),
-                                  entropy.detach())
+        return loss, GRPOLossInfo(
+            kl_div=kl_div.detach(),
+            mean_ratio=mean_ratio.detach(),
+            mean_clip_fraction=mean_clip_fraction.detach(),
+            ppo_loss=ppo_loss.detach(),
+            entropy=entropy.detach(),
+            loss_without_entropy=loss_without_entropy.detach(),
+        )
     return loss
     

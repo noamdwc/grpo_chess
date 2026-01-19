@@ -232,34 +232,53 @@ class GRPOConfig:
 
         # Rollout temperature for exploration
         rollout_temperature: Temperature for action sampling during rollouts (>1 increases exploration)
+
+        # Safety checks on training dynamics
+        enable_safety_checks: Whether to abort training when known-bad patterns persist
+        safety_patience_steps: Number of training steps to tolerate violations before aborting
+        max_clip_fraction: If mean_clip_fraction > this for too long -> abort
+        min_entropy: If entropy < this for too long -> abort
+        max_kl_divergence: If KL >> target_kl for too long -> abort
     """
-    lr: float = 3e-5  # Lower LR to prevent entropy collapse
+    # Learning rate: tuned from prior runs; 3e-5 was the most stable setting
+    lr: float = 3e-5
     num_trajectories: int = 4
     trajectory_depth: int = 5
     clip_ratio: float = 0.2
     kl_coef: float = 0.01
-    entropy_coef: float = 0.1  # Increased 10x to prevent policy collapse
-    eval_every_n_epochs: int = 10  # Not used in model, but useful for trainer
+    entropy_coef: float = 0.1  # Stronger entropy bonus to prevent policy collapse
+    eval_every_n_epochs: int = 10  # Stockfish eval frequency
 
     # Entropy floor monitoring (Recommendation 1)
-    use_entropy_floor: bool = False  # Enable entropy floor monitoring
-    entropy_floor: float = 1.5  # Minimum entropy before triggering action
-    entropy_floor_steps: int = 200  # Consecutive steps below floor before action
-    entropy_floor_action: str = "warn"  # "warn", "stop", or "boost"
-    entropy_boost_factor: float = 2.0  # Multiply entropy_coef by this when boosting
+    # Default: ON, in "boost" mode, to automatically push entropy back up.
+    use_entropy_floor: bool = True
+    entropy_floor: float = 1.5          # Below this, policy is essentially collapsing
+    entropy_floor_steps: int = 200      # Consecutive steps below floor before action
+    entropy_floor_action: str = "boost" # "warn", "stop", or "boost"
+    entropy_boost_factor: float = 2.0   # Multiply entropy_coef by this when boosting
 
     # Adaptive KL controller (Recommendation 2)
-    adaptive_kl: bool = False  # Enable adaptive KL coefficient
-    target_kl: float = 0.015  # Target KL divergence (0.01-0.02 range)
-    kl_adapt_rate: float = 1.5  # Multiplicative factor for adjustment
-    kl_coef_min: float = 0.001  # Minimum kl_coef
-    kl_coef_max: float = 0.1  # Maximum kl_coef
+    # Default: ON, with conservative bounds to avoid near-zero KL penalties.
+    adaptive_kl: bool = True
+    target_kl: float = 0.015       # Target KL divergence (0.01-0.02 range)
+    kl_adapt_rate: float = 1.2     # Slower adaptation for stability
+    kl_coef_min: float = 0.003     # Avoid turning KL regularization effectively off
+    kl_coef_max: float = 0.05      # Maximum kl_coef
 
     # PPO-style multiple updates per sample
     ppo_steps: int = 1  # Number of optimization steps per sampled trajectory batch
 
     # Rollout temperature for exploration (>1 flattens distribution, increases entropy)
     rollout_temperature: float = 1.0  # Default 1.0 (no change), try 1.2-1.5 to prevent collapse
+
+    # Safety checks on training dynamics
+    # If enabled, the training step will abort when known-bad patterns persist.
+    enable_safety_checks: bool = True
+    safety_patience_steps: int = 1000  # Number of training steps to tolerate violations
+    # Thresholds derived from prior research docs
+    max_clip_fraction: float = 0.95    # If mean_clip_fraction > this for too long -> abort
+    min_entropy: float = 0.5           # If entropy < this for too long -> abort
+    max_kl_divergence: float = 0.08    # If KL >> target_kl for too long -> abort
 
 
 class GRPOChessTransformer(pl.LightningModule):
@@ -333,6 +352,12 @@ class GRPOChessTransformer(pl.LightningModule):
                 kl_coef_min=grpo_config.kl_coef_min,
                 kl_coef_max=grpo_config.kl_coef_max,
             )
+
+        # Safety-check state (for tracking persistent violations)
+        self._safety_step_idx: int = 0
+        self._high_clip_steps: int = 0
+        self._low_entropy_steps: int = 0
+        self._high_kl_steps: int = 0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through the current policy model.
@@ -431,6 +456,50 @@ class GRPOChessTransformer(pl.LightningModule):
 
         return loss, loss_info
 
+    def _run_safety_checks(self, loss_info) -> None:
+        """Run safety checks on training dynamics and abort if they persistently fail."""
+        cfg = self.hparams.grpo_config
+        if not cfg.enable_safety_checks:
+            return
+
+        self._safety_step_idx += 1
+
+        # 1) PPO clipping saturation
+        if loss_info.mean_clip_fraction.item() > cfg.max_clip_fraction:
+            self._high_clip_steps += 1
+        else:
+            self._high_clip_steps = 0
+
+        # 2) Entropy collapse
+        if loss_info.entropy.item() < cfg.min_entropy:
+            self._low_entropy_steps += 1
+        else:
+            self._low_entropy_steps = 0
+
+        # 3) Excessive KL divergence
+        if loss_info.kl_div.item() > cfg.max_kl_divergence:
+            self._high_kl_steps += 1
+        else:
+            self._high_kl_steps = 0
+
+        # Log safety counters for debugging
+        self.log("safety/high_clip_steps", float(self._high_clip_steps))
+        self.log("safety/low_entropy_steps", float(self._low_entropy_steps))
+        self.log("safety/high_kl_steps", float(self._high_kl_steps))
+
+        if (
+            self._high_clip_steps >= cfg.safety_patience_steps
+            or self._low_entropy_steps >= cfg.safety_patience_steps
+            or self._high_kl_steps >= cfg.safety_patience_steps
+        ):
+            raise RuntimeError(
+                "Safety checks triggered: training aborted due to persistent "
+                f"bad dynamics (clip={loss_info.mean_clip_fraction.item():.3f}, "
+                f"entropy={loss_info.entropy.item():.3f}, "
+                f"kl={loss_info.kl_div.item():.4f}). "
+                "Adjust GRPOConfig or investigate recent research docs."
+            )
+
     def training_step(self, batch_fens: list[str], batch_idx: int) -> None:
         """Perform a training step with multiple PPO optimization iterations.
 
@@ -525,6 +594,8 @@ class GRPOChessTransformer(pl.LightningModule):
         self.log("mean_clip_fraction", loss_info.mean_clip_fraction)
         self.log("ppo_loss", loss_info.ppo_loss)
         self.log("entropy", loss_info.entropy)
+        # Loss without the entropy bonus term (PPO + KL only)
+        self.log("train/loss_without_entropy", loss_info.loss_without_entropy)
         self.log("ppo_steps", float(ppo_steps))
         self._log_rewards_metrics(batch_group_rewards, prefix="train/")
 
@@ -539,6 +610,9 @@ class GRPOChessTransformer(pl.LightningModule):
         self.log("train/raw_step_cp_mean", valid_raw_step_cp.mean())
         self.log("train/raw_step_cp_std", valid_raw_step_cp.std())
         self.log("train/raw_step_cp_abs_mean", valid_raw_step_cp.abs().mean())
+
+        # Run safety checks on the final loss statistics
+        self._run_safety_checks(loss_info)
 
     def configure_optimizers(self) -> torch.optim.Adam:
         """Configure optimizer for training.
