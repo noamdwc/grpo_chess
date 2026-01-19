@@ -226,6 +226,9 @@ class GRPOConfig:
         kl_adapt_rate: Rate at which to adjust kl_coef (higher = faster adaptation)
         kl_coef_min: Minimum allowed kl_coef
         kl_coef_max: Maximum allowed kl_coef
+
+        # PPO-style multiple updates
+        ppo_steps: Number of optimization steps per sampled trajectory batch (reuses samples)
     """
     lr: float = 3e-5  # Lower LR to prevent entropy collapse
     num_trajectories: int = 4
@@ -249,6 +252,9 @@ class GRPOConfig:
     kl_coef_min: float = 0.001  # Minimum kl_coef
     kl_coef_max: float = 0.1  # Maximum kl_coef
 
+    # PPO-style multiple updates per sample
+    ppo_steps: int = 1  # Number of optimization steps per sampled trajectory batch
+
 
 class GRPOChessTransformer(pl.LightningModule):
     """PyTorch Lightning module for training chess policy with GRPO.
@@ -265,7 +271,10 @@ class GRPOChessTransformer(pl.LightningModule):
         entropy_monitor: Optional entropy floor monitor (Recommendation 1)
         kl_controller: Optional adaptive KL controller (Recommendation 2)
         current_entropy_coef: Current entropy coefficient (mutable for entropy boosting)
+        automatic_optimization: Set to False for manual PPO steps
     """
+    automatic_optimization = False  # Manual optimization for ppo_steps
+
     def __init__(self,
                  transformer_config: ChessTransformerConfig,
                  grpo_config: GRPOConfig,
@@ -370,20 +379,68 @@ class GRPOChessTransformer(pl.LightningModule):
         """Called at the start of each training epoch. Syncs old policy."""
         self._sync_old_policy()
 
-    def training_step(self, batch_fens: list[str], batch_idx: int) -> torch.Tensor:
-        """Perform a single training step.
-        
+    def _ppo_step(
+        self,
+        trajectories_states: torch.Tensor,
+        trajectories_actions: torch.Tensor,
+        trajectories_old_log_probs: torch.Tensor,
+        trajectories_legal_masks: torch.Tensor | None,
+        step_rewards: torch.Tensor,
+        effective_pad_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, object]:
+        """Perform a single PPO optimization step.
+
+        Args:
+            trajectories_states: State tensors [B, G, T, SEQ]
+            trajectories_actions: Action indices [B, G, T]
+            trajectories_old_log_probs: Log probs from old policy [B, G, T]
+            trajectories_legal_masks: Legal move masks [B, G, T, A] or None
+            step_rewards: Per-step rewards [B, G, T]
+            effective_pad_mask: Mask for valid steps [B, G, T]
+
+        Returns:
+            Tuple of (loss, loss_info)
+        """
+        # Compute new log probs with current policy
+        new_log_probs = self.policy_model.get_group_log_probs(
+            trajectories_states, trajectories_actions, trajectories_legal_masks
+        )
+
+        # Use current (possibly adapted) coefficients
+        kl_coef = self.kl_controller.current_kl_coef if self.kl_controller else self.hparams.grpo_config.kl_coef
+
+        loss, loss_info = grpo_ppo_loss(
+            new_log_probs,
+            trajectories_old_log_probs,
+            step_rewards,
+            effective_pad_mask,
+            clip_ratio=self.hparams.grpo_config.clip_ratio,
+            kl_coef=kl_coef,
+            entropy_coef=self.current_entropy_coef,
+            return_info=True,
+        )
+
+        if not torch.isfinite(loss):
+            raise ValueError(f"Non-finite loss encountered: {loss.item()}")
+
+        return loss, loss_info
+
+    def training_step(self, batch_fens: list[str], batch_idx: int) -> None:
+        """Perform a training step with multiple PPO optimization iterations.
+
+        Samples trajectories once, then performs ppo_steps optimization iterations
+        on the same sampled data to improve compute efficiency.
+
         Args:
             batch_fens: List of FEN strings representing starting positions
             batch_idx: Batch index (unused)
-            
-        Returns:
-            Training loss tensor
         """
+        opt = self.optimizers()
+
         boards = [chess.Board(start_fen) for start_fen in batch_fens]
         boards = [board for board in boards if not board.is_game_over()]
         if not boards:
-            return torch.tensor(0.0, device=self.device, requires_grad=True)  # Skip if game over
+            return  # Skip if game over
 
         trajectories_sample = sample_trajectories_batched(
             self.old_policy_model,
@@ -392,9 +449,9 @@ class GRPOChessTransformer(pl.LightningModule):
             self.hparams.grpo_config.trajectory_depth
         )
         if trajectories_sample is None:
-            return torch.tensor(0.0, device=self.device, requires_grad=True)  # Skip if no moves
+            return  # Skip if no moves
 
-        # Extract trajectory components
+        # Extract trajectory components (sampled once, reused for ppo_steps)
         trajectories_old_log_probs = trajectories_sample.trajectories_log_probs  # [B, G, T]
         trajectories_actions = trajectories_sample.trajectories_actions  # [B, G, T]
         trajectories_states = trajectories_sample.trajectories_states  # [B, G, T, SEQ]
@@ -409,47 +466,46 @@ class GRPOChessTransformer(pl.LightningModule):
         start_player_mask = (t % 2 == 0)[None, None, :]  # [1, 1, T]
         effective_pad_mask = pad_mask & start_player_mask  # [B, G, T]
 
-        # Compute loss
-        new_log_probs = self.policy_model.get_group_log_probs(trajectories_states,
-                                                              trajectories_actions,
-                                                              trajectories_legal_masks)
+        ppo_steps = self.hparams.grpo_config.ppo_steps
 
-        # Use current (possibly adapted) coefficients
-        kl_coef = self.kl_controller.current_kl_coef if self.kl_controller else self.hparams.grpo_config.kl_coef
-
-        loss, loss_info = grpo_ppo_loss(new_log_probs,
-                             trajectories_old_log_probs,
-                             step_rewards,
-                             effective_pad_mask,
-                             clip_ratio=self.hparams.grpo_config.clip_ratio,
-                             kl_coef=kl_coef,
-                             entropy_coef=self.current_entropy_coef,
-                             return_info=True)
-        if not torch.isfinite(loss):
-            raise ValueError(f"Non-finite loss encountered: {loss.item()}")
-
-        # Entropy floor monitoring (Recommendation 1)
-        if self.entropy_monitor is not None:
-            self.current_entropy_coef, entropy_metrics = self.entropy_monitor.check(
-                loss_info.entropy.item(), self.current_entropy_coef
+        # Perform multiple PPO optimization steps on the same sampled trajectories
+        for ppo_step_idx in range(ppo_steps):
+            loss, loss_info = self._ppo_step(
+                trajectories_states,
+                trajectories_actions,
+                trajectories_old_log_probs,
+                trajectories_legal_masks,
+                step_rewards,
+                effective_pad_mask,
             )
-            for key, value in entropy_metrics.items():
-                self.log(key, value)
 
-        # Adaptive KL controller (Recommendation 2)
-        if self.kl_controller is not None:
-            kl_metrics = self.kl_controller.update(loss_info.kl_div.item())
-            for key, value in kl_metrics.items():
-                self.log(key, value)
+            # Manual optimization step
+            opt.zero_grad()
+            self.manual_backward(loss)
+            opt.step()
 
-        # Within-board group collapse metrics (Recommendation 4)
+            # Entropy floor monitoring (Recommendation 1) - only on last ppo_step
+            if ppo_step_idx == ppo_steps - 1 and self.entropy_monitor is not None:
+                self.current_entropy_coef, entropy_metrics = self.entropy_monitor.check(
+                    loss_info.entropy.item(), self.current_entropy_coef
+                )
+                for key, value in entropy_metrics.items():
+                    self.log(key, value)
+
+            # Adaptive KL controller (Recommendation 2) - only on last ppo_step
+            if ppo_step_idx == ppo_steps - 1 and self.kl_controller is not None:
+                kl_metrics = self.kl_controller.update(loss_info.kl_div.item())
+                for key, value in kl_metrics.items():
+                    self.log(key, value)
+
+        # Within-board group collapse metrics (Recommendation 4) - log once per training_step
         collapse_metrics = compute_group_collapse_metrics(
             trajectories_actions, batch_group_rewards, step_rewards, pad_mask
         )
         for key, value in collapse_metrics.items():
             self.log(key, value)
 
-        # Standard logging
+        # Standard logging (log final ppo_step metrics)
         valid_mask = pad_mask.float()  # [B, G, T] 1 = real step
 
         self.log("train_total_loss", loss, prog_bar=True)
@@ -461,6 +517,7 @@ class GRPOChessTransformer(pl.LightningModule):
         self.log("mean_clip_fraction", loss_info.mean_clip_fraction)
         self.log("ppo_loss", loss_info.ppo_loss)
         self.log("entropy", loss_info.entropy)
+        self.log("ppo_steps", float(ppo_steps))
         self._log_rewards_metrics(batch_group_rewards, prefix="train/")
 
         # Log step rewards statistics (only for valid steps)
@@ -474,8 +531,6 @@ class GRPOChessTransformer(pl.LightningModule):
         self.log("train/raw_step_cp_mean", valid_raw_step_cp.mean())
         self.log("train/raw_step_cp_std", valid_raw_step_cp.std())
         self.log("train/raw_step_cp_abs_mean", valid_raw_step_cp.abs().mean())
-
-        return loss
 
     def configure_optimizers(self) -> torch.optim.Adam:
         """Configure optimizer for training.
