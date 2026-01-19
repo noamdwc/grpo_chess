@@ -229,6 +229,9 @@ class GRPOConfig:
 
         # PPO-style multiple updates
         ppo_steps: Number of optimization steps per sampled trajectory batch (reuses samples)
+
+        # Rollout temperature for exploration
+        rollout_temperature: Temperature for action sampling during rollouts (>1 increases exploration)
     """
     lr: float = 3e-5  # Lower LR to prevent entropy collapse
     num_trajectories: int = 4
@@ -254,6 +257,9 @@ class GRPOConfig:
 
     # PPO-style multiple updates per sample
     ppo_steps: int = 1  # Number of optimization steps per sampled trajectory batch
+
+    # Rollout temperature for exploration (>1 flattens distribution, increases entropy)
+    rollout_temperature: float = 1.0  # Default 1.0 (no change), try 1.2-1.5 to prevent collapse
 
 
 class GRPOChessTransformer(pl.LightningModule):
@@ -446,7 +452,8 @@ class GRPOChessTransformer(pl.LightningModule):
             self.old_policy_model,
             boards,
             self.hparams.grpo_config.num_trajectories,
-            self.hparams.grpo_config.trajectory_depth
+            self.hparams.grpo_config.trajectory_depth,
+            temperature=self.hparams.grpo_config.rollout_temperature
         )
         if trajectories_sample is None:
             return  # Skip if no moves

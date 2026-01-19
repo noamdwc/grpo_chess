@@ -91,7 +91,8 @@ def sample_trajectories_batched(model: ChessTransformer,
                                 boards: List[chess.Board],
                                 num_trajectories: int,
                                 trajectory_depth: int,
-                                reward_depth: int = 4) -> Optional[TrajectoriesSample]:
+                                reward_depth: int = 4,
+                                temperature: float = 1.0) -> Optional[TrajectoriesSample]:
     """Sample multiple trajectories from each board position using the policy model.
 
     Args:
@@ -100,6 +101,7 @@ def sample_trajectories_batched(model: ChessTransformer,
         num_trajectories: Number of trajectory groups per board (G)
         trajectory_depth: Maximum depth of each trajectory (T)
         reward_depth: Stockfish depth for reward computation (default: 4)
+        temperature: Temperature for action sampling (default: 1.0, >1 increases exploration)
 
     Returns:
         TrajectoriesSample containing batched trajectory data, or None if no boards
@@ -131,7 +133,7 @@ def sample_trajectories_batched(model: ChessTransformer,
             break
 
         active_boards = [envs[i] for i in active_env_idx]
-        roll_out_step = batched_policy_step(model, active_boards, temperature=1.0)
+        roll_out_step = batched_policy_step(model, active_boards, temperature=temperature)
         if roll_out_step is None:
             break
 
