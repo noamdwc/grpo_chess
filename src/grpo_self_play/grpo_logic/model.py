@@ -13,71 +13,173 @@ from src.grpo_self_play.eval_utils import EvalConfig
 from src.grpo_self_play.chess.policy_player import PolicyConfig
 from src.grpo_self_play.chess.searcher import SearchConfig
 from src.grpo_self_play.chess.stockfish import StockfishConfig
+from src.grpo_self_play.chess.boards_dataset import get_game_phase
+from src.grpo_self_play.pretrain.pretrain_load_config import PretrainLoadConfig
 
 
-class EntropyFloorMonitor:
-    """Monitors entropy and takes action when it falls below a floor (Recommendation 1).
+class UnifiedEntropyRecovery:
+    """Unified entropy recovery mechanism that coordinates multiple interventions.
 
-    Tracks consecutive steps where entropy is below a threshold and triggers
-    configurable actions (warn, stop, or boost entropy_coef) when the threshold
-    is breached for too long.
+    When entropy falls below floor, this class coordinates:
+    1. Boosting entropy_coef (up to max_entropy_coef)
+    2. Reducing kl_coef (down to min_kl_coef) to escape KL trap
+    3. Increasing temperature (up to max_temperature) for diverse sampling
+
+    Hard stops training when entropy falls below critical threshold.
     """
 
-    def __init__(self, floor: float, steps_threshold: int, action: str, boost_factor: float):
+    def __init__(
+        self,
+        # Entropy thresholds
+        entropy_floor: float = 1.5,
+        entropy_critical: float = 0.5,
+        steps_threshold: int = 100,
+        critical_steps_threshold: int = 50,
+        # Entropy coefficient
+        entropy_boost_factor: float = 1.5,
+        max_entropy_coef: float = 1.5,
+        initial_entropy_coef: float = 0.1,
+        # KL coefficient
+        kl_reduction_factor: float = 0.5,
+        min_kl_coef: float = 0.0,
+        initial_kl_coef: float = 0.01,
+        # Temperature
+        temperature_boost: float = 0.2,
+        max_temperature: float = 2.5,
+        initial_temperature: float = 1.0,
+    ):
         """
         Args:
-            floor: Minimum entropy threshold
-            steps_threshold: Consecutive steps below floor before action
-            action: Action to take ("warn", "stop", "boost")
-            boost_factor: Factor to multiply entropy_coef when boosting
+            entropy_floor: Minimum entropy threshold before recovery kicks in
+            entropy_critical: Hard stop threshold - training aborts below this
+            steps_threshold: Consecutive steps below floor before taking action
+            critical_steps_threshold: Consecutive steps below critical before stopping
+            entropy_boost_factor: Multiply entropy_coef by this each intervention
+            max_entropy_coef: Maximum allowed entropy_coef
+            initial_entropy_coef: Starting entropy coefficient
+            kl_reduction_factor: Multiply kl_coef by this each intervention
+            min_kl_coef: Minimum allowed kl_coef (0 = full KL escape)
+            initial_kl_coef: Starting KL coefficient
+            temperature_boost: Add this to temperature each intervention
+            max_temperature: Maximum allowed temperature
+            initial_temperature: Starting temperature
         """
-        self.floor = floor
+        self.entropy_floor = entropy_floor
+        self.entropy_critical = entropy_critical
         self.steps_threshold = steps_threshold
-        self.action = action
-        self.boost_factor = boost_factor
-        self.consecutive_low_steps = 0
-        self.triggered = False
+        self.critical_steps_threshold = critical_steps_threshold
 
-    def check(self, entropy: float, current_entropy_coef: float) -> tuple[float, dict]:
-        """Check entropy and return updated entropy_coef and metrics.
+        self.entropy_boost_factor = entropy_boost_factor
+        self.max_entropy_coef = max_entropy_coef
+
+        self.kl_reduction_factor = kl_reduction_factor
+        self.min_kl_coef = min_kl_coef
+
+        self.temperature_boost = temperature_boost
+        self.max_temperature = max_temperature
+
+        # Current values (mutable)
+        self.current_entropy_coef = initial_entropy_coef
+        self.current_kl_coef = initial_kl_coef
+        self.current_temperature = initial_temperature
+
+        # State tracking
+        self.consecutive_low_steps = 0
+        self.consecutive_critical_steps = 0
+        self.recovery_count = 0
+
+    def check(self, entropy: float) -> dict:
+        """Check entropy and update coefficients if needed.
 
         Args:
             entropy: Current entropy value
-            current_entropy_coef: Current entropy coefficient
 
         Returns:
-            Tuple of (new_entropy_coef, metrics_dict)
+            Metrics dict for logging
+
+        Raises:
+            RuntimeError: If entropy stays below critical threshold for too long
         """
         metrics = {}
-        new_entropy_coef = current_entropy_coef
 
-        if entropy < self.floor:
+        # Critical entropy check - stop after patience exceeded
+        if entropy < self.entropy_critical:
+            self.consecutive_critical_steps += 1
+            if self.consecutive_critical_steps >= self.critical_steps_threshold:
+                raise RuntimeError(
+                    f"CRITICAL ENTROPY COLLAPSE: Entropy={entropy:.4f} < critical={self.entropy_critical} "
+                    f"for {self.consecutive_critical_steps} consecutive steps. "
+                    f"Training stopped to preserve checkpoint. "
+                    f"Recovery attempts: {self.recovery_count}, "
+                    f"entropy_coef={self.current_entropy_coef:.4f}, "
+                    f"kl_coef={self.current_kl_coef:.6f}, "
+                    f"temperature={self.current_temperature:.2f}"
+                )
+            # Warn but don't stop yet
+            if self.consecutive_critical_steps == 1:
+                print(
+                    f"WARNING: Entropy={entropy:.4f} dropped below critical={self.entropy_critical}. "
+                    f"Will stop after {self.critical_steps_threshold} consecutive steps."
+                )
+        else:
+            self.consecutive_critical_steps = 0
+
+        # Floor check - recovery intervention
+        if entropy < self.entropy_floor:
             self.consecutive_low_steps += 1
 
-            if self.consecutive_low_steps >= self.steps_threshold and not self.triggered:
-                self.triggered = True
-                if self.action == "warn":
-                    print(f"WARNING: Entropy collapse detected! Entropy={entropy:.4f} < floor={self.floor} "
-                          f"for {self.consecutive_low_steps} consecutive steps.")
-                elif self.action == "stop":
-                    raise RuntimeError(
-                        f"STOPPING: Entropy collapse detected! Entropy={entropy:.4f} < floor={self.floor} "
-                        f"for {self.consecutive_low_steps} consecutive steps.")
-                elif self.action == "boost":
-                    new_entropy_coef = current_entropy_coef * self.boost_factor
-                    print(f"BOOSTING entropy_coef: {current_entropy_coef:.4f} -> {new_entropy_coef:.4f} "
-                          f"(entropy={entropy:.4f} < floor={self.floor})")
-                    self.consecutive_low_steps = 0
-                    self.triggered = False
+            if self.consecutive_low_steps >= self.steps_threshold:
+                self._apply_recovery(entropy)
+                self.consecutive_low_steps = 0
         else:
             self.consecutive_low_steps = 0
-            self.triggered = False
 
-        metrics["entropy_floor/consecutive_low_steps"] = self.consecutive_low_steps
-        metrics["entropy_floor/below_floor"] = float(entropy < self.floor)
-        metrics["entropy_floor/current_entropy_coef"] = new_entropy_coef
+        # Build metrics
+        metrics["recovery/entropy_floor"] = self.entropy_floor
+        metrics["recovery/entropy_critical"] = self.entropy_critical
+        metrics["recovery/consecutive_low_steps"] = self.consecutive_low_steps
+        metrics["recovery/consecutive_critical_steps"] = self.consecutive_critical_steps
+        metrics["recovery/below_floor"] = float(entropy < self.entropy_floor)
+        metrics["recovery/below_critical"] = float(entropy < self.entropy_critical)
+        metrics["recovery/recovery_count"] = self.recovery_count
+        metrics["recovery/current_entropy_coef"] = self.current_entropy_coef
+        metrics["recovery/current_kl_coef"] = self.current_kl_coef
+        metrics["recovery/current_temperature"] = self.current_temperature
 
-        return new_entropy_coef, metrics
+        return metrics
+
+    def _apply_recovery(self, entropy: float) -> None:
+        """Apply coordinated recovery: boost entropy, reduce KL, increase temperature."""
+        old_entropy_coef = self.current_entropy_coef
+        old_kl_coef = self.current_kl_coef
+        old_temperature = self.current_temperature
+
+        # 1. Boost entropy_coef (up to max)
+        self.current_entropy_coef = min(
+            self.current_entropy_coef * self.entropy_boost_factor,
+            self.max_entropy_coef
+        )
+
+        # 2. Reduce kl_coef (down to min) - escape KL trap
+        self.current_kl_coef = max(
+            self.current_kl_coef * self.kl_reduction_factor,
+            self.min_kl_coef
+        )
+
+        # 3. Increase temperature (up to max)
+        self.current_temperature = min(
+            self.current_temperature + self.temperature_boost,
+            self.max_temperature
+        )
+
+        self.recovery_count += 1
+
+        print(
+            f"RECOVERY #{self.recovery_count}: entropy={entropy:.4f} < floor={self.entropy_floor}\n"
+            f"  entropy_coef: {old_entropy_coef:.4f} -> {self.current_entropy_coef:.4f}\n"
+            f"  kl_coef: {old_kl_coef:.6f} -> {self.current_kl_coef:.6f}\n"
+            f"  temperature: {old_temperature:.2f} -> {self.current_temperature:.2f}"
+        )
 
 
 def compute_group_collapse_metrics(
@@ -209,36 +311,34 @@ class GRPOConfig:
         num_trajectories: Number of trajectory groups to sample per batch
         trajectory_depth: Maximum depth of each trajectory
         clip_ratio: PPO clipping ratio (epsilon)
-        kl_coef: KL divergence penalty coefficient (beta)
-        entropy_coef: Entropy bonus coefficient (encourages exploration, prevents policy collapse)
-        eval_every_n_epochs: Frequency of evaluation runs (not used in model, but useful for trainer)
+        kl_coef: Initial KL divergence penalty coefficient
+        entropy_coef: Initial entropy bonus coefficient
+        eval_every_n_epochs: Frequency of evaluation runs
 
-        # Entropy floor monitoring (Recommendation 1)
-        use_entropy_floor: Whether to enable entropy floor monitoring
-        entropy_floor: Minimum entropy threshold for collapse detection
-        entropy_floor_steps: Number of consecutive steps below floor before alert/action
-        entropy_floor_action: Action to take when entropy floor is breached ("warn", "stop", "boost")
-        entropy_boost_factor: Factor to multiply entropy_coef when boosting (if action="boost")
-
-        # Adaptive KL controller (Recommendation 2)
-        adaptive_kl: Whether to use adaptive KL coefficient
-        target_kl: Target KL divergence value
-        kl_adapt_rate: Rate at which to adjust kl_coef (higher = faster adaptation)
-        kl_coef_min: Minimum allowed kl_coef
-        kl_coef_max: Maximum allowed kl_coef
+        # Unified Entropy Recovery - coordinates entropy_coef, kl_coef, and temperature
+        use_entropy_recovery: Whether to enable unified entropy recovery
+        entropy_floor: Entropy threshold below which recovery kicks in
+        entropy_critical: Hard stop threshold - training aborts below this
+        entropy_floor_steps: Consecutive steps below floor before taking action
+        critical_steps_threshold: Consecutive steps below critical before stopping
+        entropy_boost_factor: Multiply entropy_coef by this each recovery
+        max_entropy_coef: Maximum allowed entropy_coef (prevents numerical instability)
+        kl_reduction_factor: Multiply kl_coef by this each recovery (escape KL trap)
+        min_kl_coef: Minimum kl_coef during recovery (0 = full KL escape)
+        temperature_boost: Add to temperature each recovery
+        max_temperature: Maximum allowed temperature
 
         # PPO-style multiple updates
-        ppo_steps: Number of optimization steps per sampled trajectory batch (reuses samples)
+        ppo_steps: Number of optimization steps per sampled trajectory batch
 
         # Rollout temperature for exploration
-        rollout_temperature: Temperature for action sampling during rollouts (>1 increases exploration)
+        rollout_temperature: Initial temperature for action sampling during rollouts
 
         # Safety checks on training dynamics
         enable_safety_checks: Whether to abort training when known-bad patterns persist
         safety_patience_steps: Number of training steps to tolerate violations before aborting
         max_clip_fraction: If mean_clip_fraction > this for too long -> abort
-        min_entropy: If entropy < this for too long -> abort
-        max_kl_divergence: If KL >> target_kl for too long -> abort
+        max_kl_divergence: If KL > this for too long -> abort
     """
     # Learning rate: tuned from prior runs; 3e-5 was the most stable setting
     lr: float = 3e-5
@@ -246,39 +346,35 @@ class GRPOConfig:
     trajectory_depth: int = 5
     clip_ratio: float = 0.2
     kl_coef: float = 0.01
-    entropy_coef: float = 0.1  # Stronger entropy bonus to prevent policy collapse
-    eval_every_n_epochs: int = 10  # Stockfish eval frequency
+    entropy_coef: float = 0.1
+    eval_every_n_epochs: int = 10
 
-    # Entropy floor monitoring (Recommendation 1)
-    # Default: ON, in "boost" mode, to automatically push entropy back up.
-    use_entropy_floor: bool = True
-    entropy_floor: float = 1.5          # Below this, policy is essentially collapsing
-    entropy_floor_steps: int = 200      # Consecutive steps below floor before action
-    entropy_floor_action: str = "boost" # "warn", "stop", or "boost"
-    entropy_boost_factor: float = 2.0   # Multiply entropy_coef by this when boosting
-
-    # Adaptive KL controller (Recommendation 2)
-    # Default: ON, with conservative bounds to avoid near-zero KL penalties.
-    adaptive_kl: bool = True
-    target_kl: float = 0.015       # Target KL divergence (0.01-0.02 range)
-    kl_adapt_rate: float = 1.2     # Slower adaptation for stability
-    kl_coef_min: float = 0.003     # Avoid turning KL regularization effectively off
-    kl_coef_max: float = 0.05      # Maximum kl_coef
+    # Unified Entropy Recovery (replaces separate entropy floor and adaptive KL)
+    # Coordinates: entropy_coef boosting, kl_coef reduction, temperature increase
+    use_entropy_recovery: bool = True
+    entropy_floor: float = 1.5           # Below this, trigger recovery
+    entropy_critical: float = 0.5        # Below this, STOP training
+    entropy_floor_steps: int = 100       # Consecutive steps before action
+    critical_steps_threshold: int = 50   # Consecutive steps below critical before stop
+    entropy_boost_factor: float = 1.5    # Multiply entropy_coef by this
+    max_entropy_coef: float = 1.5        # Cap to prevent numerical instability
+    kl_reduction_factor: float = 0.5     # Multiply kl_coef by this (escape KL trap)
+    min_kl_coef: float = 0.0             # Floor for kl_coef (0 = full escape)
+    temperature_boost: float = 0.2       # Add to temperature each recovery
+    max_temperature: float = 2.5         # Cap on temperature
 
     # PPO-style multiple updates per sample
-    ppo_steps: int = 1  # Number of optimization steps per sampled trajectory batch
+    ppo_steps: int = 1
 
     # Rollout temperature for exploration (>1 flattens distribution, increases entropy)
-    rollout_temperature: float = 1.0  # Default 1.0 (no change), try 1.2-1.5 to prevent collapse
+    # This is the INITIAL temperature; recovery may increase it
+    rollout_temperature: float = 1.5     # Start higher to prevent early collapse
 
-    # Safety checks on training dynamics
-    # If enabled, the training step will abort when known-bad patterns persist.
+    # Safety checks on training dynamics (backup to recovery mechanism)
     enable_safety_checks: bool = True
-    safety_patience_steps: int = 1000  # Number of training steps to tolerate violations
-    # Thresholds derived from prior research docs
-    max_clip_fraction: float = 0.95    # If mean_clip_fraction > this for too long -> abort
-    min_entropy: float = 0.5           # If entropy < this for too long -> abort
-    max_kl_divergence: float = 0.08    # If KL >> target_kl for too long -> abort
+    safety_patience_steps: int = 1000
+    max_clip_fraction: float = 0.95
+    max_kl_divergence: float = 0.1
 
 
 class GRPOChessTransformer(pl.LightningModule):
@@ -293,9 +389,7 @@ class GRPOChessTransformer(pl.LightningModule):
         old_policy_model: Frozen copy of policy for importance sampling
         evaluator: Evaluator for running games against Stockfish
         eval_every_n_epochs: Frequency of evaluation runs
-        entropy_monitor: Optional entropy floor monitor (Recommendation 1)
-        kl_controller: Optional adaptive KL controller (Recommendation 2)
-        current_entropy_coef: Current entropy coefficient (mutable for entropy boosting)
+        recovery: Optional unified entropy recovery mechanism
         automatic_optimization: Set to False for manual PPO steps
     """
     automatic_optimization = False  # Manual optimization for ppo_steps
@@ -306,7 +400,8 @@ class GRPOChessTransformer(pl.LightningModule):
                  eval_cfg: EvalConfig | None = None,
                  stockfish_cfg: StockfishConfig | None = None,
                  policy_cfg: PolicyConfig | None = None,
-                 searcher_cfg: SearchConfig | None = None):
+                 searcher_cfg: SearchConfig | None = None,
+                 pretrain_cfg: PretrainLoadConfig | None = None):
         """
         Initialize GRPO Chess Transformer.
 
@@ -317,11 +412,17 @@ class GRPOChessTransformer(pl.LightningModule):
             stockfish_cfg: Optional Stockfish configuration for evaluation
             policy_cfg: Optional policy player configuration
             searcher_cfg: Optional search configuration
+            pretrain_cfg: Optional pretrain config for loading pretrained weights
         """
         super().__init__()
         self.save_hyperparameters()
         self.policy_model = ChessTransformer(transformer_config)
         self.old_policy_model = ChessTransformer(transformer_config)
+
+        # Load pretrained weights if specified
+        if pretrain_cfg and pretrain_cfg.checkpoint_path:
+            self._load_pretrained_weights(pretrain_cfg)
+
         self._sync_old_policy()
 
         # Evaluation config
@@ -331,26 +432,23 @@ class GRPOChessTransformer(pl.LightningModule):
                                    stockfish_cfg=stockfish_cfg or StockfishConfig(),
                                    searcher_cfg=searcher_cfg)
 
-        # Entropy floor monitor (Recommendation 1) - optional
-        self.entropy_monitor: EntropyFloorMonitor | None = None
-        if grpo_config.use_entropy_floor:
-            self.entropy_monitor = EntropyFloorMonitor(
-                floor=grpo_config.entropy_floor,
+        # Unified Entropy Recovery - coordinates entropy_coef, kl_coef, and temperature
+        self.recovery: UnifiedEntropyRecovery | None = None
+        if grpo_config.use_entropy_recovery:
+            self.recovery = UnifiedEntropyRecovery(
+                entropy_floor=grpo_config.entropy_floor,
+                entropy_critical=grpo_config.entropy_critical,
                 steps_threshold=grpo_config.entropy_floor_steps,
-                action=grpo_config.entropy_floor_action,
-                boost_factor=grpo_config.entropy_boost_factor,
-            )
-        self.current_entropy_coef = grpo_config.entropy_coef
-
-        # Adaptive KL controller (Recommendation 2) - optional
-        self.kl_controller: AdaptiveKLController | None = None
-        if grpo_config.adaptive_kl:
-            self.kl_controller = AdaptiveKLController(
+                critical_steps_threshold=grpo_config.critical_steps_threshold,
+                entropy_boost_factor=grpo_config.entropy_boost_factor,
+                max_entropy_coef=grpo_config.max_entropy_coef,
+                initial_entropy_coef=grpo_config.entropy_coef,
+                kl_reduction_factor=grpo_config.kl_reduction_factor,
+                min_kl_coef=grpo_config.min_kl_coef,
                 initial_kl_coef=grpo_config.kl_coef,
-                target_kl=grpo_config.target_kl,
-                adapt_rate=grpo_config.kl_adapt_rate,
-                kl_coef_min=grpo_config.kl_coef_min,
-                kl_coef_max=grpo_config.kl_coef_max,
+                temperature_boost=grpo_config.temperature_boost,
+                max_temperature=grpo_config.max_temperature,
+                initial_temperature=grpo_config.rollout_temperature,
             )
 
         # Safety-check state (for tracking persistent violations)
@@ -388,6 +486,70 @@ class GRPOChessTransformer(pl.LightningModule):
         for param in self.old_policy_model.parameters():
             param.requires_grad = False
 
+    def _load_pretrained_weights(self, pretrain_cfg: PretrainLoadConfig) -> None:
+        """Load pretrained weights from a checkpoint.
+
+        Args:
+            pretrain_cfg: Pretrain configuration with checkpoint path and freeze settings
+        """
+        checkpoint_path = pretrain_cfg.checkpoint_path
+        print(f"Loading pretrained weights from: {checkpoint_path}")
+
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+
+        # Handle different checkpoint formats
+        if 'model_state_dict' in checkpoint:
+            state_dict = checkpoint['model_state_dict']
+        elif 'state_dict' in checkpoint:
+            # Lightning checkpoint format - extract policy_model weights
+            state_dict = {}
+            for k, v in checkpoint['state_dict'].items():
+                if k.startswith('model.'):
+                    # From PretrainChessTransformer
+                    state_dict[k[6:]] = v  # Remove 'model.' prefix
+                elif k.startswith('policy_model.'):
+                    # From GRPOChessTransformer
+                    state_dict[k[13:]] = v  # Remove 'policy_model.' prefix
+        else:
+            # Assume it's a raw state dict
+            state_dict = checkpoint
+
+        # Load into policy model
+        missing, unexpected = self.policy_model.load_state_dict(state_dict, strict=False)
+        if missing:
+            print(f"Warning: Missing keys in pretrained checkpoint: {missing}")
+        if unexpected:
+            print(f"Warning: Unexpected keys in pretrained checkpoint: {unexpected}")
+
+        print(f"Successfully loaded pretrained weights")
+
+        # Optionally freeze transformer layers
+        if pretrain_cfg.freeze_layers > 0:
+            self._freeze_transformer_layers(pretrain_cfg.freeze_layers)
+
+    def _freeze_transformer_layers(self, num_layers: int) -> None:
+        """Freeze the first N transformer encoder layers.
+
+        Args:
+            num_layers: Number of layers to freeze (from the bottom)
+        """
+        # Freeze embedding and positional encoding
+        for param in self.policy_model.embedding.parameters():
+            param.requires_grad = False
+        self.policy_model.pos_encoding.requires_grad = False
+
+        # Freeze specified number of transformer layers
+        for i, layer in enumerate(self.policy_model.transformer.layers):
+            if i < num_layers:
+                for param in layer.parameters():
+                    param.requires_grad = False
+                print(f"Froze transformer layer {i}")
+
+        # Count trainable parameters
+        trainable = sum(p.numel() for p in self.policy_model.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in self.policy_model.parameters())
+        print(f"Trainable parameters: {trainable:,} / {total:,} ({100*trainable/total:.1f}%)")
+
     def _log_rewards_metrics(self, batch_group_rewards: torch.Tensor, prefix: str = "train/") -> None:
         """Log reward statistics for monitoring training progress.
         
@@ -418,7 +580,7 @@ class GRPOChessTransformer(pl.LightningModule):
         trajectories_legal_masks: torch.Tensor | None,
         step_rewards: torch.Tensor,
         effective_pad_mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, object]:
+    ) -> tuple[torch.Tensor, object, torch.Tensor]:
         """Perform a single PPO optimization step.
 
         Args:
@@ -430,15 +592,20 @@ class GRPOChessTransformer(pl.LightningModule):
             effective_pad_mask: Mask for valid steps [B, G, T]
 
         Returns:
-            Tuple of (loss, loss_info)
+            Tuple of (loss, loss_info, new_log_probs)
         """
         # Compute new log probs with current policy
         new_log_probs = self.policy_model.get_group_log_probs(
             trajectories_states, trajectories_actions, trajectories_legal_masks
         )
 
-        # Use current (possibly adapted) coefficients
-        kl_coef = self.kl_controller.current_kl_coef if self.kl_controller else self.hparams.grpo_config.kl_coef
+        # Use current (possibly adapted) coefficients from recovery mechanism
+        if self.recovery:
+            kl_coef = self.recovery.current_kl_coef
+            entropy_coef = self.recovery.current_entropy_coef
+        else:
+            kl_coef = self.hparams.grpo_config.kl_coef
+            entropy_coef = self.hparams.grpo_config.entropy_coef
 
         loss, loss_info = grpo_ppo_loss(
             new_log_probs,
@@ -447,14 +614,14 @@ class GRPOChessTransformer(pl.LightningModule):
             effective_pad_mask,
             clip_ratio=self.hparams.grpo_config.clip_ratio,
             kl_coef=kl_coef,
-            entropy_coef=self.current_entropy_coef,
+            entropy_coef=entropy_coef,
             return_info=True,
         )
 
         if not torch.isfinite(loss):
             raise ValueError(f"Non-finite loss encountered: {loss.item()}")
 
-        return loss, loss_info
+        return loss, loss_info, new_log_probs
 
     def _run_safety_checks(self, loss_info) -> None:
         """Run safety checks on training dynamics and abort if they persistently fail."""
@@ -517,12 +684,21 @@ class GRPOChessTransformer(pl.LightningModule):
         if not boards:
             return  # Skip if game over
 
+        # Determine game phases for phase-specific logging
+        board_phases = [get_game_phase(board) for board in boards]  # List of phases, one per board
+
+        # Use recovery's temperature if available, otherwise use config default
+        if self.recovery:
+            temperature = self.recovery.current_temperature
+        else:
+            temperature = self.hparams.grpo_config.rollout_temperature
+
         trajectories_sample = sample_trajectories_batched(
             self.old_policy_model,
             boards,
             self.hparams.grpo_config.num_trajectories,
             self.hparams.grpo_config.trajectory_depth,
-            temperature=self.hparams.grpo_config.rollout_temperature
+            temperature=temperature
         )
         if trajectories_sample is None:
             return  # Skip if no moves
@@ -545,8 +721,9 @@ class GRPOChessTransformer(pl.LightningModule):
         ppo_steps = self.hparams.grpo_config.ppo_steps
 
         # Perform multiple PPO optimization steps on the same sampled trajectories
+        new_log_probs = None  # Will be set by last ppo_step for phase-specific logging
         for ppo_step_idx in range(ppo_steps):
-            loss, loss_info = self._ppo_step(
+            loss, loss_info, new_log_probs = self._ppo_step(
                 trajectories_states,
                 trajectories_actions,
                 trajectories_old_log_probs,
@@ -561,18 +738,11 @@ class GRPOChessTransformer(pl.LightningModule):
             self.clip_gradients(opt, gradient_clip_val=1.0, gradient_clip_algorithm="norm")
             opt.step()
 
-            # Entropy floor monitoring (Recommendation 1) - only on last ppo_step
-            if ppo_step_idx == ppo_steps - 1 and self.entropy_monitor is not None:
-                self.current_entropy_coef, entropy_metrics = self.entropy_monitor.check(
-                    loss_info.entropy.item(), self.current_entropy_coef
-                )
-                for key, value in entropy_metrics.items():
-                    self.log(key, value)
-
-            # Adaptive KL controller (Recommendation 2) - only on last ppo_step
-            if ppo_step_idx == ppo_steps - 1 and self.kl_controller is not None:
-                kl_metrics = self.kl_controller.update(loss_info.kl_div.item())
-                for key, value in kl_metrics.items():
+            # Unified entropy recovery - only on last ppo_step
+            # Checks entropy and coordinates: entropy_coef boost, kl_coef reduction, temperature increase
+            if ppo_step_idx == ppo_steps - 1 and self.recovery is not None:
+                recovery_metrics = self.recovery.check(loss_info.entropy.item())
+                for key, value in recovery_metrics.items():
                     self.log(key, value)
 
         # Within-board group collapse metrics (Recommendation 4) - log once per training_step
@@ -611,8 +781,82 @@ class GRPOChessTransformer(pl.LightningModule):
         self.log("train/raw_step_cp_std", valid_raw_step_cp.std())
         self.log("train/raw_step_cp_abs_mean", valid_raw_step_cp.abs().mean())
 
+        # Phase-specific logging (entropy, rewards per game phase)
+        # new_log_probs has shape [B, G, T], board_phases has length B
+        phase_metrics = self._compute_phase_metrics(
+            new_log_probs, step_rewards, batch_group_rewards, pad_mask, board_phases
+        )
+        for key, value in phase_metrics.items():
+            self.log(key, value)
+
         # Run safety checks on the final loss statistics
         self._run_safety_checks(loss_info)
+
+    def _compute_phase_metrics(
+        self,
+        log_probs: torch.Tensor,  # [B, G, T]
+        step_rewards: torch.Tensor,  # [B, G, T]
+        group_rewards: torch.Tensor,  # [B, G]
+        pad_mask: torch.Tensor,  # [B, G, T]
+        board_phases: list[str],  # length B
+    ) -> dict[str, float]:
+        """Compute phase-specific metrics for logging.
+
+        Computes entropy, rewards, and counts broken down by game phase
+        (opening, middlegame, endgame).
+
+        Args:
+            log_probs: Log probabilities from the policy [B, G, T]
+            step_rewards: Per-step rewards [B, G, T]
+            group_rewards: Per-trajectory total rewards [B, G]
+            pad_mask: Mask for valid steps [B, G, T]
+            board_phases: Game phase for each starting position in batch
+
+        Returns:
+            Dictionary of metrics with keys like "train/phase_opening/entropy"
+        """
+        metrics = {}
+        phases = ["opening", "middlegame", "endgame"]
+
+        B, G, T = log_probs.shape
+
+        for phase in phases:
+            # Find batch indices for this phase
+            phase_indices = [i for i, p in enumerate(board_phases) if p == phase]
+
+            if not phase_indices:
+                # No samples for this phase
+                metrics[f"train/phase_{phase}/count"] = 0.0
+                continue
+
+            # Log count/fraction
+            metrics[f"train/phase_{phase}/count"] = float(len(phase_indices))
+            metrics[f"train/phase_{phase}/fraction"] = len(phase_indices) / B
+
+            # Subset tensors for this phase [num_phase, G, T]
+            phase_log_probs = log_probs[phase_indices]
+            phase_step_rewards = step_rewards[phase_indices]
+            phase_group_rewards = group_rewards[phase_indices]  # [num_phase, G]
+            phase_pad_mask = pad_mask[phase_indices]
+
+            # Entropy: H(π) ≈ -E[log π(a|s)]
+            valid_log_probs = phase_log_probs[phase_pad_mask]
+            if valid_log_probs.numel() > 0:
+                phase_entropy = -valid_log_probs.mean().item()
+                metrics[f"train/phase_{phase}/entropy"] = phase_entropy
+
+            # Step rewards (valid steps only)
+            valid_step_rewards = phase_step_rewards[phase_pad_mask]
+            if valid_step_rewards.numel() > 0:
+                metrics[f"train/phase_{phase}/step_reward_mean"] = valid_step_rewards.mean().item()
+                metrics[f"train/phase_{phase}/step_reward_std"] = valid_step_rewards.std().item()
+
+            # Group rewards (trajectory-level)
+            if phase_group_rewards.numel() > 0:
+                metrics[f"train/phase_{phase}/group_reward_mean"] = phase_group_rewards.mean().item()
+                metrics[f"train/phase_{phase}/group_reward_std"] = phase_group_rewards.std().item()
+
+        return metrics
 
     def configure_optimizers(self) -> torch.optim.Adam:
         """Configure optimizer for training.

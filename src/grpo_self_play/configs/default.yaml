@@ -18,25 +18,26 @@ grpo:
   num_trajectories: 16
   trajectory_depth: 16
   clip_ratio: 0.10
-  kl_coef: 0.01  # initial value; adaptive_kl will adjust it
-  entropy_coef: 0.10
+  kl_coef: 0.01  # initial value for KL penalty
+  entropy_coef: 0.10  # initial value for entropy bonus
   eval_every_n_epochs: 10
   ppo_steps: 4
-  rollout_temperature: 1.0  # >1 increases exploration during rollouts
+  rollout_temperature: 1.5  # >1 increases exploration during rollouts
 
-  # Entropy floor monitoring
-  use_entropy_floor: true
-  entropy_floor: 2.0
-  entropy_floor_steps: 150
-  entropy_floor_action: "boost"  # "warn", "stop", or "boost"
-  entropy_boost_factor: 1.5
-
-  # Adaptive KL controller
-  adaptive_kl: true
-  target_kl: 0.012
-  kl_adapt_rate: 1.5
-  kl_coef_min: 0.001
-  kl_coef_max: 0.2
+  # Unified Entropy Recovery
+  # Coordinates entropy_coef boost, kl_coef reduction, and temperature increase
+  # to recover from entropy collapse. Stops training if entropy hits critical level.
+  use_entropy_recovery: true
+  entropy_floor: 1.5  # trigger recovery when entropy stays below this
+  entropy_critical: 0.5  # hard stop if entropy drops below this
+  entropy_floor_steps: 100  # consecutive steps below floor before recovery
+  critical_steps_threshold: 50  # consecutive steps below critical before stop
+  entropy_boost_factor: 1.5  # multiply entropy_coef by this on recovery
+  max_entropy_coef: 1.5  # cap for entropy_coef after boosts
+  kl_reduction_factor: 0.5  # multiply kl_coef by this on recovery (escape KL trap)
+  min_kl_coef: 0.0  # allow kl_coef to go to zero during recovery
+  temperature_boost: 0.2  # add this to temperature on recovery
+  max_temperature: 2.5  # cap for temperature after boosts
 
 # =============================================================================
 # Transformer Model Config
@@ -86,6 +87,13 @@ searcher: null
 # searcher:
 #   n_trajectories: 4
 #   trajectory_depth: 8
+
+# =============================================================================
+# Pretraining (optional - load pretrained weights before GRPO)
+# =============================================================================
+pretrain:
+  checkpoint_path: null  # Path to pretrained checkpoint (e.g., "checkpoints/pretrain/pretrain_final.pt")
+  freeze_layers: 0       # Number of transformer layers to freeze (0 = train all)
 
 # =============================================================================
 # Dataset Config (Chess Start States)
