@@ -58,6 +58,7 @@ def train(
         stockfish_cfg=config.stockfish,
         policy_cfg=config.policy,
         searcher_cfg=config.searcher,
+        pretrain_cfg=config.pretrain,
     )
 
     print("Starting Training with WandB Tracking...")
