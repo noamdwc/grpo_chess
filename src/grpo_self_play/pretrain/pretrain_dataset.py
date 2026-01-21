@@ -131,8 +131,15 @@ class ChessPretrainDataset(Dataset):
             """Filter a batch of games - much faster than per-example."""
             keep = []
             for i in range(len(batch['white_elo'])):
+                white_elo = batch['white_elo'][i]
+                black_elo = batch['black_elo'][i]
+
+                # Skip if ELO is missing
+                if white_elo is None or black_elo is None:
+                    keep.append(False)
+                    continue
                 # ELO filter
-                if batch['white_elo'][i] < min_elo or batch['black_elo'][i] < min_elo:
+                if white_elo < min_elo or black_elo < min_elo:
                     keep.append(False)
                     continue
                 # Moves filter
@@ -140,7 +147,7 @@ class ChessPretrainDataset(Dataset):
                     keep.append(False)
                     continue
                 # Hash-based train/eval split
-                game_id = f"{batch['date'][i]}-{batch['white_elo'][i]}-{batch['black_elo'][i]}"
+                game_id = f"{batch['date'][i]}-{white_elo}-{black_elo}"
                 hash_val = hash(game_id) % 10000
                 is_eval_game = hash_val < (eval_frac * 10000)
                 if is_eval_game != is_eval:
