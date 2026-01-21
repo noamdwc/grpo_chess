@@ -117,15 +117,39 @@ class ChessPretrainDataset(Dataset):
 
     def _load_and_process(self):
         """Download dataset and process all games into samples."""
-        num_proc = min(4, os.cpu_count() or 4)  # Limit to 4 to avoid overhead
-
-        print(f"Downloading angeluriot/chess_games (7.3GB) with {num_proc} processes...")
-        dataset = load_dataset("angeluriot/chess_games", split="train", num_proc=num_proc)
+        print("Downloading angeluriot/chess_games (7.3GB)...")
+        dataset = load_dataset("angeluriot/chess_games", split="train")
         print(f"Loaded {len(dataset):,} games")
 
-        # Filter games in parallel
+        # Fast batched filtering
         print(f"Filtering games (min_elo={self.config.min_elo})...")
-        dataset = dataset.filter(self._filter_game, num_proc=num_proc, desc="Filtering")
+        min_elo = self.config.min_elo
+        eval_frac = self.config.eval_fraction
+        is_eval = self.config.is_eval
+
+        def batch_filter(batch):
+            """Filter a batch of games - much faster than per-example."""
+            keep = []
+            for i in range(len(batch['white_elo'])):
+                # ELO filter
+                if batch['white_elo'][i] < min_elo or batch['black_elo'][i] < min_elo:
+                    keep.append(False)
+                    continue
+                # Moves filter
+                if len(batch['moves_uci'][i]) < 10:
+                    keep.append(False)
+                    continue
+                # Hash-based train/eval split
+                game_id = f"{batch['date'][i]}-{batch['white_elo'][i]}-{batch['black_elo'][i]}"
+                hash_val = hash(game_id) % 10000
+                is_eval_game = hash_val < (eval_frac * 10000)
+                if is_eval_game != is_eval:
+                    keep.append(False)
+                    continue
+                keep.append(True)
+            return keep
+
+        dataset = dataset.filter(batch_filter, batched=True, batch_size=10000, desc="Filtering")
         print(f"After filtering: {len(dataset):,} games")
 
         # Limit dataset size if max_samples is set
