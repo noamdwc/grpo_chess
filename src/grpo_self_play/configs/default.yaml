@@ -22,11 +22,11 @@ grpo:
   entropy_coef: 0.10
   eval_every_n_epochs: 10
   ppo_steps: 4
-  rollout_temperature: 1.0  # >1 increases exploration during rollouts
+  rollout_temperature: 1.3  # >1 increases exploration during rollouts
 
   # Entropy floor monitoring
   use_entropy_floor: true
-  entropy_floor: 2.0
+  entropy_floor: 1.5
   entropy_floor_steps: 150
   entropy_floor_action: "boost"  # "warn", "stop", or "boost"
   entropy_boost_factor: 1.5
@@ -52,7 +52,7 @@ transformer:
 # Evaluation Config (vs Stockfish)
 # =============================================================================
 eval:
-  games: 32
+  games: 64
   seed: 0
   max_plies: 400
   randomize_opening: true
