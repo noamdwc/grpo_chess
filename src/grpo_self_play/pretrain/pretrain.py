@@ -372,27 +372,24 @@ def train(
     # Create datasets
     train_dataset = ChessPretrainDataset(dataset_config)
 
-    # Create a validation dataset using hash-based splitting for true held-out evaluation
-    # This ensures deterministic, non-overlapping train and eval sets
+    # Create validation dataset using hash-based split
     val_dataset_config = PretrainDatasetConfig(
         min_elo=dataset_config.min_elo,
         max_samples=10000,  # Smaller validation set
         skip_first_n_moves=dataset_config.skip_first_n_moves,
         skip_last_n_moves=dataset_config.skip_last_n_moves,
         sample_positions_per_game=1,  # Less samples per game for validation
-        buffer_size=1000,
-        dataset_name=dataset_config.dataset_name,
-        split=dataset_config.split,
         is_eval=True,  # Use eval portion of hash-based split
         eval_fraction=dataset_config.eval_fraction,
     )
     val_dataset = ChessPretrainDataset(val_dataset_config)
-    print(f"Train/Eval split: {100*(1-dataset_config.eval_fraction):.0f}% train, {100*dataset_config.eval_fraction:.0f}% eval (hash-based)")
+    print(f"Train: {len(train_dataset):,} samples, Eval: {len(val_dataset):,} samples")
 
     # Create dataloaders
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=pretrain_config.batch_size,
+        shuffle=True,  # Shuffle for training
         num_workers=pretrain_config.num_workers,
         collate_fn=collate_pretrain_batch,
         pin_memory=True,
@@ -401,6 +398,7 @@ def train(
     val_dataloader = DataLoader(
         val_dataset,
         batch_size=pretrain_config.batch_size,
+        shuffle=False,
         num_workers=max(1, pretrain_config.num_workers // 2),
         collate_fn=collate_pretrain_batch,
         pin_memory=True,

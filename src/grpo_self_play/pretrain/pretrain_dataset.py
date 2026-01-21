@@ -1,19 +1,18 @@
-"""Dataset for pretraining on Lichess games from HuggingFace.
+"""Dataset for pretraining on chess games from HuggingFace.
 
-This module provides a streaming dataset that loads chess games from the
-Icannos/lichess_games HuggingFace dataset and yields (board, action, mask)
-tuples for supervised pretraining.
-
-The dataset is process-safe and supports multi-worker DataLoader through
-HuggingFace's built-in sharding mechanism.
+Uses angeluriot/chess_games: 14M high-ELO games (7.3GB download).
+Mean ELO ~2355, moves already in UCI format - no parsing needed.
 """
 
+import os
 import chess
 import torch
 import random
-from typing import Optional, Iterator
+from typing import Optional
 from dataclasses import dataclass
-from torch.utils.data import IterableDataset
+from torch.utils.data import Dataset
+from datasets import load_dataset
+from tqdm import tqdm
 
 from src.grpo_self_play.searchless_chess_imports import MOVE_TO_ACTION, tokenize
 
@@ -22,86 +21,30 @@ from src.grpo_self_play.searchless_chess_imports import MOVE_TO_ACTION, tokenize
 class PretrainDatasetConfig:
     """Configuration for the pretraining dataset.
 
+    Uses angeluriot/chess_games: 14M high-ELO games (7.3GB download).
+    Mean ELO ~2355, moves already in UCI format.
+
     Attributes:
-        min_elo: Minimum player ELO to include games (filters low-quality games)
+        min_elo: Minimum player ELO to include games
         max_samples: Maximum number of samples per epoch (None for unlimited)
         skip_first_n_moves: Skip the first N moves (avoid memorizing openings)
         skip_last_n_moves: Skip the last N moves (avoid noisy endgame positions)
         sample_positions_per_game: Number of positions to sample from each game
-        buffer_size: Size of shuffle buffer for streaming randomization
-        filter_abandoned: Whether to filter out abandoned/timeout games
-        dataset_name: HuggingFace dataset name to use
-        split: Dataset split to use (default "train")
-        is_eval: If True, only include games where hash(Site) % 100 < 5 (5% of data).
-                 If False, exclude those games. This creates deterministic train/eval split.
+        is_eval: If True, use eval portion of hash-based split.
         eval_fraction: Fraction of data to use for evaluation (default 0.05 = 5%)
     """
-    min_elo: int = 1500
+    min_elo: int = 2000
     max_samples: Optional[int] = None
     skip_first_n_moves: int = 5
     skip_last_n_moves: int = 5
     sample_positions_per_game: int = 3
-    buffer_size: int = 10000
-    filter_abandoned: bool = True
-    dataset_name: str = "Lichess/standard-chess-games"
-    split: str = "train"
-    is_eval: bool = False  # True for evaluation set, False for training set
-    eval_fraction: float = 0.05  # 5% of games go to eval set
+    is_eval: bool = False
+    eval_fraction: float = 0.05
 
 
 def uci_to_action(uci_move: str) -> Optional[int]:
-    """Convert UCI move string to action index.
-
-    Args:
-        uci_move: Move in UCI format (e.g., "e2e4", "a7a8q")
-
-    Returns:
-        Action index or None if move not in action space
-    """
+    """Convert UCI move string to action index."""
     return MOVE_TO_ACTION.get(uci_move)
-
-
-def parse_pgn_moves(movetext: str) -> list[str]:
-    """Parse PGN movetext into list of UCI moves.
-
-    The Lichess dataset stores moves in PGN format (e.g., "1. e4 e5 2. Nf3 Nc6").
-    This function converts them to UCI format (e.g., ["e2e4", "e7e5", "g1f3", "b8c6"]).
-
-    Args:
-        movetext: PGN movetext string from Lichess dataset
-
-    Returns:
-        List of UCI move strings
-    """
-    if not movetext:
-        return []
-
-    import re
-
-    # Remove comments like {[%clk 0:10:00]} and {[%eval 0.17]}
-    movetext = re.sub(r'\{[^}]*\}', '', movetext)
-    # Remove move numbers like "1." or "1..."
-    movetext = re.sub(r'\d+\.+\s*', '', movetext)
-    # Remove result at end
-    movetext = re.sub(r'\s*(1-0|0-1|1/2-1/2|\*)\s*$', '', movetext)
-
-    # Parse the SAN moves using python-chess
-    board = chess.Board()
-    uci_moves = []
-
-    for san_move in movetext.split():
-        san_move = san_move.strip()
-        if not san_move:
-            continue
-        try:
-            move = board.parse_san(san_move)
-            uci_moves.append(move.uci())
-            board.push(move)
-        except (ValueError, chess.InvalidMoveError, chess.AmbiguousMoveError):
-            # Stop at first invalid move
-            break
-
-    return uci_moves
 
 
 def get_positions_from_game(
@@ -111,9 +54,6 @@ def get_positions_from_game(
     sample_n: int = 3,
 ) -> list[tuple[str, str, int]]:
     """Extract (FEN, move_played, move_number) tuples from a game.
-
-    Replays the game and samples positions, skipping early opening moves
-    and late endgame moves to focus on the most instructive positions.
 
     Args:
         moves: List of UCI moves
@@ -130,148 +70,118 @@ def get_positions_from_game(
     board = chess.Board()
     positions = []
 
-    # Play through the game and collect positions
     for i, uci_move in enumerate(moves):
-        # Skip early moves (opening book)
         if i < skip_first_n:
             try:
                 board.push_uci(uci_move)
             except (ValueError, chess.InvalidMoveError):
-                return positions  # Invalid move, stop processing
+                return positions
             continue
 
-        # Skip late moves (endgame noise)
         if i >= len(moves) - skip_last_n:
             break
 
-        # Record position before the move is made
         fen = board.fen()
         positions.append((fen, uci_move, i))
 
-        # Make the move on the board
         try:
             board.push_uci(uci_move)
         except (ValueError, chess.InvalidMoveError):
-            break  # Invalid move, stop processing
+            break
 
-    # Randomly sample if we have more positions than requested
     if len(positions) > sample_n:
         positions = random.sample(positions, sample_n)
 
     return positions
 
 
-class ChessPretrainDataset(IterableDataset):
-    """Streaming dataset for chess pretraining from HuggingFace.
+class ChessPretrainDataset(Dataset):
+    """Dataset for chess pretraining from angeluriot/chess_games.
 
-    Streams games from the Icannos/lichess_games dataset and yields
-    (board_tensor, target_action, legal_moves_mask) tuples for supervised learning.
-
-    This dataset is process-safe: when used with multiple DataLoader workers,
-    each worker processes a disjoint shard of the data using HuggingFace's
-    built-in sharding mechanism.
+    Downloads the full dataset (7.3GB) and processes games into
+    (board_tensor, target_action, legal_moves_mask) tuples.
 
     Example:
-        >>> config = PretrainDatasetConfig(min_elo=1800, max_samples=100000)
+        >>> config = PretrainDatasetConfig(min_elo=2000)
         >>> dataset = ChessPretrainDataset(config)
-        >>> dataloader = DataLoader(
-        ...     dataset,
-        ...     batch_size=256,
-        ...     num_workers=4,
-        ...     collate_fn=collate_pretrain_batch
-        ... )
-        >>> for boards, actions, masks in dataloader:
-        ...     # boards: [B, 77], actions: [B], masks: [B, 1968]
-        ...     pass
+        >>> dataloader = DataLoader(dataset, batch_size=256, shuffle=True)
     """
 
     def __init__(self, config: PretrainDatasetConfig = PretrainDatasetConfig()):
-        """Initialize the pretraining dataset.
-
-        Args:
-            config: Dataset configuration
-        """
+        """Initialize the dataset - downloads and processes all games."""
         self.config = config
-        self._dataset = None
         self._action_space_size = max(MOVE_TO_ACTION.values()) + 1
+        self._samples: list[tuple[torch.Tensor, int, torch.Tensor]] = []
 
-    def _load_dataset(self):
-        """Lazily load the HuggingFace dataset."""
-        if self._dataset is None:
-            from datasets import load_dataset
+        self._load_and_process()
 
-            # Load Lichess games dataset in streaming mode
-            # The split can be "train" for all data, or a specific year-month like "2024-01"
-            self._dataset = load_dataset(
-                self.config.dataset_name,
-                split=self.config.split,
-                streaming=True,
-            )
+    def _load_and_process(self):
+        """Download dataset and process all games into samples."""
+        num_proc = min(4, os.cpu_count() or 4)  # Limit to 4 to avoid overhead
+
+        print(f"Downloading angeluriot/chess_games (7.3GB) with {num_proc} processes...")
+        dataset = load_dataset("angeluriot/chess_games", split="train", num_proc=num_proc)
+        print(f"Loaded {len(dataset):,} games")
+
+        # Filter games in parallel
+        print(f"Filtering games (min_elo={self.config.min_elo})...")
+        dataset = dataset.filter(self._filter_game, num_proc=num_proc, desc="Filtering")
+        print(f"After filtering: {len(dataset):,} games")
+
+        # Limit dataset size if max_samples is set
+        if self.config.max_samples:
+            max_games = self.config.max_samples // self.config.sample_positions_per_game + 1000
+            if len(dataset) > max_games:
+                dataset = dataset.select(range(max_games))
+                print(f"Limited to {len(dataset):,} games")
+
+        # Process games into samples (sequential - requires board state)
+        print("Processing games into samples...")
+        for game in tqdm(dataset, desc="Processing"):
+            for sample in self._process_game(game):
+                self._samples.append(sample)
+                if self.config.max_samples and len(self._samples) >= self.config.max_samples:
+                    break
+
+            if self.config.max_samples and len(self._samples) >= self.config.max_samples:
+                break
+
+        print(f"Done: {len(self._samples):,} samples")
 
     def _filter_game(self, game: dict) -> bool:
-        """Check if a game meets the quality criteria.
+        """Check if a game meets the quality criteria."""
+        # Hash-based train/eval split using date (unique identifier)
+        game_id = f"{game.get('date', '')}-{game.get('white_elo', '')}-{game.get('black_elo', '')}"
+        hash_val = hash(game_id) % 10000
+        threshold = int(self.config.eval_fraction * 10000)
+        is_eval_game = hash_val < threshold
 
-        Args:
-            game: Game record from the dataset
-
-        Returns:
-            True if game should be included
-        """
-        # Hash-based train/eval split using game Site URL (unique per game)
-        # This ensures deterministic, non-overlapping train and eval sets
-        site = game.get('Site', '')
-        if site:
-            # Use hash to deterministically assign games to train or eval
-            hash_val = hash(site) % 10000
-            threshold = int(self.config.eval_fraction * 10000)
-            is_eval_game = hash_val < threshold
-
-            if self.config.is_eval and not is_eval_game:
-                return False  # Eval set only wants eval games
-            if not self.config.is_eval and is_eval_game:
-                return False  # Train set excludes eval games
+        if self.config.is_eval and not is_eval_game:
+            return False
+        if not self.config.is_eval and is_eval_game:
+            return False
 
         # Filter by ELO - both players must meet minimum
-        white_elo = game.get('WhiteElo')
-        black_elo = game.get('BlackElo')
+        white_elo = game.get('white_elo')
+        black_elo = game.get('black_elo')
 
-        if white_elo and black_elo:
-            try:
-                min_game_elo = min(int(white_elo), int(black_elo))
-                if min_game_elo < self.config.min_elo:
-                    return False
-            except (ValueError, TypeError):
-                return False
-        else:
-            # Skip games without ELO info
+        if white_elo is None or black_elo is None:
             return False
 
-        # Must have a reasonable number of moves
-        movetext = game.get('movetext', '')
-        if not movetext or len(movetext.split()) < 10:
+        if min(white_elo, black_elo) < self.config.min_elo:
             return False
 
-        # Filter abandoned/timeout games if configured
-        if self.config.filter_abandoned:
-            termination = game.get('Termination', '').lower()
-            if 'abandoned' in termination:
-                return False
+        # Must have enough moves
+        moves = game.get('moves_uci', [])
+        if not moves or len(moves) < 10:
+            return False
 
         return True
 
-    def _process_game(self, game: dict) -> Iterator[tuple[torch.Tensor, int, torch.Tensor]]:
-        """Process a single game and yield training samples.
+    def _process_game(self, game: dict):
+        """Process a single game and yield training samples."""
+        moves = game.get('moves_uci', [])
 
-        Args:
-            game: Game record from the dataset
-
-        Yields:
-            (board_tensor, target_action, legal_moves_mask) tuples
-        """
-        movetext = game.get('movetext', '')
-        moves = parse_pgn_moves(movetext)
-
-        # Extract positions from this game
         positions = get_positions_from_game(
             moves,
             skip_first_n=self.config.skip_first_n_moves,
@@ -280,19 +190,16 @@ class ChessPretrainDataset(IterableDataset):
         )
 
         for fen, uci_move, move_num in positions:
-            # Convert move to action index
             action_idx = uci_to_action(uci_move)
             if action_idx is None:
                 continue
 
-            # Tokenize the FEN string
             try:
                 token_ids = list(tokenize(fen))
                 board_tensor = torch.tensor(token_ids, dtype=torch.long)
             except Exception:
                 continue
 
-            # Build legal moves mask
             try:
                 board = chess.Board(fen)
                 legal_mask = torch.zeros(self._action_space_size, dtype=torch.bool)
@@ -303,73 +210,16 @@ class ChessPretrainDataset(IterableDataset):
             except Exception:
                 continue
 
-            # Verify the target move is actually legal
             if not legal_mask[action_idx]:
                 continue
 
             yield board_tensor, action_idx, legal_mask
 
-    def __iter__(self) -> Iterator[tuple[torch.Tensor, int, torch.Tensor]]:
-        """Iterate over the dataset, yielding training samples.
+    def __len__(self) -> int:
+        return len(self._samples)
 
-        When used with multiple DataLoader workers, each worker processes
-        a disjoint shard of the data for process safety.
-        """
-        self._load_dataset()
-
-        worker_info = torch.utils.data.get_worker_info()
-
-        if worker_info is not None:
-            # Multi-worker mode: shard the dataset across workers
-            num_workers = worker_info.num_workers
-            worker_id = worker_info.id
-
-            # Use HuggingFace's built-in sharding for process safety
-            dataset_shard = self._dataset.shard(
-                num_shards=num_workers,
-                index=worker_id
-            )
-
-            # Set unique random seed per worker for shuffle buffer
-            random.seed(42 + worker_id * 1000)
-        else:
-            # Single-worker mode: use full dataset
-            dataset_shard = self._dataset
-            random.seed(42)
-
-        samples_yielded = 0
-
-        # Shuffle buffer for better randomization in streaming mode
-        buffer: list[tuple[torch.Tensor, int, torch.Tensor]] = []
-
-        for game in dataset_shard:
-            # Filter by quality criteria
-            if not self._filter_game(game):
-                continue
-
-            # Process game and add samples to buffer
-            for sample in self._process_game(game):
-                buffer.append(sample)
-
-                # Yield from buffer when it's large enough
-                if len(buffer) >= self.config.buffer_size:
-                    random.shuffle(buffer)
-                    # Yield half the buffer, keeping some for mixing
-                    while len(buffer) > self.config.buffer_size // 2:
-                        yield buffer.pop()
-                        samples_yielded += 1
-
-                        # Check max samples limit
-                        if self.config.max_samples and samples_yielded >= self.config.max_samples:
-                            return
-
-        # Yield remaining samples in buffer
-        random.shuffle(buffer)
-        for sample in buffer:
-            yield sample
-            samples_yielded += 1
-            if self.config.max_samples and samples_yielded >= self.config.max_samples:
-                return
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int, torch.Tensor]:
+        return self._samples[idx]
 
 
 def collate_pretrain_batch(
@@ -377,19 +227,13 @@ def collate_pretrain_batch(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Collate function for DataLoader.
 
-    Args:
-        batch: List of (board_tensor, action, legal_mask) tuples
-
     Returns:
-        Tuple of:
-            - boards: [B, 77] token IDs
-            - actions: [B] target action indices
-            - legal_masks: [B, num_actions] boolean masks
+        Tuple of (boards [B, 77], actions [B], legal_masks [B, num_actions])
     """
     boards, actions, masks = zip(*batch)
 
-    boards = torch.stack(boards)  # [B, 77]
-    actions = torch.tensor(actions, dtype=torch.long)  # [B]
-    masks = torch.stack(masks)  # [B, num_actions]
+    boards = torch.stack(boards)
+    actions = torch.tensor(actions, dtype=torch.long)
+    masks = torch.stack(masks)
 
     return boards, actions, masks
