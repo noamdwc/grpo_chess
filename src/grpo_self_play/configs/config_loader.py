@@ -34,13 +34,11 @@ from src.grpo_self_play.chess.stockfish import StockfishConfig
 from src.grpo_self_play.chess.policy_player import PolicyConfig
 from src.grpo_self_play.chess.searcher import SearchConfig
 from src.grpo_self_play.chess.boards_dataset import ChessDatasetConfig
+from src.grpo_self_play.pretrain.pretrain_load_config import PretrainLoadConfig
 
 
 # Directory containing config YAML files
 CONFIGS_DIR = Path(__file__).parent
-
-
-from src.grpo_self_play.pretrain.pretrain_load_config import PretrainLoadConfig
 
 
 @dataclass
@@ -268,11 +266,9 @@ def print_config_summary(config: ExperimentConfig) -> None:
     print(f"  num_trajectories: {config.grpo.num_trajectories}")
     print(f"  trajectory_depth: {config.grpo.trajectory_depth}")
     print(f"  entropy_coef: {config.grpo.entropy_coef}")
-    print(f"  kl_coef: {config.grpo.kl_coef}")
     print(f"  rollout_temperature: {config.grpo.rollout_temperature}")
-    print(f"  use_entropy_recovery: {config.grpo.use_entropy_recovery}")
-    print(f"  entropy_floor: {config.grpo.entropy_floor}")
-    print(f"  entropy_critical: {config.grpo.entropy_critical}")
+    print(f"  adaptive_kl: {config.grpo.adaptive_kl}")
+    print(f"  use_entropy_floor: {config.grpo.use_entropy_floor}")
 
     print("\n[Transformer]")
     print(f"  embed_dim: {config.transformer.embed_dim}")
