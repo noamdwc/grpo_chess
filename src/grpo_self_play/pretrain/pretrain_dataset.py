@@ -9,12 +9,56 @@ import chess
 import torch
 import random
 from typing import Optional
+from functools import partial
 from dataclasses import dataclass
+from multiprocessing import Pool, cpu_count
+from functools import partial
 from torch.utils.data import Dataset
-from datasets import load_dataset, Dataset as HFDataset
+from datasets import load_dataset
 from tqdm import tqdm
 
 from src.grpo_self_play.searchless_chess_imports import MOVE_TO_ACTION, tokenize
+
+# Global for multiprocessing (avoid pickling)
+_ACTION_SPACE_SIZE = max(MOVE_TO_ACTION.values()) + 1
+
+
+def _process_single_game(game, skip_first, skip_last, sample_n) -> list[tuple[torch.Tensor, int, torch.Tensor]]:
+    """Process a single game - standalone function for multiprocessing."""
+    moves = game.get('moves_uci', [])
+    if not moves:
+        return []
+
+    positions = get_positions_from_game(moves, skip_first, skip_last, sample_n)
+
+    samples = []
+    for fen, uci_move, _ in positions:
+        action_idx = MOVE_TO_ACTION.get(uci_move)
+        if action_idx is None:
+            continue
+
+        try:
+            token_ids = list(tokenize(fen))
+            board_tensor = torch.tensor(token_ids, dtype=torch.long)
+        except Exception:
+            continue
+
+        try:
+            board = chess.Board(fen)
+            legal_mask = torch.zeros(_ACTION_SPACE_SIZE, dtype=torch.bool)
+            for move in board.legal_moves:
+                move_idx = MOVE_TO_ACTION.get(move.uci())
+                if move_idx is not None:
+                    legal_mask[move_idx] = True
+        except Exception:
+            continue
+
+        if not legal_mask[action_idx]:
+            continue
+
+        samples.append((board_tensor, action_idx, legal_mask))
+
+    return samples
 
 
 @dataclass
@@ -120,6 +164,16 @@ class ChessPretrainDataset(Dataset):
 
     def _load_and_process(self):
         """Download dataset and process all games into samples."""
+        # Try loading processed samples from cache
+        if self.config.cache_path:
+            cache_file = self._get_cache_filename()
+            if os.path.exists(cache_file):
+                print(f"Loading processed samples from {cache_file}...")
+                self._samples = torch.load(cache_file)
+                print(f"Loaded {len(self._samples):,} samples from cache")
+                return
+
+        # Download, filter, and process
         dataset = self._load_filtered_dataset()
 
         # Limit dataset size if max_samples is set
@@ -129,31 +183,42 @@ class ChessPretrainDataset(Dataset):
                 dataset = dataset.select(range(max_games))
                 print(f"Limited to {len(dataset):,} games")
 
-        # Process games into samples (sequential - requires board state)
-        print("Processing games into samples...")
-        for game in tqdm(dataset, desc="Processing"):
-            for sample in self._process_game(game):
-                self._samples.append(sample)
+        # Process games into samples using multiprocessing
+        num_workers = min(8, cpu_count() or 4)
+        print(f"Processing games into samples with {num_workers} workers...")
+        # Prepare args for parallel processing
+        process_func =  partial(_process_single_game,
+                                skip_first=self.config.skip_first_n_moves,
+                                skip_last=self.config.skip_last_n_moves,
+                                sample_n=self.config.sample_positions_per_game)
+        # Process in parallel with progress bar
+        with Pool(num_workers) as pool:
+            for samples in tqdm(pool.imap(process_func, dataset, chunksize=500),
+                               total=len(dataset), desc="Processing"):
+                self._samples.extend(samples)
                 if self.config.max_samples and len(self._samples) >= self.config.max_samples:
+                    self._samples = self._samples[:self.config.max_samples]
                     break
-
-            if self.config.max_samples and len(self._samples) >= self.config.max_samples:
-                break
 
         print(f"Done: {len(self._samples):,} samples")
 
-    def _load_filtered_dataset(self):
-        """Load filtered dataset from cache or download and filter."""
-        # Try loading from cache
+        # Save processed samples to cache
         if self.config.cache_path:
-            cache_file = f"{self.config.cache_path}/elo{self.config.min_elo}_{'eval' if self.config.is_eval else 'train'}"
-            if os.path.exists(cache_file):
-                print(f"Loading filtered dataset from {cache_file}...")
-                dataset = HFDataset.load_from_disk(cache_file)
-                print(f"Loaded {len(dataset):,} games from cache")
-                return dataset
+            cache_file = self._get_cache_filename()
+            print(f"Saving processed samples to {cache_file}...")
+            os.makedirs(self.config.cache_path, exist_ok=True)
+            torch.save(self._samples, cache_file)
+            print("Saved to cache")
 
-        # Download and filter
+    def _get_cache_filename(self) -> str:
+        """Generate cache filename based on config."""
+        split = 'eval' if self.config.is_eval else 'train'
+        max_samples = self.config.max_samples or 'all'
+        return f"{self.config.cache_path}/processed_elo{self.config.min_elo}_{split}_{max_samples}.pt"
+
+    def _load_filtered_dataset(self):
+        """Download and filter dataset."""
+        # Download (uses cache_path for HuggingFace cache)
         print("Downloading angeluriot/chess_games (7.3GB)...")
         cache_dir = self.config.cache_path if self.config.cache_path else None
         dataset = load_dataset("angeluriot/chess_games", split="train", cache_dir=cache_dir)
@@ -196,14 +261,6 @@ class ChessPretrainDataset(Dataset):
 
         dataset = dataset.filter(batch_filter, batched=True, batch_size=10000, desc="Filtering")
         print(f"After filtering: {len(dataset):,} games")
-
-        # Save to cache if path provided
-        if self.config.cache_path:
-            cache_file = f"{self.config.cache_path}/elo{self.config.min_elo}_{'eval' if self.config.is_eval else 'train'}"
-            print(f"Saving filtered dataset to {cache_file}...")
-            os.makedirs(self.config.cache_path, exist_ok=True)
-            dataset.save_to_disk(cache_file)
-            print("Saved to cache")
 
         return dataset
 
