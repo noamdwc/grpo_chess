@@ -11,7 +11,7 @@ import random
 from typing import Optional
 from dataclasses import dataclass
 from torch.utils.data import Dataset
-from datasets import load_dataset
+from datasets import load_dataset, Dataset as HFDataset
 from tqdm import tqdm
 
 from src.grpo_self_play.searchless_chess_imports import MOVE_TO_ACTION, tokenize
@@ -32,6 +32,8 @@ class PretrainDatasetConfig:
         sample_positions_per_game: Number of positions to sample from each game
         is_eval: If True, use eval portion of hash-based split.
         eval_fraction: Fraction of data to use for evaluation (default 0.05 = 5%)
+        cache_path: Path to save/load filtered dataset (e.g., Google Drive, studio storage).
+                   If set and exists, loads from cache. Otherwise downloads, filters, and saves.
     """
     min_elo: int = 2000
     max_samples: Optional[int] = None
@@ -40,6 +42,7 @@ class PretrainDatasetConfig:
     sample_positions_per_game: int = 3
     is_eval: bool = False
     eval_fraction: float = 0.05
+    cache_path: Optional[str] = None
 
 
 def uci_to_action(uci_move: str) -> Optional[int]:
@@ -117,8 +120,43 @@ class ChessPretrainDataset(Dataset):
 
     def _load_and_process(self):
         """Download dataset and process all games into samples."""
+        dataset = self._load_filtered_dataset()
+
+        # Limit dataset size if max_samples is set
+        if self.config.max_samples:
+            max_games = self.config.max_samples // self.config.sample_positions_per_game + 1000
+            if len(dataset) > max_games:
+                dataset = dataset.select(range(max_games))
+                print(f"Limited to {len(dataset):,} games")
+
+        # Process games into samples (sequential - requires board state)
+        print("Processing games into samples...")
+        for game in tqdm(dataset, desc="Processing"):
+            for sample in self._process_game(game):
+                self._samples.append(sample)
+                if self.config.max_samples and len(self._samples) >= self.config.max_samples:
+                    break
+
+            if self.config.max_samples and len(self._samples) >= self.config.max_samples:
+                break
+
+        print(f"Done: {len(self._samples):,} samples")
+
+    def _load_filtered_dataset(self):
+        """Load filtered dataset from cache or download and filter."""
+        # Try loading from cache
+        if self.config.cache_path:
+            cache_file = f"{self.config.cache_path}/elo{self.config.min_elo}_{'eval' if self.config.is_eval else 'train'}"
+            if os.path.exists(cache_file):
+                print(f"Loading filtered dataset from {cache_file}...")
+                dataset = HFDataset.load_from_disk(cache_file)
+                print(f"Loaded {len(dataset):,} games from cache")
+                return dataset
+
+        # Download and filter
         print("Downloading angeluriot/chess_games (7.3GB)...")
-        dataset = load_dataset("angeluriot/chess_games", split="train")
+        cache_dir = self.config.cache_path if self.config.cache_path else None
+        dataset = load_dataset("angeluriot/chess_games", split="train", cache_dir=cache_dir)
         print(f"Loaded {len(dataset):,} games")
 
         # Fast batched filtering
@@ -159,55 +197,15 @@ class ChessPretrainDataset(Dataset):
         dataset = dataset.filter(batch_filter, batched=True, batch_size=10000, desc="Filtering")
         print(f"After filtering: {len(dataset):,} games")
 
-        # Limit dataset size if max_samples is set
-        if self.config.max_samples:
-            max_games = self.config.max_samples // self.config.sample_positions_per_game + 1000
-            if len(dataset) > max_games:
-                dataset = dataset.select(range(max_games))
-                print(f"Limited to {len(dataset):,} games")
+        # Save to cache if path provided
+        if self.config.cache_path:
+            cache_file = f"{self.config.cache_path}/elo{self.config.min_elo}_{'eval' if self.config.is_eval else 'train'}"
+            print(f"Saving filtered dataset to {cache_file}...")
+            os.makedirs(self.config.cache_path, exist_ok=True)
+            dataset.save_to_disk(cache_file)
+            print("Saved to cache")
 
-        # Process games into samples (sequential - requires board state)
-        print("Processing games into samples...")
-        for game in tqdm(dataset, desc="Processing"):
-            for sample in self._process_game(game):
-                self._samples.append(sample)
-                if self.config.max_samples and len(self._samples) >= self.config.max_samples:
-                    break
-
-            if self.config.max_samples and len(self._samples) >= self.config.max_samples:
-                break
-
-        print(f"Done: {len(self._samples):,} samples")
-
-    def _filter_game(self, game: dict) -> bool:
-        """Check if a game meets the quality criteria."""
-        # Hash-based train/eval split using date (unique identifier)
-        game_id = f"{game.get('date', '')}-{game.get('white_elo', '')}-{game.get('black_elo', '')}"
-        hash_val = hash(game_id) % 10000
-        threshold = int(self.config.eval_fraction * 10000)
-        is_eval_game = hash_val < threshold
-
-        if self.config.is_eval and not is_eval_game:
-            return False
-        if not self.config.is_eval and is_eval_game:
-            return False
-
-        # Filter by ELO - both players must meet minimum
-        white_elo = game.get('white_elo')
-        black_elo = game.get('black_elo')
-
-        if white_elo is None or black_elo is None:
-            return False
-
-        if min(white_elo, black_elo) < self.config.min_elo:
-            return False
-
-        # Must have enough moves
-        moves = game.get('moves_uci', [])
-        if not moves or len(moves) < 10:
-            return False
-
-        return True
+        return dataset
 
     def _process_game(self, game: dict):
         """Process a single game and yield training samples."""
@@ -220,7 +218,7 @@ class ChessPretrainDataset(Dataset):
             sample_n=self.config.sample_positions_per_game,
         )
 
-        for fen, uci_move, move_num in positions:
+        for fen, uci_move, _ in positions:
             action_idx = uci_to_action(uci_move)
             if action_idx is None:
                 continue
