@@ -381,6 +381,7 @@ def train(
         sample_positions_per_game=1,  # Less samples per game for validation
         is_eval=True,  # Use eval portion of hash-based split
         eval_fraction=dataset_config.eval_fraction,
+        cache_path=dataset_config.cache_path,
     )
     val_dataset = ChessPretrainDataset(val_dataset_config)
     print(f"Train: {len(train_dataset):,} samples, Eval: {len(val_dataset):,} samples")
