@@ -11,54 +11,15 @@ import random
 from typing import Optional
 from functools import partial
 from dataclasses import dataclass
-from multiprocessing import Pool, cpu_count
-from functools import partial
+from multiprocessing import cpu_count
 from torch.utils.data import Dataset
 from datasets import load_dataset
 from tqdm import tqdm
 
 from src.grpo_self_play.searchless_chess_imports import MOVE_TO_ACTION, tokenize
 
-# Global for multiprocessing (avoid pickling)
+# Global constant
 _ACTION_SPACE_SIZE = max(MOVE_TO_ACTION.values()) + 1
-
-
-def _process_single_game(game, skip_first, skip_last, sample_n) -> list[tuple[torch.Tensor, int, torch.Tensor]]:
-    """Process a single game - standalone function for multiprocessing."""
-    moves = game.get('moves_uci', [])
-    if not moves:
-        return []
-
-    positions = get_positions_from_game(moves, skip_first, skip_last, sample_n)
-
-    samples = []
-    for fen, uci_move, _ in positions:
-        action_idx = MOVE_TO_ACTION.get(uci_move)
-        if action_idx is None:
-            continue
-
-        try:
-            token_ids = list(tokenize(fen))
-            board_tensor = torch.tensor(token_ids, dtype=torch.long)
-        except Exception:
-            continue
-
-        try:
-            board = chess.Board(fen)
-            legal_mask = torch.zeros(_ACTION_SPACE_SIZE, dtype=torch.bool)
-            for move in board.legal_moves:
-                move_idx = MOVE_TO_ACTION.get(move.uci())
-                if move_idx is not None:
-                    legal_mask[move_idx] = True
-        except Exception:
-            continue
-
-        if not legal_mask[action_idx]:
-            continue
-
-        samples.append((board_tensor, action_idx, legal_mask))
-
-    return samples
 
 
 @dataclass
@@ -183,22 +144,68 @@ class ChessPretrainDataset(Dataset):
                 dataset = dataset.select(range(max_games))
                 print(f"Limited to {len(dataset):,} games")
 
-        # Process games into samples using multiprocessing
+        # Process games using HuggingFace's optimized map
         num_workers = min(8, cpu_count() or 4)
         print(f"Processing games into samples with {num_workers} workers...")
-        # Prepare args for parallel processing
-        process_func =  partial(_process_single_game,
-                                skip_first=self.config.skip_first_n_moves,
-                                skip_last=self.config.skip_last_n_moves,
-                                sample_n=self.config.sample_positions_per_game)
-        # Process in parallel with progress bar
-        with Pool(num_workers) as pool:
-            for samples in tqdm(pool.imap(process_func, dataset, chunksize=500),
-                               total=len(dataset), desc="Processing"):
-                self._samples.extend(samples)
+
+        skip_first = self.config.skip_first_n_moves
+        skip_last = self.config.skip_last_n_moves
+        sample_n = self.config.sample_positions_per_game
+
+        def process_batch(batch):
+            """Process a batch of games - returns lists for HF dataset."""
+            all_boards, all_actions, all_masks = [], [], []
+
+            for i in range(len(batch['moves_uci'])):
+                moves = batch['moves_uci'][i]
+                if not moves:
+                    continue
+
+                positions = get_positions_from_game(moves, skip_first, skip_last, sample_n)
+
+                for fen, uci_move, _ in positions:
+                    action_idx = MOVE_TO_ACTION.get(uci_move)
+                    if action_idx is None:
+                        continue
+                    try:
+                        token_ids = list(tokenize(fen))
+                        board = chess.Board(fen)
+                        legal_mask = [False] * _ACTION_SPACE_SIZE
+                        for move in board.legal_moves:
+                            move_idx = MOVE_TO_ACTION.get(move.uci())
+                            if move_idx is not None:
+                                legal_mask[move_idx] = True
+                        if not legal_mask[action_idx]:
+                            continue
+                        all_boards.append(token_ids)
+                        all_actions.append(action_idx)
+                        all_masks.append(legal_mask)
+                    except Exception:
+                        continue
+
+            return {'boards': all_boards, 'actions': all_actions, 'masks': all_masks}
+
+        processed = dataset.map(
+            process_batch,
+            batched=True,
+            batch_size=1000,
+            num_proc=num_workers,
+            remove_columns=dataset.column_names,
+            desc="Processing"
+        )
+
+        # Convert to tensors
+        print("Converting to tensors...")
+        for row in tqdm(processed, desc="Tensorizing"):
+            for j in range(len(row['boards'])):
+                board_tensor = torch.tensor(row['boards'][j], dtype=torch.long)
+                legal_mask = torch.tensor(row['masks'][j], dtype=torch.bool)
+                self._samples.append((board_tensor, row['actions'][j], legal_mask))
+
                 if self.config.max_samples and len(self._samples) >= self.config.max_samples:
-                    self._samples = self._samples[:self.config.max_samples]
                     break
+            if self.config.max_samples and len(self._samples) >= self.config.max_samples:
+                break
 
         print(f"Done: {len(self._samples):,} samples")
 
