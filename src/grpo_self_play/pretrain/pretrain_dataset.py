@@ -196,7 +196,7 @@ class ChessPretrainDataset(Dataset):
 
         # Convert to tensors  (HF map flattens the lists)  
         print("Converting to tensors...")
-        for i in tqdm[int](range(len(processed)), desc="Tensorizing"):
+        for i in tqdm(range(len(processed)), desc="Tensorizing"):
             board_tensor = torch.tensor(processed[i]['boards'], dtype=torch.long)
             legal_mask = torch.tensor(processed[i]['masks'], dtype=torch.bool)
             self._samples.append((board_tensor, processed[i]['actions'], legal_mask))
