@@ -129,8 +129,76 @@ class PretrainChessTransformer(pl.LightningModule):
         Returns:
             Tuple of (loss, metrics_dict)
         """
+        # Validate shapes match
+        B, action_dim = logits.shape
+        if legal_masks.shape != (B, action_dim):
+            raise ValueError(
+                f"Shape mismatch: logits {logits.shape} vs legal_masks {legal_masks.shape}. "
+                f"Expected legal_masks to be [{B}, {action_dim}]"
+            )
+        if targets.shape != (B,):
+            raise ValueError(
+                f"Shape mismatch: targets {targets.shape} vs expected [{B}]"
+            )
+        
+        # Validate target actions are within bounds
+        max_target = targets.max().item()
+        min_target = targets.min().item()
+        if max_target >= action_dim or min_target < 0:
+            raise ValueError(
+                f"Target action indices out of bounds: min={min_target}, max={max_target}, "
+                f"action_dim={action_dim}. This suggests a mismatch between dataset action "
+                f"space and model action_dim."
+            )
+        
+        # Validate target actions are legal (should always be true, but check defensively)
+        target_legal = legal_masks.gather(1, targets.unsqueeze(1)).squeeze(1)
+        if not target_legal.all():
+            illegal_count = (~target_legal).sum().item()
+            illegal_indices = (~target_legal).nonzero(as_tuple=False).flatten().tolist()
+            raise ValueError(
+                f"Found {illegal_count} illegal target actions in batch (out of {B}). "
+                f"First few batch indices: {illegal_indices[:10]}. "
+                f"This should not happen - dataset should filter these out."
+            )
+        
+        # Check for NaN or Inf in raw logits (before masking)
+        if not torch.isfinite(logits).all():
+            nan_count = (~torch.isfinite(logits)).sum().item()
+            raise ValueError(
+                f"Found {nan_count} non-finite values in raw logits before masking. "
+                f"This suggests the model is outputting NaN/Inf."
+            )
+        
         # Mask illegal moves to -inf
         masked_logits = logits.masked_fill(~legal_masks, float('-inf'))
+        
+        # Check that each sample has at least one legal move (before checking masked logits)
+        legal_per_sample = legal_masks.sum(dim=1)
+        if (legal_per_sample == 0).any():
+            empty_samples = (legal_per_sample == 0).nonzero(as_tuple=False).flatten().tolist()
+            raise ValueError(
+                f"Found {len(empty_samples)} samples with no legal moves. "
+                f"Batch indices: {empty_samples[:10]}. This should not happen."
+            )
+        
+        # Check masked logits: each sample must have at least one finite logit (legal move)
+        finite_per_sample = torch.isfinite(masked_logits).sum(dim=1)
+        if (finite_per_sample == 0).any():
+            bad_samples = (finite_per_sample == 0).nonzero(as_tuple=False).flatten().tolist()
+            raise ValueError(
+                f"Found {len(bad_samples)} samples with all -inf logits after masking. "
+                f"Batch indices: {bad_samples[:10]}. This means no legal moves have finite logits."
+            )
+        
+        # Ensure target actions are not masked (defensive check)
+        target_logits = masked_logits.gather(1, targets.unsqueeze(1)).squeeze(1)
+        if not torch.isfinite(target_logits).all():
+            inf_count = (~torch.isfinite(target_logits)).sum().item()
+            raise ValueError(
+                f"Found {inf_count} target actions with -inf logits after masking. "
+                f"This means target actions are being masked as illegal, which should not happen."
+            )
 
         # Cross-entropy loss with label smoothing
         loss = F.cross_entropy(
@@ -139,6 +207,25 @@ class PretrainChessTransformer(pl.LightningModule):
             label_smoothing=self.pretrain_config.label_smoothing,
             reduction='mean'
         )
+        
+        # Check if loss is infinite or NaN
+        if not torch.isfinite(loss):
+            # Additional debugging info
+            target_logits_debug = masked_logits.gather(1, targets.unsqueeze(1)).squeeze(1)
+            print(f"DEBUG: Loss is {loss.item()}")
+            print(f"DEBUG: Logits shape: {logits.shape}")
+            print(f"DEBUG: Legal masks shape: {legal_masks.shape}")
+            print(f"DEBUG: Targets range: [{targets.min().item()}, {targets.max().item()}]")
+            print(f"DEBUG: Target logits range: [{target_logits_debug.min().item():.2f}, {target_logits_debug.max().item():.2f}]")
+            print(f"DEBUG: Legal moves per sample: min={legal_per_sample.min().item()}, max={legal_per_sample.max().item()}")
+            raise ValueError(
+                f"Loss is {loss.item()}. This can happen if:\n"
+                f"1. Target actions are out of bounds\n"
+                f"2. Target actions are masked as illegal\n"
+                f"3. Model outputs contain NaN/Inf\n"
+                f"4. All logits are -inf (no legal moves)\n"
+                f"5. Label smoothing causes numerical issues"
+            )
 
         # Compute metrics
         with torch.no_grad():
@@ -163,8 +250,8 @@ class PretrainChessTransformer(pl.LightningModule):
             )
             entropy = -entropy_terms.sum(dim=-1).mean()
 
-            # Perplexity
-            perplexity = torch.exp(loss)
+            # Perplexity - clamp to avoid inf
+            perplexity = torch.exp(loss.clamp(max=50))
 
         metrics = {
             'accuracy': accuracy,
