@@ -9,8 +9,8 @@
 # =============================================================================
 pretrain:
   lr: 0.0001                    # Learning rate (higher than GRPO fine-tuning)
-  batch_size: 256               # Batch size for pretraining
-  num_epochs: 1                 # Number of passes through the dataset
+  batch_size: 4096              # Batch size for pretraining
+  num_epochs: 180                # Number of passes through the dataset
   warmup_steps: 1000            # Linear warmup steps
   weight_decay: 0.01            # AdamW weight decay
   max_grad_norm: 1.0            # Gradient clipping
@@ -27,7 +27,7 @@ pretrain:
 # =============================================================================
 dataset:
   min_elo: 1800                 # Minimum player rating to include
-  max_samples: null             # Max samples per epoch (null = unlimited)
+  max_samples: 5000000          # Max samples per epoch (null = unlimited)
   skip_first_n_moves: 5         # Skip opening moves (book territory)
   skip_last_n_moves: 5          # Skip endgame/resignation moves
   sample_positions_per_game: 3  # Positions to sample from each game
