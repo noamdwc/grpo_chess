@@ -11,7 +11,7 @@ from .utils import format_runs_list, format_run_summary, format_metric_history, 
 def list_resources() -> list[Resource]:
     """
     List available MCP resources.
-    
+
     Returns:
         List of Resource objects
     """
@@ -20,7 +20,7 @@ def list_resources() -> list[Resource]:
         Resource(
             uri="wandb://runs/recent",
             name="Recent Runs Summary",
-            description="Summary of the 5 most recent runs in the Chess-GRPO-Bot project",
+            description=f"Summary of the 5 most recent runs in the {config.project} project",
             mimeType="application/json"
         )
     ]

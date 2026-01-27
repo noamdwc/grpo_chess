@@ -8,20 +8,20 @@ class WandBConfig:
     
     def __init__(
         self,
-        project: str = "Chess-GRPO-Bot",
+        project: Optional[str] = None,
         entity: Optional[str] = None,
         api_key: Optional[str] = None
     ):
         """
         Initialize WandB configuration.
-        
+
         Args:
-            project: WandB project name (default: "Chess-GRPO-Bot")
+            project: WandB project name (default: env WANDB_PROJECT or "Chess-GRPO-Bot")
             entity: WandB entity/team name (defaults to user's entity)
             api_key: WandB API key (defaults to WANDB_API_KEY env var or wandb config)
         """
-        self.project = project
-        self.entity = entity
+        self.project = project or os.getenv("WANDB_PROJECT", "Chess-GRPO-Bot")
+        self.entity = entity or os.getenv("WANDB_ENTITY")
         self.api_key = api_key or os.getenv("WANDB_API_KEY")
         
     def get_api_kwargs(self) -> dict:

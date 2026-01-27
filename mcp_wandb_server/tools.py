@@ -51,12 +51,12 @@ async def list_runs(
     state: Optional[str] = None
 ) -> str:
     """
-    List recent runs in the Chess-GRPO-Bot project.
-    
+    List recent runs in the configured WandB project.
+
     Args:
         limit: Number of runs to return (default: 10)
         state: Filter by run state (running, finished, crashed, etc.)
-        
+
     Returns:
         JSON string with list of runs
     """

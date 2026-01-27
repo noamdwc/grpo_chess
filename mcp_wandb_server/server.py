@@ -23,10 +23,11 @@ server = Server("wandb-mcp-server")
 @server.list_tools()
 async def handle_list_tools() -> list[Tool]:
     """List available MCP tools."""
+    config = get_config()
     return [
         Tool(
             name="list_runs",
-            description="List recent runs in the Chess-GRPO-Bot project",
+            description=f"List recent runs in the {config.project} project",
             inputSchema={
                 "type": "object",
                 "properties": {

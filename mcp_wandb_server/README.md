@@ -1,6 +1,6 @@
 # WandB MCP Server
 
-A Model Context Protocol (MCP) server that provides coding agents with access to Weights & Biases metrics, plots, and run data from the Chess-GRPO-Bot project.
+A Model Context Protocol (MCP) server that provides coding agents with access to Weights & Biases metrics, plots, and run data. Defaults to the Chess-GRPO-Bot project but can be configured for any WandB project.
 
 ## Overview
 
@@ -29,17 +29,25 @@ wandb login
 
 ## Configuration
 
-The server is configured to use the "Chess-GRPO-Bot" project by default. You can customize this by modifying `mcp_wandb_server/config.py` or setting environment variables.
+The server is configured to use the "Chess-GRPO-Bot" project by default. You can customize this by setting environment variables.
 
 ### Environment Variables
 
 - `WANDB_API_KEY`: Your WandB API key (optional if using `wandb login`)
+- `WANDB_PROJECT`: WandB project name (default: "Chess-GRPO-Bot")
+- `WANDB_ENTITY`: WandB entity/team name (default: your default entity)
 
 ### Project Settings
 
 Default project: `Chess-GRPO-Bot`
 
-To change the project, modify the `WandBConfig` class in `config.py` or create a custom configuration.
+To use a different project, set the `WANDB_PROJECT` environment variable:
+
+```bash
+export WANDB_PROJECT=chess-grpo-pretrain
+```
+
+Or configure it in your MCP client settings (see below).
 
 ## Running the Server
 
@@ -97,12 +105,63 @@ If you prefer to set it up manually, add to your MCP settings file:
       "args": ["-m", "mcp_wandb_server.server"],
       "cwd": "/path/to/grpo_chess",
       "env": {
-        "WANDB_API_KEY": "your_api_key_here"
+        "WANDB_API_KEY": "your_api_key_here",
+        "WANDB_PROJECT": "Chess-GRPO-Bot"
       }
     }
   }
 }
 ```
+
+To use a different project (e.g., "chess-grpo-pretrain"), change the `WANDB_PROJECT` value:
+```json
+{
+  "mcpServers": {
+    "wandb": {
+      "command": "python",
+      "args": ["-m", "mcp_wandb_server.server"],
+      "cwd": "/path/to/grpo_chess",
+      "env": {
+        "WANDB_API_KEY": "your_api_key_here",
+        "WANDB_PROJECT": "chess-grpo-pretrain"
+      }
+    }
+  }
+}
+```
+
+#### Multiple Projects Configuration
+
+To access multiple WandB projects simultaneously, configure multiple MCP server instances:
+
+```json
+{
+  "mcpServers": {
+    "wandb-grpo": {
+      "command": "python",
+      "args": ["-m", "mcp_wandb_server.server"],
+      "cwd": "/path/to/grpo_chess",
+      "env": {
+        "WANDB_API_KEY": "your_api_key_here",
+        "WANDB_PROJECT": "Chess-GRPO-Bot"
+      }
+    },
+    "wandb-pretrain": {
+      "command": "python",
+      "args": ["-m", "mcp_wandb_server.server"],
+      "cwd": "/path/to/grpo_chess",
+      "env": {
+        "WANDB_API_KEY": "your_api_key_here",
+        "WANDB_PROJECT": "chess-grpo-pretrain"
+      }
+    }
+  }
+}
+```
+
+With this configuration, you'll have separate tools for each project:
+- `mcp__wandb-grpo__list_runs` - Lists runs from Chess-GRPO-Bot
+- `mcp__wandb-pretrain__list_runs` - Lists runs from chess-grpo-pretrain
 
 **Note:** Replace `/path/to/grpo_chess` with your actual project path. On Windows, use double backslashes: `C:\\Users\\user\\source\\repos\\grpo_chess`
 
@@ -128,7 +187,7 @@ The server uses stdio transport. Configure your client to:
 ## Available Tools
 
 ### `list_runs`
-List recent runs in the Chess-GRPO-Bot project.
+List recent runs in the configured WandB project.
 
 **Parameters:**
 - `limit` (optional): Number of runs to return (default: 10)
@@ -228,9 +287,9 @@ Time-series data for a specific metric in a run.
 - `wandb://runs/chess-grpo-20240101-1200-abcd/summary`
 - `wandb://runs/chess-grpo-20240101-1200-abcd/metrics/train_total_loss`
 
-## Key Metrics
+## Example Metrics
 
-The server prioritizes these metrics from the Chess-GRPO-Bot project:
+These are example metrics from the Chess-GRPO-Bot project. Your project may have different metrics:
 
 ### Training Metrics
 - `train_total_loss` - Total training loss
@@ -291,11 +350,11 @@ python mcp_wandb_server/test_server.py
 
 ### Authentication Issues
 - Ensure `WANDB_API_KEY` is set or you've run `wandb login`
-- Verify your API key has access to the "Chess-GRPO-Bot" project
+- Verify your API key has access to the configured project
 
 ### Run Not Found
 - Check that the run ID or name is correct
-- Ensure the run exists in the "Chess-GRPO-Bot" project
+- Ensure the run exists in the configured project (set via `WANDB_PROJECT`)
 - Verify your entity/team has access to the project
 
 ### Connection Issues
