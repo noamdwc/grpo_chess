@@ -10,7 +10,7 @@
 pretrain:
   lr: 0.0001                    # Learning rate (higher than GRPO fine-tuning)
   batch_size: 4096              # Batch size for pretraining
-  num_epochs: 180                # Number of passes through the dataset
+  num_epochs: 22                # Number of passes through the dataset
   warmup_steps: 1000            # Linear warmup steps
   weight_decay: 0.01            # AdamW weight decay
   max_grad_norm: 1.0            # Gradient clipping
