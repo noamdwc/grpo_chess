@@ -200,19 +200,33 @@ class PretrainChessTransformer(pl.LightningModule):
                 f"This means target actions are being masked as illegal, which should not happen."
             )
 
-        # Cross-entropy loss with label smoothing
-        loss = F.cross_entropy(
-            masked_logits,
-            targets,
-            label_smoothing=self.pretrain_config.label_smoothing,
-            reduction='mean'
-        )
-        
+        # Compute NLL loss (works correctly with -inf masked logits)
+        nll_loss = F.cross_entropy(masked_logits, targets, reduction='mean')
+
+        # Apply label smoothing only over legal moves to avoid inf from -inf logits
+        # Standard F.cross_entropy with label_smoothing averages log_softmax over ALL
+        # actions, but -inf logits cause smooth_loss = +inf
+        eps = self.pretrain_config.label_smoothing
+        if eps > 0:
+            # Compute log_softmax (illegal moves will be -inf)
+            log_probs = F.log_softmax(masked_logits, dim=-1)
+            # Zero out illegal moves so they don't contribute to smoothing term
+            log_probs_legal = log_probs.masked_fill(~legal_masks, 0.0)
+            # Average only over legal moves
+            num_legal = legal_masks.sum(dim=-1).float()  # [B]
+            smooth_loss = -log_probs_legal.sum(dim=-1) / num_legal  # [B]
+            loss = (1 - eps) * nll_loss + eps * smooth_loss.mean()
+        else:
+            loss = nll_loss
+
         # Check if loss is infinite or NaN
         if not torch.isfinite(loss):
             # Additional debugging info
             target_logits_debug = masked_logits.gather(1, targets.unsqueeze(1)).squeeze(1)
             print(f"DEBUG: Loss is {loss.item()}")
+            print(f"DEBUG: NLL loss: {nll_loss.item()}")
+            if eps > 0:
+                print(f"DEBUG: Smooth loss mean: {smooth_loss.mean().item()}")
             print(f"DEBUG: Logits shape: {logits.shape}")
             print(f"DEBUG: Legal masks shape: {legal_masks.shape}")
             print(f"DEBUG: Targets range: [{targets.min().item()}, {targets.max().item()}]")
@@ -223,8 +237,7 @@ class PretrainChessTransformer(pl.LightningModule):
                 f"1. Target actions are out of bounds\n"
                 f"2. Target actions are masked as illegal\n"
                 f"3. Model outputs contain NaN/Inf\n"
-                f"4. All logits are -inf (no legal moves)\n"
-                f"5. Label smoothing causes numerical issues"
+                f"4. All logits are -inf (no legal moves)"
             )
 
         # Compute metrics
