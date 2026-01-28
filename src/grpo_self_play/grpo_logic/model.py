@@ -405,7 +405,7 @@ class GRPOChessTransformer(pl.LightningModule):
         checkpoint_path = pretrain_cfg.checkpoint_path
         print(f"Loading pretrained weights from: {checkpoint_path}")
 
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
 
         # Handle different checkpoint formats
         if 'model_state_dict' in checkpoint:
