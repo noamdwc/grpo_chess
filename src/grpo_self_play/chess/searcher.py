@@ -16,6 +16,10 @@ class SearchConfig:
     trajectory_depth: int = 1 # T: max plies per trajectory
 
 
+# Register as safe for torch.load with weights_only=True (PyTorch 2.6+ compatibility)
+torch.serialization.add_safe_globals([SearchConfig])
+
+
 class TrajectorySearcher(ChessPlayer):
     """
     Searcher that uses a PolicyPlayer to:   

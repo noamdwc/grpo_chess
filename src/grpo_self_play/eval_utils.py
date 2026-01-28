@@ -26,6 +26,10 @@ class EvalConfig:
     opening_plies: int = 6  # random legal moves to diversify early positions
 
 
+# Register as safe for torch.load with weights_only=True (PyTorch 2.6+ compatibility)
+torch.serialization.add_safe_globals([EvalConfig])
+
+
 def debug_legal_coverage(board: chess.Board) -> tuple[int, int, list[str]]:
     """Debug function to check coverage of legal moves in action space.
     

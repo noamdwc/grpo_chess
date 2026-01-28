@@ -69,6 +69,10 @@ class PretrainConfig:
     val_check_interval: float = 0.1
 
 
+# Register as safe for torch.load with weights_only=True (PyTorch 2.6+ compatibility)
+torch.serialization.add_safe_globals([PretrainConfig])
+
+
 class PretrainChessTransformer(pl.LightningModule):
     """PyTorch Lightning module for pretraining chess policy with supervised learning.
 

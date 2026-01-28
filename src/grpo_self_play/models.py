@@ -11,7 +11,7 @@ from src.grpo_self_play.chess.chess_logic import board_to_tensor, get_legal_move
 @dataclass
 class ChessTransformerConfig:
     """Configuration for the Chess Transformer model.
-    
+
     Attributes:
         vocab_size: Size of the vocabulary (token dictionary)
         embed_dim: Embedding dimension for transformer
@@ -24,6 +24,10 @@ class ChessTransformerConfig:
     num_layers: int = 4
     num_heads: int = 8
     action_dim: int = 1968
+
+
+# Register as safe for torch.load with weights_only=True (PyTorch 2.6+ compatibility)
+torch.serialization.add_safe_globals([ChessTransformerConfig])
 
 
 class ChessTransformer(nn.Module):

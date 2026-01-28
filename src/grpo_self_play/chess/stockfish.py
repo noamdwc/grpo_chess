@@ -2,6 +2,7 @@ import os
 import chess
 import chess.engine
 import warnings
+import torch
 from typing import Optional
 from dataclasses import dataclass
 from src.grpo_self_play.chess.chess_logic import ChessPlayer
@@ -18,6 +19,10 @@ class StockfishConfig:
     movetime_ms: int = 50
     threads: int = 1
     hash_mb: int = 128
+
+
+# Register as safe for torch.load with weights_only=True (PyTorch 2.6+ compatibility)
+torch.serialization.add_safe_globals([StockfishConfig])
 
 
 class StockfishManager:

@@ -282,6 +282,10 @@ class GRPOConfig:
     max_kl_divergence: float = 0.08    # If KL >> target_kl for too long -> abort
 
 
+# Register as safe for torch.load with weights_only=True (PyTorch 2.6+ compatibility)
+torch.serialization.add_safe_globals([GRPOConfig])
+
+
 class GRPOChessTransformer(pl.LightningModule):
     """PyTorch Lightning module for training chess policy with GRPO.
 

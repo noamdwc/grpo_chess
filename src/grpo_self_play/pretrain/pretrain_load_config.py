@@ -1,5 +1,6 @@
 """Pretrain load configuration - separated to avoid circular imports."""
 
+import torch
 from dataclasses import dataclass
 from typing import Optional
 
@@ -14,3 +15,7 @@ class PretrainLoadConfig:
     """
     checkpoint_path: Optional[str] = None
     freeze_layers: int = 0
+
+
+# Register as safe for torch.load with weights_only=True (PyTorch 2.6+ compatibility)
+torch.serialization.add_safe_globals([PretrainLoadConfig])

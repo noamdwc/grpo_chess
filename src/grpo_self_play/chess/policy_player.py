@@ -17,6 +17,10 @@ class PolicyConfig:
     search_depth: int = 2  # for search; 0 = no search
 
 
+# Register as safe for torch.load with weights_only=True (PyTorch 2.6+ compatibility)
+torch.serialization.add_safe_globals([PolicyConfig])
+
+
 class PolicyPlayer(ChessPlayer):
     def __init__(self, model, device=None, cfg=PolicyConfig()):
         self.model = model.eval()
