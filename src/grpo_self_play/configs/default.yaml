@@ -12,16 +12,17 @@ training:
 
 # =============================================================================
 # GRPO (Group Relative Policy Optimization) Config
+# Tuned for pretrain + GRPO (see research_docs/2026-01-29_pretrain-grpo-failure-analysis.md)
 # =============================================================================
 grpo:
-  lr: 0.00003
+  lr: 0.000003  # 3e-6: lower LR preserves pretrained features
   num_trajectories: 16
   trajectory_depth: 16
-  clip_ratio: 0.10
+  clip_ratio: 0.20  # wider clip ratio for pretrained init (was 0.10)
   kl_coef: 0.01  # initial value; adaptive_kl will adjust it
   entropy_coef: 0.10
   eval_every_n_epochs: 10
-  ppo_steps: 4
+  ppo_steps: 1  # single step prevents policy drift (was 4)
   rollout_temperature: 1.3  # >1 increases exploration during rollouts
 
   # Entropy floor monitoring
@@ -34,9 +35,16 @@ grpo:
   # Adaptive KL controller
   adaptive_kl: true
   target_kl: 0.012
-  kl_adapt_rate: 1.5
+  kl_adapt_rate: 1.2  # slower adaptation (was 1.5)
   kl_coef_min: 0.001
-  kl_coef_max: 0.2
+  kl_coef_max: 0.1  # lower max prevents KL dominating (was 0.2)
+
+  # Safety checks
+  enable_safety_checks: true
+  safety_patience_steps: 1000
+  max_clip_fraction: 0.95
+  min_entropy: 0.5
+  max_kl_divergence: 0.08
 
 # =============================================================================
 # Transformer Model Config
@@ -92,7 +100,7 @@ searcher: null
 # =============================================================================
 pretrain:
   checkpoint_path: null  # Path to pretrained checkpoint (e.g., "checkpoints/pretrain/pretrain_final.pt")
-  freeze_layers: 0       # Number of transformer layers to freeze (0 = train all)
+  freeze_layers: 2       # Freeze first 2 transformer layers to preserve learned representations
 
 # =============================================================================
 # Dataset Config (Chess Start States)
