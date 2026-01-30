@@ -47,7 +47,7 @@ grpo:
   max_kl_divergence: 0.08
 
   # Teacher forcing: use Stockfish for rival moves during trajectory sampling
-  teacher_forcing_prob: 0.3  # 30% of rival moves will be from Stockfish
+  teacher_forcing_prob: 0.1  # 10% of rival moves will be from Stockfish
   teacher_forcing_depth: 4
 
 # =============================================================================
