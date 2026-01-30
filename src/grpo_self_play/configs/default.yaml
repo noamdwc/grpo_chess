@@ -40,11 +40,15 @@ grpo:
   kl_coef_max: 0.1  # lower max prevents KL dominating (was 0.2)
 
   # Safety checks
-  enable_safety_checks: true
+  enable_safety_checks: false
   safety_patience_steps: 1000
   max_clip_fraction: 0.95
   min_entropy: 0.5
   max_kl_divergence: 0.08
+
+  # Teacher forcing: use Stockfish for rival moves during trajectory sampling
+  teacher_forcing_prob: 0.3  # 30% of rival moves will be from Stockfish
+  teacher_forcing_depth: 4
 
 # =============================================================================
 # Transformer Model Config

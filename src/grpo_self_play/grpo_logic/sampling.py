@@ -1,14 +1,53 @@
+import os
 import random
 from typing import List, Optional
 import chess
+import chess.engine
 import torch
 import torch.nn.functional as F
 from dataclasses import dataclass
 
 from src.grpo_self_play.chess.rewards import reward_board, evaluate_board, normalize_cp
 from src.grpo_self_play.models import ChessTransformer
-from src.grpo_self_play.searchless_chess_imports import ACTION_TO_MOVE, SEQUENCE_LENGTH
+from src.grpo_self_play.searchless_chess_imports import ACTION_TO_MOVE, SEQUENCE_LENGTH, MOVE_TO_ACTION
 from src.grpo_self_play.chess.chess_logic import board_to_tensor,  get_legal_moves_mask
+from src.grpo_self_play.chess.stockfish import StockfishManager, StockfishConfig
+
+
+# Process-safe Stockfish engine for teacher forcing
+_teacher_engine: chess.engine.SimpleEngine | None = None
+_teacher_engine_pid: int | None = None
+
+
+def get_teacher_engine(cfg: StockfishConfig | None = None) -> chess.engine.SimpleEngine:
+    """Get a process-safe Stockfish engine for teacher forcing."""
+    global _teacher_engine, _teacher_engine_pid
+    pid = os.getpid()
+    if pid != _teacher_engine_pid:
+        _teacher_engine = None
+        _teacher_engine_pid = pid
+    if _teacher_engine is None:
+        _teacher_engine = StockfishManager.get_engine(f"teacher_forcing_{pid}", cfg)
+    return _teacher_engine
+
+
+def get_stockfish_move(board: chess.Board, depth: int = 4) -> Optional[chess.Move]:
+    """Get the best move from Stockfish for a given board position.
+
+    Args:
+        board: Chess board position
+        depth: Stockfish search depth
+
+    Returns:
+        Best move from Stockfish, or None if no move available
+    """
+    if board.is_game_over():
+        return None
+
+    engine = get_teacher_engine()
+    limit = chess.engine.Limit(depth=depth)
+    result = engine.play(board, limit)
+    return result.move
 
 
 # Trajectories sampling logic
@@ -92,7 +131,9 @@ def sample_trajectories_batched(model: ChessTransformer,
                                 num_trajectories: int,
                                 trajectory_depth: int,
                                 reward_depth: int = 4,
-                                temperature: float = 1.0) -> Optional[TrajectoriesSample]:
+                                temperature: float = 1.0,
+                                teacher_forcing_prob: float = 0.0,
+                                teacher_forcing_depth: int = 4) -> Optional[TrajectoriesSample]:
     """Sample multiple trajectories from each board position using the policy model.
 
     Args:
@@ -102,6 +143,8 @@ def sample_trajectories_batched(model: ChessTransformer,
         trajectory_depth: Maximum depth of each trajectory (T)
         reward_depth: Stockfish depth for reward computation (default: 4)
         temperature: Temperature for action sampling (default: 1.0, >1 increases exploration)
+        teacher_forcing_prob: Probability of using Stockfish for rival moves (default: 0.0)
+        teacher_forcing_depth: Stockfish depth for teacher forcing moves (default: 4)
 
     Returns:
         TrajectoriesSample containing batched trajectory data, or None if no boards
@@ -127,10 +170,14 @@ def sample_trajectories_batched(model: ChessTransformer,
                       for b in range(B) for _ in range(G)]
 
     # Rollout: sample trajectories in batches
-    for _ in range(T):
+    for t in range(T):
         active_env_idx = [i for i, e in enumerate(envs) if not e.is_game_over()]
         if not active_env_idx:
             break
+
+        # Determine if this is the rival's turn (odd timesteps)
+        is_rival_turn = (t % 2 == 1)
+        use_teacher_forcing = is_rival_turn and teacher_forcing_prob > 0 and random.random() < teacher_forcing_prob
 
         active_boards = [envs[i] for i in active_env_idx]
         roll_out_step = batched_policy_step(model, active_boards, temperature=temperature)
@@ -148,6 +195,15 @@ def sample_trajectories_batched(model: ChessTransformer,
             b_idx = env_idx_j // G
             g_idx = env_idx_j % G
             state_j = states_batch[j]
+
+            # Teacher forcing: override rival's move with Stockfish
+            if use_teacher_forcing:
+                sf_move = get_stockfish_move(envs[env_idx_j], depth=teacher_forcing_depth)
+                if sf_move is not None and sf_move in envs[env_idx_j].legal_moves:
+                    move_j = sf_move
+                    # Update action index to match the Stockfish move
+                    action_indices[j] = MOVE_TO_ACTION[move_j.uci()]
+
             traj_log_probs[b_idx][g_idx].append(log_probs[j])
             traj_actions[b_idx][g_idx].append(int(action_indices[j].item()))
             traj_states[b_idx][g_idx].append(state_j)

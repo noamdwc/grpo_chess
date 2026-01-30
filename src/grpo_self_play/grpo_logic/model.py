@@ -281,6 +281,10 @@ class GRPOConfig:
     min_entropy: float = 0.5           # If entropy < this for too long -> abort
     max_kl_divergence: float = 0.08    # If KL >> target_kl for too long -> abort
 
+    # Teacher forcing: use Stockfish for rival moves during trajectory sampling
+    teacher_forcing_prob: float = 0.0  # Probability of using Stockfish for rival (opponent) moves
+    teacher_forcing_depth: int = 4     # Stockfish search depth for teacher forcing moves
+
 
 # Register as safe for torch.load with weights_only=True (PyTorch 2.6+ compatibility)
 torch.serialization.add_safe_globals([GRPOConfig])
@@ -598,7 +602,9 @@ class GRPOChessTransformer(pl.LightningModule):
             boards,
             self.hparams.grpo_config.num_trajectories,
             self.hparams.grpo_config.trajectory_depth,
-            temperature=self.hparams.grpo_config.rollout_temperature
+            temperature=self.hparams.grpo_config.rollout_temperature,
+            teacher_forcing_prob=self.hparams.grpo_config.teacher_forcing_prob,
+            teacher_forcing_depth=self.hparams.grpo_config.teacher_forcing_depth,
         )
         if trajectories_sample is None:
             return  # Skip if no moves
