@@ -3,35 +3,36 @@ import chess
 import chess.engine
 
 from functools import lru_cache
-from src.grpo_self_play.chess.stockfish import StockfishManager, StockfishConfig
+from src.grpo_self_play.chess.stockfish import stockfish_analyse, DEFAULT_STOCKFISH_TIMEOUT
 
-_engine: chess.engine.SimpleEngine | None = None
-_engine_pid: int | None = None
-def get_engine(cfg: StockfishConfig | None = None) -> chess.engine.SimpleEngine:
-    global _engine, _engine_pid
-    pid = os.getpid()
-    if pid != _engine_pid:
-        _engine = None
-        _engine_pid = pid
-    if _engine is None:
-        _engine = StockfishManager.get_engine(f"reward_engine_{_engine_pid}", cfg)
-    return _engine
+# Engine name for reward evaluation
+REWARD_ENGINE_NAME = f"reward_engine_{os.getpid()}"
 
 
-def _raw_white_reward(fen: str,movetime_ms: int, depth: int) -> float:
-  if depth and depth > 0:
-      limit = chess.engine.Limit(depth=depth)
-  else:
-      limit = chess.engine.Limit(time=movetime_ms / 1000.0)
-  engine = get_engine()
-  info = engine.analyse(chess.Board(fen), limit)
-  score = info["score"].pov(chess.WHITE)
-  if score.is_mate():
-    return 10000.0 if score.mate() > 0 else -10000.0
-  return float(score.score())
+def _get_reward_engine_name() -> str:
+    """Get process-specific engine name for reward evaluation."""
+    return f"reward_engine_{os.getpid()}"
 
 
-@lru_cache(maxsize=200_000)
+def _raw_white_reward(fen: str, movetime_ms: int, depth: int, timeout: float = DEFAULT_STOCKFISH_TIMEOUT) -> float:
+    """Get raw centipawn evaluation from White's perspective using centralized wrapper."""
+    if depth and depth > 0:
+        limit = chess.engine.Limit(depth=depth)
+    else:
+        limit = chess.engine.Limit(time=movetime_ms / 1000.0)
+
+    info = stockfish_analyse(_get_reward_engine_name(), chess.Board(fen), limit, timeout=timeout)
+
+    if info is None:
+        return 0.0  # Fallback on engine failure
+
+    score = info["score"].pov(chess.WHITE)
+    if score.is_mate():
+        return 10000.0 if score.mate() > 0 else -10000.0
+    return float(score.score())
+
+
+@lru_cache(maxsize=50_000)
 def cached_raw_reward_white(fen: str, depth: int) -> float:
     """
     Cached Stockfish raw eval for a given FEN from White's POV.

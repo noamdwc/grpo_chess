@@ -1,11 +1,13 @@
 import os
 import chess
 import chess.engine
-import warnings
 import torch
 from typing import Optional
 from dataclasses import dataclass
 from src.grpo_self_play.chess.chess_logic import ChessPlayer
+from src.grpo_self_play.logging_utils import get_logger
+
+logger = get_logger("grpo_chess.stockfish")
 
 DEFAULT_STOCKFISH_PATH = "/usr/games/stockfish"
 
@@ -51,17 +53,17 @@ class StockfishManager:
       try:
           engine.configure({"Threads": cfg.threads})
       except Exception:
-          warnings.warn("Failed to set Stockfish threads", RuntimeWarning)
+          logger.warning("Failed to set Stockfish threads")
 
       try:
           engine.configure({"Hash": cfg.hash_mb})
       except Exception:
-          warnings.warn("Failed to set Stockfish hash size", RuntimeWarning)
+          logger.warning("Failed to set Stockfish hash size")
 
       try:
           engine.configure({"Skill Level": cfg.skill_level})
       except Exception:
-          warnings.warn("Failed to set Stockfish skill level", RuntimeWarning)
+          logger.warning("Failed to set Stockfish skill level")
 
       if cfg.use_elo_limit:
           try:
@@ -70,7 +72,7 @@ class StockfishManager:
                   "UCI_Elo": cfg.elo,
               })
           except Exception:
-              warnings.warn("Failed to set Stockfish ELO limit", RuntimeWarning)
+              logger.warning("Failed to set Stockfish ELO limit")
 
 
   @classmethod
@@ -102,7 +104,7 @@ class StockfishManager:
           try:
               engine.quit()
           except Exception:
-              warnings.warn(f"Failed to close Stockfish engine '{name}' in StockfishManager", RuntimeWarning)
+              logger.warning(f"Failed to close Stockfish engine '{name}'")
           finally:
               cls._engines.pop(name, None)
               cls._cfgs.pop(name, None)
@@ -115,11 +117,96 @@ class StockfishManager:
 
 
 
+# Default timeout for Stockfish operations (seconds)
+DEFAULT_STOCKFISH_TIMEOUT = 10.0
+
+
+def stockfish_analyse(
+    engine_name: str,
+    board: chess.Board,
+    limit: chess.engine.Limit,
+    timeout: float = DEFAULT_STOCKFISH_TIMEOUT,
+    cfg: StockfishConfig | None = None,
+    attempts_n: int = 2
+) -> Optional[chess.engine.InfoDict]:
+    """Analyse a position with Stockfish, with timeout and crash recovery.
+
+    Args:
+        engine_name: Name of the engine instance to use
+        board: Chess board position to analyse
+        limit: Search limit (depth, time, etc.)
+        timeout: Maximum time to wait for response (seconds)
+        cfg: Optional config for engine creation
+        attempts_n: how many attempts to try
+
+    Returns:
+        Analysis info dict, or None if analysis failed
+    """
+    for attempt in range(attempts_n):
+        try:
+            engine = StockfishManager.get_engine(engine_name, cfg)
+            info = engine.analyse(board, limit, timeout=timeout)
+            return info
+        except chess.engine.EngineTerminatedError:
+            logger.error(f"Stockfish engine '{engine_name}' terminated unexpectedly, recreating...")
+            StockfishManager.close(engine_name)
+            if attempt == 1:
+                return None
+        except TimeoutError:
+            logger.warning(f"Stockfish analyse timed out after {timeout}s for engine '{engine_name}'")
+            return None
+        except Exception as e:
+            logger.error(f"Stockfish analyse error: {e}")
+            return None
+    return None
+
+
+def stockfish_play(
+    engine_name: str,
+    board: chess.Board,
+    limit: chess.engine.Limit,
+    timeout: float = DEFAULT_STOCKFISH_TIMEOUT,
+    cfg: StockfishConfig | None = None,
+) -> Optional[chess.Move]:
+    """Get best move from Stockfish, with timeout and crash recovery.
+
+    Args:
+        engine_name: Name of the engine instance to use
+        board: Chess board position
+        limit: Search limit (depth, time, etc.)
+        timeout: Maximum time to wait for response (seconds)
+        cfg: Optional config for engine creation
+
+    Returns:
+        Best move, or None if engine failed
+    """
+    if board.is_game_over():
+        return None
+
+    for attempt in range(2):
+        try:
+            engine = StockfishManager.get_engine(engine_name, cfg)
+            result = engine.play(board, limit, timeout=timeout)
+            return result.move
+        except chess.engine.EngineTerminatedError:
+            logger.error(f"Stockfish engine '{engine_name}' terminated unexpectedly, recreating...")
+            StockfishManager.close(engine_name)
+            if attempt == 1:
+                return None
+        except TimeoutError:
+            logger.warning(f"Stockfish play timed out after {timeout}s for engine '{engine_name}'")
+            return None
+        except Exception as e:
+            logger.error(f"Stockfish play error: {e}")
+            return None
+    return None
+
+
 class StockfishPlayer(ChessPlayer):
     '''
     A chess player that uses Stockfish engine to select moves.
     '''
-    
+
     DEFUALT_PLAYER_ENGINE_NAME = "player_engine"
 
     def __init__(self, cfg: StockfishConfig, engine_name: Optional[str] = None):
@@ -134,9 +221,8 @@ class StockfishPlayer(ChessPlayer):
         try:
             StockfishManager.close(self.engine_name)
         except Exception:
-            warnings.warn("Failed to close Stockfish engine in StockfishPlayer", RuntimeWarning)
+            logger.warning("Failed to close Stockfish engine in StockfishPlayer")
 
     def act(self, board: chess.Board) -> chess.Move | None:
         limit = chess.engine.Limit(time=self.cfg.movetime_ms / 1000.0)
-        result = self.engine.play(board, limit)
-        return result.move
+        return stockfish_play(self.engine_name, board, limit, cfg=self.cfg)

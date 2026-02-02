@@ -9,6 +9,8 @@ training:
   num_epochs: 400
   batch_size: 32
   steps_per_epoch: 512
+  checkpoint_every_n_epochs: 5  # Save periodic checkpoint every N epochs for crash recovery
+  keep_n_checkpoints: 3         # Keep last N periodic checkpoints per run
 
 # =============================================================================
 # GRPO (Group Relative Policy Optimization) Config

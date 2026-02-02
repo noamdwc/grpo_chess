@@ -11,43 +11,27 @@ from src.grpo_self_play.chess.rewards import reward_board, evaluate_board, norma
 from src.grpo_self_play.models import ChessTransformer
 from src.grpo_self_play.searchless_chess_imports import ACTION_TO_MOVE, SEQUENCE_LENGTH, MOVE_TO_ACTION
 from src.grpo_self_play.chess.chess_logic import board_to_tensor,  get_legal_moves_mask
-from src.grpo_self_play.chess.stockfish import StockfishManager, StockfishConfig
+from src.grpo_self_play.chess.stockfish import stockfish_play, DEFAULT_STOCKFISH_TIMEOUT
 
 
-# Process-safe Stockfish engine for teacher forcing
-_teacher_engine: chess.engine.SimpleEngine | None = None
-_teacher_engine_pid: int | None = None
+def _get_teacher_engine_name() -> str:
+    """Get process-specific engine name for teacher forcing."""
+    return f"teacher_forcing_{os.getpid()}"
 
 
-def get_teacher_engine(cfg: StockfishConfig | None = None) -> chess.engine.SimpleEngine:
-    """Get a process-safe Stockfish engine for teacher forcing."""
-    global _teacher_engine, _teacher_engine_pid
-    pid = os.getpid()
-    if pid != _teacher_engine_pid:
-        _teacher_engine = None
-        _teacher_engine_pid = pid
-    if _teacher_engine is None:
-        _teacher_engine = StockfishManager.get_engine(f"teacher_forcing_{pid}", cfg)
-    return _teacher_engine
-
-
-def get_stockfish_move(board: chess.Board, depth: int = 4) -> Optional[chess.Move]:
+def get_stockfish_move(board: chess.Board, depth: int = 4, timeout: float = DEFAULT_STOCKFISH_TIMEOUT) -> Optional[chess.Move]:
     """Get the best move from Stockfish for a given board position.
 
     Args:
         board: Chess board position
         depth: Stockfish search depth
+        timeout: Maximum time to wait for response (seconds)
 
     Returns:
-        Best move from Stockfish, or None if no move available
+        Best move from Stockfish, or None if no move available or on error
     """
-    if board.is_game_over():
-        return None
-
-    engine = get_teacher_engine()
     limit = chess.engine.Limit(depth=depth)
-    result = engine.play(board, limit)
-    return result.move
+    return stockfish_play(_get_teacher_engine_name(), board, limit, timeout=timeout)
 
 
 # Trajectories sampling logic
