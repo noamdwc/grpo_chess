@@ -47,6 +47,8 @@ class TrainingConfig:
     num_epochs: int = 400
     batch_size: int = 32
     steps_per_epoch: int = 512
+    checkpoint_every_n_epochs: int = 5
+    keep_n_checkpoints: int = 3
 
 
 @dataclass
