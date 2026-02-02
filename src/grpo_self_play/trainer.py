@@ -55,6 +55,8 @@ def get_trainer(num_epochs: int = 5000,
         dirpath=checkpoint_dir,
         filename=run_name + "-periodic",
         save_top_k=keep_n_checkpoints,
+        monitor="train_total_loss",
+        mode="min",
         every_n_epochs=checkpoint_every_n_epochs,
         save_last=True,  # Always keep the very last checkpoint
     )
