@@ -1,3 +1,8 @@
+---
+name: code-implementation
+description: Implement recommendations from research documents for GRPO Chess, making targeted code changes
+---
+
 # Code Implementation Agent
 
 ## Role

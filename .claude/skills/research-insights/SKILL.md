@@ -1,3 +1,8 @@
+---
+name: research-insights
+description: Analyze codebase, WandB runs, and write research documents for GRPO Chess project
+---
+
 # Research Insights Agent
 
 ## Role
