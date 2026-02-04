@@ -114,21 +114,22 @@ def _check_engine_not_inherited(name):
 def _run_stockfish_task_in_subprocess(mode: str, engine_name: str, pos_index: int, idx: int, timeout: float = 60) -> tuple[int, bool]:
     """Run one analyse or play task in a separate process. Returns (idx, success)."""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # Pass repo root as first arg so the child uses the same path (works in Colab / any cwd).
     cmd = [
         sys.executable,
         "-c",
-        f"""
+        """
 import sys
-sys.path.insert(0, {repr(root)})
+root = sys.argv[1]
+sys.path.insert(0, root)
+pos_index = int(sys.argv[2])
+idx = int(sys.argv[3])
+mode = sys.argv[4]
+engine_name = sys.argv[5]
 from tests.test_stockfish_concurrency import (
     _worker_analyse, _worker_play, TEST_POSITIONS,
 )
 from src.grpo_self_play.chess.stockfish import StockfishManager
-
-pos_index = int(sys.argv[1])
-idx = int(sys.argv[2])
-mode = sys.argv[3]
-engine_name = sys.argv[4]
 fen = TEST_POSITIONS[pos_index % len(TEST_POSITIONS)]
 args = (engine_name, fen, idx)
 try:
@@ -144,18 +145,22 @@ except Exception as e:
 finally:
     StockfishManager.close_all()
 """,
+        root,
         str(pos_index),
         str(idx),
         mode,
         engine_name,
     ]
     try:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.path.pathsep.join([root, env.get("PYTHONPATH", "")]).rstrip(os.path.pathsep)
         proc = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
-            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            cwd=root,
+            env=env,
         )
         if proc.returncode != 0:
             return idx, False
