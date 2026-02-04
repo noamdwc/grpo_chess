@@ -114,42 +114,63 @@ def _check_engine_not_inherited(name):
 def _run_stockfish_task_in_subprocess(mode: str, engine_name: str, pos_index: int, idx: int, timeout: float = 60) -> tuple[int, bool]:
     """Run one analyse or play task in a separate process. Returns (idx, success)."""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # Get stockfish path in parent process and pass it to child
+    stockfish_path = get_stockfish_path() or "/usr/games/stockfish"
     # Pass repo root as first arg so the child uses the same path (works in Colab / any cwd).
     cmd = [
         sys.executable,
         "-c",
         """
 import sys
+import traceback
 root = sys.argv[1]
 sys.path.insert(0, root)
 pos_index = int(sys.argv[2])
 idx = int(sys.argv[3])
 mode = sys.argv[4]
 engine_name = sys.argv[5]
-from tests.test_stockfish_concurrency import (
-    _worker_analyse, _worker_play, TEST_POSITIONS,
-)
-from src.grpo_self_play.chess.stockfish import StockfishManager
-fen = TEST_POSITIONS[pos_index % len(TEST_POSITIONS)]
-args = (engine_name, fen, idx)
+stockfish_path = sys.argv[6]
 try:
+    import chess
+    from src.grpo_self_play.chess.stockfish import (
+        StockfishManager, StockfishConfig, stockfish_analyse, stockfish_play,
+        DEFAULT_STOCKFISH_TIMEOUT,
+    )
+    TEST_POSITIONS = [
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+        "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
+        "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+        "rnbqkb1r/pp1ppppp/5n2/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq c6 0 3",
+    ]
+    fen = TEST_POSITIONS[pos_index % len(TEST_POSITIONS)]
+    board = chess.Board(fen)
+    limit = chess.engine.Limit(depth=5)
+    cfg = StockfishConfig(path=stockfish_path, skill_level=1, movetime_ms=10)
     if mode == "analyse":
-        r = _worker_analyse(args)
+        result = stockfish_analyse(engine_name, board, limit, timeout=DEFAULT_STOCKFISH_TIMEOUT, cfg=cfg)
+        success = result is not None
     else:
-        r = _worker_play(args)
-    _, _, success = r
+        move = stockfish_play(engine_name, board, limit, timeout=DEFAULT_STOCKFISH_TIMEOUT, cfg=cfg)
+        success = move is not None and move in board.legal_moves
     print(idx, 1 if success else 0, sep="\\t")
 except Exception as e:
-    print(idx, 0, sep="\\t", file=sys.stderr)
+    print(f"SUBPROCESS_ERROR: {e}", file=sys.stderr)
+    traceback.print_exc(file=sys.stderr)
     sys.exit(1)
 finally:
-    StockfishManager.close_all()
+    try:
+        from src.grpo_self_play.chess.stockfish import StockfishManager
+        StockfishManager.close_all()
+    except Exception:
+        pass
 """,
         root,
         str(pos_index),
         str(idx),
         mode,
         engine_name,
+        stockfish_path,
     ]
     try:
         env = os.environ.copy()
@@ -163,13 +184,20 @@ finally:
             env=env,
         )
         if proc.returncode != 0:
+            # Log stderr for debugging
+            if proc.stderr:
+                print(f"Subprocess {idx} stderr: {proc.stderr[:500]}", file=sys.stderr)
             return idx, False
         line = (proc.stdout or "").strip().split("\n")[-1]
         parts = line.split("\t")
         if len(parts) >= 2:
             return int(parts[0]), parts[1] == "1"
         return idx, False
-    except (subprocess.TimeoutExpired, ValueError):
+    except subprocess.TimeoutExpired:
+        print(f"Subprocess {idx} timed out after {timeout}s", file=sys.stderr)
+        return idx, False
+    except ValueError as e:
+        print(f"Subprocess {idx} value error: {e}", file=sys.stderr)
         return idx, False
 
 
