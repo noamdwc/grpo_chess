@@ -14,32 +14,32 @@ training:
 
 # =============================================================================
 # GRPO (Group Relative Policy Optimization) Config
-# Tuned for pretrain + GRPO (see research_docs/2026-01-29_pretrain-grpo-failure-analysis.md)
+# Clean run config (see research_docs/2026-02-06_loss-budget-and-monitor-analysis.md)
 # =============================================================================
 grpo:
-  lr: 0.000003  # 3e-6: lower LR preserves pretrained features
+  lr: 0.000001  # 1e-6: reduced because PPO signal now dominates gradient
   num_trajectories: 16
   trajectory_depth: 16
-  clip_ratio: 0.20  # wider clip ratio for pretrained init (was 0.10)
-  kl_coef: 0.01  # initial value; adaptive_kl will adjust it
-  entropy_coef: 0.10
+  clip_ratio: 0.20
+  kl_coef: 0.001  # reduced from 0.01 (was being overridden to 0.1 by adaptive KL)
+  entropy_coef: 0.0  # removed: not part of original GRPO loss, was 95% of gradient
   eval_every_n_epochs: 10
-  ppo_steps: 1  # single step prevents policy drift (was 4)
-  rollout_temperature: 1.3  # >1 increases exploration during rollouts
+  ppo_steps: 1
+  rollout_temperature: 1.3
 
-  # Entropy floor monitoring
-  use_entropy_floor: true
+  # Entropy floor monitoring — disabled (never triggered, see research doc)
+  use_entropy_floor: false
   entropy_floor: 1.5
   entropy_floor_steps: 150
-  entropy_floor_action: "boost"  # "warn", "stop", or "boost"
+  entropy_floor_action: "boost"
   entropy_boost_factor: 1.5
 
-  # Adaptive KL controller
-  adaptive_kl: true
+  # Adaptive KL controller — disabled (saturated at max instantly, see research doc)
+  adaptive_kl: false
   target_kl: 0.012
-  kl_adapt_rate: 1.2  # slower adaptation (was 1.5)
+  kl_adapt_rate: 1.2
   kl_coef_min: 0.001
-  kl_coef_max: 0.1  # lower max prevents KL dominating (was 0.2)
+  kl_coef_max: 0.1
 
   # Safety checks
   enable_safety_checks: false

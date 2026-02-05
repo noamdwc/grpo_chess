@@ -241,40 +241,37 @@ class GRPOConfig:
         min_entropy: If entropy < this for too long -> abort
         max_kl_divergence: If KL >> target_kl for too long -> abort
     """
-    # Learning rate: tuned from prior runs; 3e-5 was the most stable setting
-    lr: float = 3e-5
+    # Clean run defaults (see research_docs/2026-02-06_loss-budget-and-monitor-analysis.md)
+    lr: float = 1e-6             # Reduced: PPO signal now dominates gradient
     num_trajectories: int = 4
     trajectory_depth: int = 5
     clip_ratio: float = 0.2
-    kl_coef: float = 0.01
-    entropy_coef: float = 0.1  # Stronger entropy bonus to prevent policy collapse
-    eval_every_n_epochs: int = 10  # Stockfish eval frequency
+    kl_coef: float = 0.001       # Reduced from 0.01 (was overridden to 0.1 by adaptive KL)
+    entropy_coef: float = 0.0    # Removed: not in original GRPO loss, was 95% of gradient
+    eval_every_n_epochs: int = 10
 
-    # Entropy floor monitoring (Recommendation 1)
-    # Default: ON, in "boost" mode, to automatically push entropy back up.
-    use_entropy_floor: bool = True
-    entropy_floor: float = 1.5          # Below this, policy is essentially collapsing
-    entropy_floor_steps: int = 200      # Consecutive steps below floor before action
-    entropy_floor_action: str = "boost" # "warn", "stop", or "boost"
-    entropy_boost_factor: float = 2.0   # Multiply entropy_coef by this when boosting
+    # Entropy floor monitoring — disabled by default (never triggered in practice)
+    use_entropy_floor: bool = False
+    entropy_floor: float = 1.5
+    entropy_floor_steps: int = 200
+    entropy_floor_action: str = "boost"
+    entropy_boost_factor: float = 2.0
 
-    # Adaptive KL controller (Recommendation 2)
-    # Default: ON, with conservative bounds to avoid near-zero KL penalties.
-    adaptive_kl: bool = True
-    target_kl: float = 0.015       # Target KL divergence (0.01-0.02 range)
-    kl_adapt_rate: float = 1.2     # Slower adaptation for stability
-    kl_coef_min: float = 0.003     # Avoid turning KL regularization effectively off
-    kl_coef_max: float = 0.05      # Maximum kl_coef
+    # Adaptive KL controller — disabled by default (saturated at max instantly)
+    adaptive_kl: bool = False
+    target_kl: float = 0.015
+    kl_adapt_rate: float = 1.2
+    kl_coef_min: float = 0.003
+    kl_coef_max: float = 0.05
 
     # PPO-style multiple updates per sample
-    ppo_steps: int = 1  # Number of optimization steps per sampled trajectory batch
+    ppo_steps: int = 1
 
     # Rollout temperature for exploration (>1 flattens distribution, increases entropy)
-    rollout_temperature: float = 1.0  # Default 1.0 (no change), try 1.2-1.5 to prevent collapse
+    rollout_temperature: float = 1.0
 
     # Safety checks on training dynamics
-    # If enabled, the training step will abort when known-bad patterns persist.
-    enable_safety_checks: bool = True
+    enable_safety_checks: bool = False
     safety_patience_steps: int = 1000  # Number of training steps to tolerate violations
     # Thresholds derived from prior research docs
     max_clip_fraction: float = 0.95    # If mean_clip_fraction > this for too long -> abort
