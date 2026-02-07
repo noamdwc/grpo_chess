@@ -12,6 +12,8 @@ class GRPOLossInfo:
     ppo_loss: torch.Tensor
     entropy: torch.Tensor
     loss_without_entropy: torch.Tensor
+    advantage_mean: torch.Tensor
+    advantage_std: torch.Tensor
 
 def grpo_chess_loss(
     logprobs_new: torch.Tensor,   # [G, T]  log πθ(a_{g,k,t} | s_{g,k,t})
@@ -223,6 +225,7 @@ def grpo_ppo_loss(
     loss = loss_without_entropy - entropy_coef * entropy
 
     if return_info:
+        valid_advantages = advantages[pad_mask]
         return loss, GRPOLossInfo(
             kl_div=kl_div.detach(),
             mean_ratio=mean_ratio.detach(),
@@ -230,6 +233,8 @@ def grpo_ppo_loss(
             ppo_loss=ppo_loss.detach(),
             entropy=entropy.detach(),
             loss_without_entropy=loss_without_entropy.detach(),
+            advantage_mean=valid_advantages.mean().detach(),
+            advantage_std=valid_advantages.std().detach(),
         )
     return loss
     

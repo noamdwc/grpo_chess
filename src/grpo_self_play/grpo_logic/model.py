@@ -509,9 +509,10 @@ class GRPOChessTransformer(pl.LightningModule):
         Returns:
             Tuple of (loss, loss_info)
         """
-        # Compute new log probs with current policy
+        # Compute new log probs with current policy (must match rollout temperature)
         new_log_probs = self.policy_model.get_group_log_probs(
-            trajectories_states, trajectories_actions, trajectories_legal_masks
+            trajectories_states, trajectories_actions, trajectories_legal_masks,
+            temperature=self.hparams.grpo_config.rollout_temperature,
         )
 
         # Use current (possibly adapted) coefficients
@@ -675,6 +676,8 @@ class GRPOChessTransformer(pl.LightningModule):
         self.log("entropy", loss_info.entropy)
         # Loss without the entropy bonus term (PPO + KL only)
         self.log("train/loss_without_entropy", loss_info.loss_without_entropy)
+        self.log("train/advantage_mean", loss_info.advantage_mean)
+        self.log("train/advantage_std", loss_info.advantage_std)
         self.log("ppo_steps", float(ppo_steps))
         self._log_rewards_metrics(batch_group_rewards, prefix="train/")
 
