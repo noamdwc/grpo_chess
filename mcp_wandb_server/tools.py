@@ -1,6 +1,8 @@
 """MCP tool implementations for WandB API."""
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
+import base64
 from wandb.apis.public import Api, Run
+from mcp.types import TextContent, ImageContent
 
 from .config import get_config
 from .utils import (
@@ -9,7 +11,8 @@ from .utils import (
     format_runs_list,
     format_plot_info,
     format_comparison_table,
-    format_json_response
+    format_json_response,
+    downscale_image_bytes,
 )
 
 
@@ -173,49 +176,62 @@ async def get_run_summary(run_id: str) -> str:
 async def get_plots(
     run_id: str,
     plot_type: Optional[str] = None,
-    include_image_data: bool = True
-) -> str:
+    include_image_data: bool = True,
+    max_dimension: int = 800,
+) -> List[Union[TextContent, ImageContent]]:
     """
-    Retrieve plot/image data from wandb runs with base64-encoded image data.
-    
+    Retrieve plot/image data from wandb runs as native ImageContent.
+
     Args:
         run_id: WandB run ID or name
         plot_type: Filter by plot type (e.g., "image", "other")
-        include_image_data: If True, download and include base64-encoded image data
-        
+        include_image_data: If True, download images
+        max_dimension: Max pixel dimension for downscaling (0 to disable)
+
     Returns:
-        JSON string with list of plot metadata and base64-encoded image data
+        List of TextContent (metadata) and ImageContent (images)
     """
     try:
         api = get_wandb_api()
         run = find_run(api, run_id)
-        
+
         if not run:
-            return format_json_response({"error": f"Run '{run_id}' not found"})
-        
-        # Get files from the run
+            return [TextContent(type="text", text=format_json_response({"error": f"Run '{run_id}' not found"}))]
+
         files = run.files()
-        
-        # Filter image files
         image_files = [f for f in files if f.name.endswith((".png", ".jpg", ".jpeg", ".gif", ".svg"))]
-        
-        # Format plots with image data
-        plots = [format_plot_info(f, include_image_data=include_image_data) for f in image_files]
-        
-        # Filter by plot_type if provided
-        if plot_type:
-            plots = [p for p in plots if p["type"] == plot_type]
-        
+
+        all_metadata = []
+        image_contents: List[ImageContent] = []
+
+        for f in image_files:
+            metadata, raw_bytes, mime_type = format_plot_info(f, include_image_data=include_image_data)
+
+            if plot_type and metadata["type"] != plot_type:
+                continue
+
+            all_metadata.append(metadata)
+
+            if raw_bytes and mime_type:
+                if max_dimension > 0:
+                    raw_bytes = downscale_image_bytes(raw_bytes, max_dimension)
+                b64 = base64.b64encode(raw_bytes).decode("utf-8")
+                image_contents.append(
+                    ImageContent(type="image", data=b64, mimeType=mime_type)
+                )
+
         result = {
             "run_id": run.id,
             "run_name": run.name,
-            "plots": plots,
-            "note": "Images are base64-encoded in the 'image_data' field and as data URIs in 'data_uri' field" if include_image_data else "Image data not included (metadata only)"
+            "plots": all_metadata,
         }
-        
-        return format_json_response(result)
+        content: List[Union[TextContent, ImageContent]] = [
+            TextContent(type="text", text=format_json_response(result))
+        ]
+        content.extend(image_contents)
+        return content
     except Exception as e:
-        return format_json_response({"error": str(e)})
+        return [TextContent(type="text", text=format_json_response({"error": str(e)}))]
 
 
 async def compare_runs(

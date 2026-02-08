@@ -23,7 +23,7 @@ This project trains a chess-playing transformer using **GRPO (Group Relative Pol
 ### Required Tools
 - **Read**: Examine source code files (always include line numbers in findings)
 - **Grep/Glob**: Search codebase for patterns and files
-- **WandB MCP**: Query training metrics (`list_runs`, `get_run_metrics`, `get_run_summary`, `compare_runs`)
+- **WandB MCP**: Query training metrics (`list_runs`, `get_run_metrics`, `get_run_summary`, `compare_runs`, `get_plots` — returns images as native `ImageContent` for token-efficient viewing)
 
 ### Optional Tools
 - **WebSearch**: Research ML concepts, find papers, compare approaches

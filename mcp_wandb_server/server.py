@@ -3,7 +3,7 @@ import asyncio
 import sys
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.types import Tool, TextContent, ImageContent
 
 from .config import get_config
 from .tools import (
@@ -96,6 +96,11 @@ async def handle_list_tools() -> list[Tool]:
                         "type": "boolean",
                         "description": "If true, download and include base64-encoded image data (default: true)",
                         "default": True
+                    },
+                    "max_dimension": {
+                        "type": "integer",
+                        "description": "Max pixel dimension for downscaling images (default: 800, 0 to disable)",
+                        "default": 800
                     }
                 },
                 "required": ["run_id"]
@@ -125,9 +130,18 @@ async def handle_list_tools() -> list[Tool]:
 
 
 @server.call_tool()
-async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
+async def handle_call_tool(name: str, arguments: dict) -> list[TextContent | ImageContent]:
     """Handle tool calls."""
     try:
+        if name == "get_plots":
+            # get_plots returns its own list of TextContent | ImageContent
+            return await get_plots(
+                run_id=arguments["run_id"],
+                plot_type=arguments.get("plot_type"),
+                include_image_data=arguments.get("include_image_data", True),
+                max_dimension=arguments.get("max_dimension", 800),
+            )
+
         if name == "list_runs":
             result = await list_runs(
                 limit=arguments.get("limit", 10),
@@ -142,12 +156,6 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await get_run_summary(
                 run_id=arguments["run_id"]
             )
-        elif name == "get_plots":
-            result = await get_plots(
-                run_id=arguments["run_id"],
-                plot_type=arguments.get("plot_type"),
-                include_image_data=arguments.get("include_image_data", True)
-            )
         elif name == "compare_runs":
             result = await compare_runs(
                 run_ids=arguments["run_ids"],
@@ -155,7 +163,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             )
         else:
             result = f'{{"error": "Unknown tool: {name}"}}'
-        
+
         return [TextContent(type="text", text=result)]
     except Exception as e:
         error_msg = f'{{"error": "{str(e)}"}}'
