@@ -1,11 +1,13 @@
 import os
+import threading
 import chess
 import chess.engine
 import torch
 from typing import Optional
 from dataclasses import dataclass
-from src.grpo_self_play.chess.chess_logic import ChessPlayer
-from src.grpo_self_play.logging_utils import get_logger
+from concurrent.futures import TimeoutError as FuturesTimeoutError
+from src.chess.chess_logic import ChessPlayer
+from src.logging_utils import get_logger
 
 logger = get_logger("grpo_chess.stockfish")
 
@@ -36,6 +38,8 @@ class StockfishManager:
   _pid: int = os.getpid()
   _engines: dict[str, chess.engine.SimpleEngine] = {}
   _cfgs: dict[str, StockfishConfig] = {}
+  _locks: dict[str, threading.Lock] = {}  # Per-engine locks for thread safety
+  _manager_lock: threading.Lock = threading.Lock()  # Lock for managing _engines/_locks dicts
 
 
   @classmethod
@@ -47,6 +51,8 @@ class StockfishManager:
       cls._pid = pid
       cls._engines = {}
       cls._cfgs = {}
+      cls._locks = {}
+      cls._manager_lock = threading.Lock()
 
   @classmethod
   def _configure_engine(cls, engine: chess.engine.SimpleEngine, cfg: StockfishConfig) -> None:
@@ -80,6 +86,14 @@ class StockfishManager:
       return name in cls._engines
 
   @classmethod
+  def get_lock(cls, name: str) -> threading.Lock:
+      """Get the lock for a named engine (creates if needed)."""
+      with cls._manager_lock:
+          if name not in cls._locks:
+              cls._locks[name] = threading.Lock()
+          return cls._locks[name]
+
+  @classmethod
   def get_engine(cls, name: str, cfg: StockfishConfig | None = None) -> chess.engine.SimpleEngine:
       """
       Get (or create) a named engine instance.
@@ -87,27 +101,31 @@ class StockfishManager:
       - cfg: config to use when creating it (ignored later calls).
       """
       cls.ensure_pid() # Check if we are in a forked/spawned child and discard inherited engine handles.
-      if not cls.is_name_registered(name):
-          if cfg is None:
-              cfg = StockfishConfig()
-          engine = chess.engine.SimpleEngine.popen_uci(cfg.path)
-          cls._configure_engine(engine, cfg)
-          cls._engines[name] = engine
-          cls._cfgs[name] = cfg
-      return cls._engines[name]
+      with cls._manager_lock:
+          if not cls.is_name_registered(name):
+              if cfg is None:
+                  cfg = StockfishConfig()
+              engine = chess.engine.SimpleEngine.popen_uci(cfg.path)
+              cls._configure_engine(engine, cfg)
+              cls._engines[name] = engine
+              cls._cfgs[name] = cfg
+              cls._locks[name] = threading.Lock()
+          return cls._engines[name]
 
 
   @classmethod
   def close(cls, name: str) -> None:
-      engine = cls._engines.get(name)
-      if engine is not None:
-          try:
-              engine.quit()
-          except Exception:
-              logger.warning(f"Failed to close Stockfish engine '{name}'")
-          finally:
-              cls._engines.pop(name, None)
-              cls._cfgs.pop(name, None)
+      with cls._manager_lock:
+          engine = cls._engines.get(name)
+          if engine is not None:
+              try:
+                  engine.quit()
+              except Exception:
+                  logger.warning(f"Failed to close Stockfish engine '{name}'")
+              finally:
+                  cls._engines.pop(name, None)
+                  cls._cfgs.pop(name, None)
+                  cls._locks.pop(name, None)
 
 
   @classmethod
@@ -119,6 +137,45 @@ class StockfishManager:
 
 # Default timeout for Stockfish operations (seconds)
 DEFAULT_STOCKFISH_TIMEOUT = 10.0
+
+
+def run_with_timeout(func, timeout: float, *args, **kwargs):
+    """Run a function with a timeout.
+
+    Uses a single threading.Thread + join(timeout) instead of ThreadPoolExecutor
+    so that this works correctly in forked child processes (ProcessPoolExecutor
+    with fork). ThreadPoolExecutor can deadlock in forked workers due to
+    inherited lock state.
+
+    Args:
+        func: Function to call
+        timeout: Maximum time to wait (seconds)
+        *args, **kwargs: Arguments to pass to func
+
+    Returns:
+        Result of func
+
+    Raises:
+        FuturesTimeoutError: If the function doesn't complete within timeout
+    """
+    result_holder: list = []
+    exc_holder: list = []
+
+    def target() -> None:
+        try:
+            out = func(*args, **kwargs)
+            result_holder.append(out)
+        except BaseException as e:
+            exc_holder.append(e)
+
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+    if t.is_alive():
+        raise FuturesTimeoutError()
+    if exc_holder:
+        raise exc_holder[0]
+    return result_holder[0]
 
 
 def stockfish_analyse(
@@ -145,14 +202,15 @@ def stockfish_analyse(
     for attempt in range(attempts_n):
         try:
             engine = StockfishManager.get_engine(engine_name, cfg)
-            info = engine.analyse(board, limit, timeout=timeout)
-            return info
+            lock = StockfishManager.get_lock(engine_name)
+            with lock:
+                return run_with_timeout(engine.analyse, timeout, board, limit)
         except chess.engine.EngineTerminatedError:
             logger.error(f"Stockfish engine '{engine_name}' terminated unexpectedly, recreating...")
             StockfishManager.close(engine_name)
             if attempt == 1:
                 return None
-        except TimeoutError:
+        except FuturesTimeoutError:
             logger.warning(f"Stockfish analyse timed out after {timeout}s for engine '{engine_name}'")
             return None
         except Exception as e:
@@ -186,14 +244,16 @@ def stockfish_play(
     for attempt in range(2):
         try:
             engine = StockfishManager.get_engine(engine_name, cfg)
-            result = engine.play(board, limit, timeout=timeout)
+            lock = StockfishManager.get_lock(engine_name)
+            with lock:
+                result = run_with_timeout(engine.play, timeout, board, limit)
             return result.move
         except chess.engine.EngineTerminatedError:
             logger.error(f"Stockfish engine '{engine_name}' terminated unexpectedly, recreating...")
             StockfishManager.close(engine_name)
             if attempt == 1:
                 return None
-        except TimeoutError:
+        except FuturesTimeoutError:
             logger.warning(f"Stockfish play timed out after {timeout}s for engine '{engine_name}'")
             return None
         except Exception as e:

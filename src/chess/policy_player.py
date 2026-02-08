@@ -2,7 +2,7 @@
 import random
 import torch
 import torch.nn.functional as F
-from src.grpo_self_play.chess.chess_logic import (board_to_tensor, 
+from src.chess.chess_logic import (board_to_tensor, 
                                                   get_legal_moves_indices,
                                                   action_to_move,
                                                   ChessPlayer)

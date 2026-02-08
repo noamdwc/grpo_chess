@@ -14,42 +14,24 @@ training:
 
 # =============================================================================
 # GRPO (Group Relative Policy Optimization) Config
-# Tuned for pretrain + GRPO (see research_docs/2026-01-29_pretrain-grpo-failure-analysis.md)
 # =============================================================================
 grpo:
-  lr: 0.000003  # 3e-6: lower LR preserves pretrained features
+  lr: 0.000001  # 1e-6
   num_trajectories: 16
   trajectory_depth: 16
-  clip_ratio: 0.20  # wider clip ratio for pretrained init (was 0.10)
-  kl_coef: 0.01  # initial value; adaptive_kl will adjust it
-  entropy_coef: 0.10
+  clip_ratio: 0.20
+  kl_coef: 0.001
   eval_every_n_epochs: 10
-  ppo_steps: 1  # single step prevents policy drift (was 4)
-  rollout_temperature: 1.3  # >1 increases exploration during rollouts
-
-  # Entropy floor monitoring
-  use_entropy_floor: true
-  entropy_floor: 1.5
-  entropy_floor_steps: 150
-  entropy_floor_action: "boost"  # "warn", "stop", or "boost"
-  entropy_boost_factor: 1.5
-
-  # Adaptive KL controller
-  adaptive_kl: true
-  target_kl: 0.012
-  kl_adapt_rate: 1.2  # slower adaptation (was 1.5)
-  kl_coef_min: 0.001
-  kl_coef_max: 0.1  # lower max prevents KL dominating (was 0.2)
+  ppo_steps: 1
+  rollout_temperature: 1.3
 
   # Safety checks
   enable_safety_checks: false
   safety_patience_steps: 1000
   max_clip_fraction: 0.95
-  min_entropy: 0.5
-  max_kl_divergence: 0.08
 
   # Teacher forcing: use Stockfish for rival moves during trajectory sampling
-  teacher_forcing_prob: 0.1  # 10% of rival moves will be from Stockfish
+  teacher_forcing_prob: 0.1
   teacher_forcing_depth: 4
 
 # =============================================================================

@@ -35,7 +35,7 @@ This project trains a chess-playing transformer using **GRPO (Group Relative Pol
 ## Key Files
 
 ```
-src/grpo_self_play/
+src/
 ├── grpo_logic/
 │   ├── model.py        # GRPOChessTransformer - training step, evaluation
 │   ├── loss.py         # grpo_ppo_loss, group_advantage, ppo_chess_loss
@@ -154,7 +154,7 @@ I'll implement the reward magnitude increase.
 
 ## Implementation Plan
 
-### Change 1: src/grpo_self_play/chess/rewards.py
+### Change 1: src/chess/rewards.py
 - Current: `tanh(raw_score / 600.0)` (line 53)
 - New: `tanh(raw_score / 200.0)` for 3x stronger signal
 - Lines affected: 53
@@ -176,7 +176,7 @@ Making edit to line 53...
 
 ## Changes Made
 
-### src/grpo_self_play/chess/rewards.py
+### src/chess/rewards.py
 - Changed normalization from `/600.0` to `/200.0`
 - Line 53
 

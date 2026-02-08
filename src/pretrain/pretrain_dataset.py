@@ -16,7 +16,7 @@ from torch.utils.data import Dataset
 from datasets import load_dataset
 from tqdm import tqdm
 
-from src.grpo_self_play.searchless_chess_imports import MOVE_TO_ACTION, tokenize
+from src.searchless_chess_imports import MOVE_TO_ACTION, tokenize
 
 # Global constant
 _ACTION_SPACE_SIZE = max(MOVE_TO_ACTION.values()) + 1

@@ -1,7 +1,7 @@
 """Pretraining module for chess model."""
 
-from src.grpo_self_play.pretrain.pretrain_load_config import PretrainLoadConfig
-from src.grpo_self_play.pretrain.pretrain_dataset import (
+from src.pretrain.pretrain_load_config import PretrainLoadConfig
+from src.pretrain.pretrain_dataset import (
     ChessPretrainDataset,
     PretrainDatasetConfig,
     collate_pretrain_batch,

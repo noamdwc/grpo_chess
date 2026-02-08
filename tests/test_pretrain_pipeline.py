@@ -49,7 +49,7 @@ class TestPretrainDatasetConfig:
 
     def test_default_config(self):
         """Test default configuration values."""
-        from src.grpo_self_play.pretrain import PretrainDatasetConfig
+        from src.pretrain import PretrainDatasetConfig
 
         config = PretrainDatasetConfig()
 
@@ -64,7 +64,7 @@ class TestPretrainDatasetConfig:
 
     def test_custom_config(self):
         """Test custom configuration values."""
-        from src.grpo_self_play.pretrain import PretrainDatasetConfig
+        from src.pretrain import PretrainDatasetConfig
 
         config = PretrainDatasetConfig(
             min_elo=1800,
@@ -84,7 +84,7 @@ class TestPGNParsing:
 
     def test_parse_simple_pgn(self):
         """Test parsing simple PGN movetext."""
-        from src.grpo_self_play.pretrain.pretrain_dataset import parse_pgn_moves
+        from src.pretrain.pretrain_dataset import parse_pgn_moves
 
         movetext = "1. e4 e5 2. Nf3 Nc6"
         moves = parse_pgn_moves(movetext)
@@ -97,7 +97,7 @@ class TestPGNParsing:
 
     def test_parse_pgn_with_clock(self):
         """Test parsing PGN with clock annotations."""
-        from src.grpo_self_play.pretrain.pretrain_dataset import parse_pgn_moves
+        from src.pretrain.pretrain_dataset import parse_pgn_moves
 
         movetext = "1. e4 {[%clk 0:10:00]} e5 {[%clk 0:10:00]} 2. Nf3"
         moves = parse_pgn_moves(movetext)
@@ -109,7 +109,7 @@ class TestPGNParsing:
 
     def test_parse_pgn_with_result(self):
         """Test parsing PGN with game result."""
-        from src.grpo_self_play.pretrain.pretrain_dataset import parse_pgn_moves
+        from src.pretrain.pretrain_dataset import parse_pgn_moves
 
         movetext = "1. e4 e5 1-0"
         moves = parse_pgn_moves(movetext)
@@ -120,7 +120,7 @@ class TestPGNParsing:
 
     def test_parse_empty_pgn(self):
         """Test parsing empty PGN."""
-        from src.grpo_self_play.pretrain.pretrain_dataset import parse_pgn_moves
+        from src.pretrain.pretrain_dataset import parse_pgn_moves
 
         assert parse_pgn_moves("") == []
         assert parse_pgn_moves(None) == []
@@ -131,7 +131,7 @@ class TestPositionExtraction:
 
     def test_get_positions_basic(self):
         """Test basic position extraction."""
-        from src.grpo_self_play.pretrain.pretrain_dataset import get_positions_from_game
+        from src.pretrain.pretrain_dataset import get_positions_from_game
 
         # A game with 10 moves
         moves = ["e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5a4", "g8f6", "e1g1", "f8e7"]
@@ -152,7 +152,7 @@ class TestPositionExtraction:
 
     def test_get_positions_short_game(self):
         """Test position extraction from game too short."""
-        from src.grpo_self_play.pretrain.pretrain_dataset import get_positions_from_game
+        from src.pretrain.pretrain_dataset import get_positions_from_game
 
         moves = ["e2e4", "e7e5"]  # Only 2 moves
 
@@ -172,7 +172,7 @@ class TestUCIToAction:
 
     def test_valid_move(self):
         """Test conversion of valid UCI move."""
-        from src.grpo_self_play.pretrain.pretrain_dataset import uci_to_action
+        from src.pretrain.pretrain_dataset import uci_to_action
 
         # e2e4 should be in the action space
         action = uci_to_action("e2e4")
@@ -181,7 +181,7 @@ class TestUCIToAction:
 
     def test_invalid_move(self):
         """Test conversion of invalid UCI move."""
-        from src.grpo_self_play.pretrain.pretrain_dataset import uci_to_action
+        from src.pretrain.pretrain_dataset import uci_to_action
 
         action = uci_to_action("invalid")
         assert action is None
@@ -192,7 +192,7 @@ class TestCollateFn:
 
     def test_collate_batch(self):
         """Test collating a batch of samples."""
-        from src.grpo_self_play.pretrain import collate_pretrain_batch
+        from src.pretrain import collate_pretrain_batch
 
         # Create dummy samples
         batch = [
@@ -214,8 +214,8 @@ class TestPretrainChessTransformer:
 
     def test_model_creation(self):
         """Test creating the pretraining model."""
-        from src.grpo_self_play.pretrain.pretrain import PretrainChessTransformer, PretrainConfig
-        from src.grpo_self_play.models import ChessTransformerConfig
+        from src.pretrain.pretrain import PretrainChessTransformer, PretrainConfig
+        from src.models import ChessTransformerConfig
 
         transformer_config = ChessTransformerConfig(
             embed_dim=64,
@@ -236,8 +236,8 @@ class TestPretrainChessTransformer:
 
     def test_forward_pass(self):
         """Test forward pass through the model."""
-        from src.grpo_self_play.pretrain.pretrain import PretrainChessTransformer, PretrainConfig
-        from src.grpo_self_play.models import ChessTransformerConfig
+        from src.pretrain.pretrain import PretrainChessTransformer, PretrainConfig
+        from src.models import ChessTransformerConfig
 
         transformer_config = ChessTransformerConfig(
             embed_dim=64,
@@ -260,8 +260,8 @@ class TestPretrainChessTransformer:
 
     def test_training_step(self):
         """Test a single training step."""
-        from src.grpo_self_play.pretrain.pretrain import PretrainChessTransformer, PretrainConfig
-        from src.grpo_self_play.models import ChessTransformerConfig
+        from src.pretrain.pretrain import PretrainChessTransformer, PretrainConfig
+        from src.models import ChessTransformerConfig
 
         transformer_config = ChessTransformerConfig(
             embed_dim=64,
@@ -287,8 +287,8 @@ class TestPretrainChessTransformer:
 
     def test_validation_step(self):
         """Test a single validation step."""
-        from src.grpo_self_play.pretrain.pretrain import PretrainChessTransformer, PretrainConfig
-        from src.grpo_self_play.models import ChessTransformerConfig
+        from src.pretrain.pretrain import PretrainChessTransformer, PretrainConfig
+        from src.models import ChessTransformerConfig
 
         transformer_config = ChessTransformerConfig(
             embed_dim=64,
@@ -355,7 +355,7 @@ class TestPretrainLoadConfig:
 
     def test_default_config(self):
         """Test default configuration."""
-        from src.grpo_self_play.pretrain import PretrainLoadConfig
+        from src.pretrain import PretrainLoadConfig
 
         config = PretrainLoadConfig()
 
@@ -364,7 +364,7 @@ class TestPretrainLoadConfig:
 
     def test_custom_config(self):
         """Test custom configuration."""
-        from src.grpo_self_play.pretrain import PretrainLoadConfig
+        from src.pretrain import PretrainLoadConfig
 
         config = PretrainLoadConfig(
             checkpoint_path="/path/to/checkpoint.pt",
@@ -380,7 +380,7 @@ class TestIntegration:
 
     def test_dataloader_iteration(self):
         """Test that DataLoader can iterate over the dataset."""
-        from src.grpo_self_play.pretrain import collate_pretrain_batch
+        from src.pretrain import collate_pretrain_batch
         from torch.utils.data import IterableDataset
 
         # Create a mock dataset that yields proper samples
@@ -414,9 +414,9 @@ class TestIntegration:
 
     def test_training_loop_mock(self):
         """Test a mock training loop with Lightning."""
-        from src.grpo_self_play.pretrain.pretrain import PretrainChessTransformer, PretrainConfig
-        from src.grpo_self_play.pretrain import collate_pretrain_batch
-        from src.grpo_self_play.models import ChessTransformerConfig
+        from src.pretrain.pretrain import PretrainChessTransformer, PretrainConfig
+        from src.pretrain import collate_pretrain_batch
+        from src.models import ChessTransformerConfig
         from torch.utils.data import IterableDataset
 
         # Create mock dataset

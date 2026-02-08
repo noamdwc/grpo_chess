@@ -2,7 +2,7 @@
 # This file contains hyperparameters for supervised pretraining on Lichess games.
 #
 # Usage:
-#   python -m src.grpo_self_play.pretrain.pretrain --config pretrain.yaml
+#   python -m src.pretrain.pretrain --config pretrain.yaml
 
 # =============================================================================
 # Pretraining Settings

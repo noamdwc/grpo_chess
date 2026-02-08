@@ -5,14 +5,14 @@ This module provides utilities to load experiment configurations from YAML files
 and convert them to the appropriate dataclass objects.
 
 Usage:
-    from src.grpo_self_play.configs.config_loader import load_experiment_config
+    from src.configs.config_loader import load_experiment_config
 
     # Load a complete experiment config
     config = load_experiment_config("default.yaml")
 
     # Load with overrides
     config = load_experiment_config("default.yaml", overrides={
-        "grpo": {"lr": 1e-4, "entropy_coef": 0.2},
+        "grpo": {"lr": 1e-4},
         "training": {"num_epochs": 100},
     })
 
@@ -27,14 +27,14 @@ from typing import Any, Optional, TypeVar, Type
 import yaml
 
 # Import all config dataclasses
-from src.grpo_self_play.grpo_logic.model import GRPOConfig
-from src.grpo_self_play.models import ChessTransformerConfig
-from src.grpo_self_play.eval_utils import EvalConfig
-from src.grpo_self_play.chess.stockfish import StockfishConfig
-from src.grpo_self_play.chess.policy_player import PolicyConfig
-from src.grpo_self_play.chess.searcher import SearchConfig
-from src.grpo_self_play.chess.boards_dataset import ChessDatasetConfig
-from src.grpo_self_play.pretrain.pretrain_load_config import PretrainLoadConfig
+from src.grpo_logic.model import GRPOConfig
+from src.models import ChessTransformerConfig
+from src.eval_utils import EvalConfig
+from src.chess.stockfish import StockfishConfig
+from src.chess.policy_player import PolicyConfig
+from src.chess.searcher import SearchConfig
+from src.chess.boards_dataset import ChessDatasetConfig
+from src.pretrain.pretrain_load_config import PretrainLoadConfig
 
 
 # Directory containing config YAML files
@@ -141,7 +141,7 @@ def load_experiment_config(
         path: Path to the YAML file (absolute or relative to configs dir)
         overrides: Optional dict of overrides per section. Example:
             {
-                "grpo": {"lr": 1e-4, "entropy_coef": 0.2},
+                "grpo": {"lr": 1e-4},
                 "training": {"num_epochs": 100},
                 "stockfish": {"skill_level": 5},
             }
@@ -267,10 +267,8 @@ def print_config_summary(config: ExperimentConfig) -> None:
     print(f"  lr: {config.grpo.lr}")
     print(f"  num_trajectories: {config.grpo.num_trajectories}")
     print(f"  trajectory_depth: {config.grpo.trajectory_depth}")
-    print(f"  entropy_coef: {config.grpo.entropy_coef}")
+    print(f"  kl_coef: {config.grpo.kl_coef}")
     print(f"  rollout_temperature: {config.grpo.rollout_temperature}")
-    print(f"  adaptive_kl: {config.grpo.adaptive_kl}")
-    print(f"  use_entropy_floor: {config.grpo.use_entropy_floor}")
 
     print("\n[Transformer]")
     print(f"  embed_dim: {config.transformer.embed_dim}")

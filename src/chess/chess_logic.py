@@ -2,7 +2,7 @@ import chess
 import torch
 
 from typing import Optional
-from src.grpo_self_play.searchless_chess_imports import (MOVE_TO_ACTION, 
+from src.searchless_chess_imports import (MOVE_TO_ACTION, 
                                                          ACTION_TO_MOVE,
                                                          tokenize as deepmind_tokenize)
 

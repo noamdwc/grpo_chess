@@ -8,7 +8,7 @@ This MCP server enables coding agents to query wandb data including:
 - Training metrics (loss, rewards, KL divergence, etc.)
 - Evaluation results (Stockfish scores, Elo differences, win rates)
 - Run summaries and hyperparameters
-- Plot and image data with base64-encoded images for direct viewing
+- Plot and image data returned as native `ImageContent` for token-efficient viewing
 - Run comparisons
 
 ## Installation
@@ -230,29 +230,28 @@ Get summary statistics for a run including best/worst values, final values, and 
 ```
 
 ### `get_plots`
-Retrieve plot/image data from wandb runs with base64-encoded image data for direct viewing by agents.
+Retrieve plot/image data from wandb runs. Images are returned as native MCP `ImageContent` (vision tokens) instead of base64 text, reducing token cost by ~30-60x per image.
 
 **Parameters:**
 - `run_id` (required): WandB run ID or name
 - `plot_type` (optional): Filter by plot type (image, other)
-- `include_image_data` (optional): If true, download and include base64-encoded image data (default: true)
+- `include_image_data` (optional): If true, download images (default: true)
+- `max_dimension` (optional): Max pixel dimension for downscaling (default: 800, 0 to disable)
 
 **Returns:**
-- Plot metadata (name, size, URL)
-- Base64-encoded image data in `image_data` field
-- Data URI in `data_uri` field (ready for embedding: `data:image/png;base64,...`)
-- MIME type in `mime_type` field
+- `TextContent`: Plot metadata JSON (name, size, URL, type for each plot)
+- `ImageContent`: One per image file, downscaled to `max_dimension` pixels, as native vision content
 
 **Example:**
 ```json
 {
   "run_id": "chess-grpo-20240101-1200-abcd",
   "plot_type": "image",
-  "include_image_data": true
+  "max_dimension": 800
 }
 ```
 
-**Note:** When `include_image_data` is true, agents can directly view and analyze the plot images. The images are provided as base64-encoded strings and data URIs that can be embedded or displayed.
+**Note:** SVG files are included in metadata but not returned as `ImageContent`. Images are automatically downscaled to reduce token usage — set `max_dimension` to 0 to get full-resolution images.
 
 ### `compare_runs`
 Compare metrics across multiple runs.

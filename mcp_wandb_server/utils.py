@@ -1,5 +1,5 @@
 """Utility functions for formatting wandb data for agent consumption."""
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import json
 import base64
 import io
@@ -89,114 +89,106 @@ def format_runs_list(runs: List[Any]) -> List[Dict[str, Any]]:
     return [format_run_summary(run) for run in runs]
 
 
-def format_plot_info(file: Any, include_image_data: bool = True) -> Dict[str, Any]:
+def downscale_image_bytes(image_bytes: bytes, max_dimension: int = 800) -> bytes:
+    """Downscale an image so its largest dimension is at most max_dimension pixels.
+
+    Returns PNG bytes. Returns original bytes if already small enough.
     """
-    Format wandb file information for plots, optionally including base64-encoded image data.
-    
+    from PIL import Image
+    img = Image.open(io.BytesIO(image_bytes))
+    if max(img.size) <= max_dimension:
+        return image_bytes
+    img.thumbnail((max_dimension, max_dimension), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def format_plot_info(
+    file: Any, include_image_data: bool = True
+) -> Tuple[Dict[str, Any], Optional[bytes], Optional[str]]:
+    """
+    Format wandb file information for plots, optionally downloading raw image bytes.
+
     Args:
         file: wandb.Api().file() object
-        include_image_data: If True, download and encode image as base64
-        
+        include_image_data: If True, download raw image bytes
+
     Returns:
-        Dictionary with plot metadata and optionally base64-encoded image data
+        Tuple of (metadata_dict, raw_image_bytes_or_None, mime_type_or_None)
     """
-    result = {
+    file_type = "image" if file.name.endswith((".png", ".jpg", ".jpeg", ".gif", ".svg")) else "other"
+    metadata = {
         "name": file.name,
         "size": file.size,
         "url": file.url if hasattr(file, "url") else None,
-        "type": "image" if file.name.endswith((".png", ".jpg", ".jpeg", ".gif", ".svg")) else "other"
+        "type": file_type,
     }
-    
-    # Download and encode image data if requested and it's an image file
-    if include_image_data and result["type"] == "image":
+
+    raw_bytes = None
+    mime_type = None
+
+    # Download image data if requested and it's an image file (skip SVGs)
+    if include_image_data and file_type == "image" and not file.name.endswith(".svg"):
         try:
-            # Create a temporary directory for downloads
             temp_dir = tempfile.mkdtemp()
             downloaded_file_path = None
             try:
-                # Download the file - wandb's download() returns a file path
-                # Try with root parameter first, then fallback to default behavior
                 try:
                     downloaded_path = file.download(root=temp_dir, replace=True)
                 except (TypeError, AttributeError):
-                    # If root parameter not supported, download to temp dir using default
                     downloaded_path = file.download(replace=True)
-                
-                # Determine the actual file path
+
                 if isinstance(downloaded_path, str):
-                    # Check if it's an absolute path
                     if os.path.isabs(downloaded_path):
                         downloaded_file_path = downloaded_path
                     else:
-                        # Try relative to temp_dir, then current directory
                         for base_dir in [temp_dir, os.getcwd()]:
                             candidate = os.path.join(base_dir, downloaded_path)
                             if os.path.exists(candidate):
                                 downloaded_file_path = candidate
                                 break
-                        
-                        # If still not found, try with just the filename
                         if not downloaded_file_path:
                             for base_dir in [temp_dir, os.getcwd()]:
                                 candidate = os.path.join(base_dir, os.path.basename(file.name))
                                 if os.path.exists(candidate):
                                     downloaded_file_path = candidate
                                     break
-                        
                         if not downloaded_file_path:
                             raise FileNotFoundError(f"Could not locate downloaded file: {downloaded_path}")
                 elif hasattr(downloaded_path, "read"):
-                    # It's a file-like object, read directly
-                    image_data = downloaded_path.read()
+                    raw_bytes = downloaded_path.read()
                     if hasattr(downloaded_path, "close"):
                         downloaded_path.close()
-                    downloaded_file_path = None  # No file to clean up
                 else:
                     raise ValueError(f"Unexpected download return type: {type(downloaded_path)}")
-                
-                # Read file if we have a path
+
                 if downloaded_file_path:
                     with open(downloaded_file_path, "rb") as f:
-                        image_data = f.read()
-                
-                # Encode as base64
-                base64_data = base64.b64encode(image_data).decode("utf-8")
-                
-                # Determine MIME type based on file extension
+                        raw_bytes = f.read()
+
                 ext = file.name.lower().split(".")[-1] if "." in file.name else ""
                 mime_types = {
                     "png": "image/png",
                     "jpg": "image/jpeg",
                     "jpeg": "image/jpeg",
                     "gif": "image/gif",
-                    "svg": "image/svg+xml"
                 }
                 mime_type = mime_types.get(ext, "image/png")
-                
-                result["image_data"] = base64_data
-                result["mime_type"] = mime_type
-                result["data_uri"] = f"data:{mime_type};base64,{base64_data}"
             finally:
-                # Clean up temporary directory and downloaded files
                 try:
-                    # Remove downloaded file if it's in temp_dir
                     if downloaded_file_path and downloaded_file_path.startswith(temp_dir):
                         try:
                             os.remove(downloaded_file_path)
                         except Exception:
                             pass
-                    # Remove temp directory
                     shutil.rmtree(temp_dir, ignore_errors=True)
                 except Exception:
-                    pass  # Ignore cleanup errors
+                    pass
         except Exception as e:
-            # If download fails, still return metadata but note the error
-            result["image_data_error"] = str(e)
-            result["image_data"] = None
-            result["mime_type"] = None
-            result["data_uri"] = None
-    
-    return result
+            metadata["image_data_error"] = str(e)
+
+    return metadata, raw_bytes, mime_type
 
 
 def format_comparison_table(runs: List[Any], metric_keys: List[str]) -> Dict[str, Any]:
