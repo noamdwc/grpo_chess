@@ -75,6 +75,32 @@ class Evaluator:
         )
         return results, policy_or_searcher, pgns
 
+    def single_evaluation_at_skill(self, model: nn.Module, skill_level: int) -> Tuple[Dict, List[str]]:
+        """Evaluate model against Stockfish at a specific skill level.
+
+        Args:
+            model: Neural network model to evaluate
+            skill_level: Stockfish skill level (0-20)
+
+        Returns:
+            Tuple of (results_dict, pgns)
+        """
+        cfg = StockfishConfig(
+            path=self.default_stockfish_cfg.path,
+            skill_level=skill_level,
+            movetime_ms=self.default_stockfish_cfg.movetime_ms,
+            threads=self.default_stockfish_cfg.threads,
+            hash_mb=self.default_stockfish_cfg.hash_mb,
+        )
+        engine_name = f"eval_skill_{skill_level}"
+        sf = StockfishPlayer(cfg, engine_name=engine_name)
+        policy = self._make_policy(model)
+        try:
+            results, _, pgns = evaluate_policy_vs_stockfish(policy, sf, self.eval_cfg)
+            return results, pgns
+        finally:
+            StockfishManager.close(engine_name)
+
     def eval_ladder(self, model: nn.Module) -> Dict[int, float]:
         """Evaluate model against Stockfish at multiple skill levels.
         

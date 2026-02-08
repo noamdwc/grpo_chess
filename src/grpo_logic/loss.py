@@ -77,21 +77,22 @@ def group_advantage(group_rewards: torch.Tensor) -> torch.Tensor:
 
 def step_group_advantage(step_rewards: torch.Tensor, pad_mask: torch.Tensor | None = None) -> torch.Tensor:
     """
-    Compute per-step normalized advantages from step rewards.
-    For each timestep t, normalizes across the G dimension (trajectories).
+    Compute per-step standardized advantages from step rewards.
+    For each timestep t, normalizes across the G dimension (trajectories)
+    by subtracting the mean and dividing by std (matching group_advantage).
 
-    NOTE: No std normalization is applied here, Using DR. GRPO paper.
     Args:
         step_rewards: Per-step rewards tensor [B, G, T]
         pad_mask: Optional mask for valid steps [B, G, T], True=valid
 
     Returns:
-        Normalized advantages [B, G, T] where each timestep is normalized across G
+        Standardized advantages [B, G, T] where each timestep is normalized across G
     """
     # Normalize across G dimension for each (batch, timestep)
     # step_rewards: [B, G, T]
     mean_t = step_rewards.mean(dim=1, keepdim=True)  # [B, 1, T]
-    advantages = (step_rewards - mean_t) # [B, G, T]
+    std_t = step_rewards.std(dim=1, keepdim=True) + 1e-8  # [B, 1, T]
+    advantages = (step_rewards - mean_t) / std_t  # [B, G, T]
 
     if pad_mask is not None:
         advantages = advantages * pad_mask.float()

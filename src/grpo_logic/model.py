@@ -29,11 +29,13 @@ class GRPOConfig:
         eval_every_n_epochs: Frequency of evaluation runs
         ppo_steps: Number of optimization steps per sampled trajectory batch
         rollout_temperature: Temperature for action sampling during rollouts (>1 increases exploration)
+        sync_every_n_steps: Sync old policy every N training steps (1 = every step)
         enable_safety_checks: Whether to abort training when clip fraction stays too high
         safety_patience_steps: Number of training steps to tolerate violations before aborting
         max_clip_fraction: If mean_clip_fraction > this for too long -> abort
         teacher_forcing_prob: Probability of using Stockfish for rival (opponent) moves
         teacher_forcing_depth: Stockfish search depth for teacher forcing moves
+        eval_skill_levels: Additional Stockfish skill levels for evaluation (None = disabled)
     """
     lr: float = 1e-6
     num_trajectories: int = 4
@@ -43,6 +45,7 @@ class GRPOConfig:
     eval_every_n_epochs: int = 10
     ppo_steps: int = 1
     rollout_temperature: float = 1.0
+    sync_every_n_steps: int = 1
 
     # Safety checks on training dynamics
     enable_safety_checks: bool = False
@@ -52,6 +55,9 @@ class GRPOConfig:
     # Teacher forcing: use Stockfish for rival moves during trajectory sampling
     teacher_forcing_prob: float = 0.0
     teacher_forcing_depth: int = 4
+
+    # Multi-skill evaluation tiers
+    eval_skill_levels: list[int] | None = None
 
 
 # Register as safe for torch.load with weights_only=True (PyTorch 2.6+ compatibility)
@@ -95,6 +101,7 @@ class GRPOChessTransformer(pl.LightningModule):
 
         # Safety-check state
         self._high_clip_steps: int = 0
+        self._steps_since_sync: int = 0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through the current policy model.
@@ -206,10 +213,6 @@ class GRPOChessTransformer(pl.LightningModule):
         self.log(prefix + "reward_p90", batch_group_rewards.quantile(0.9))
         self.log(prefix + "reward_best", best)
         self.log(prefix + "reward_gap", gap)
-
-    def on_train_epoch_start(self) -> None:
-        """Called at the start of each training epoch. Syncs old policy."""
-        self._sync_old_policy()
 
     def _ppo_step(
         self,
@@ -365,6 +368,12 @@ class GRPOChessTransformer(pl.LightningModule):
         # Run safety checks on the final loss statistics
         self._run_safety_checks(loss_info)
 
+        # Step-based old policy sync
+        self._steps_since_sync += 1
+        if self._steps_since_sync >= self.hparams.grpo_config.sync_every_n_steps:
+            self._sync_old_policy()
+            self._steps_since_sync = 0
+
     def configure_optimizers(self) -> torch.optim.Adam:
         """Configure optimizer for training.
         
@@ -452,3 +461,33 @@ class GRPOChessTransformer(pl.LightningModule):
                 results, pgns = eval_result
                 self._log_stockfish_eval(results)
                 self._log_pgns(pgns)
+
+            # Multi-skill evaluation tiers
+            skill_levels = self.hparams.grpo_config.eval_skill_levels
+            if skill_levels:
+                self._evaluate_skill_tiers(skill_levels)
+
+    def _evaluate_skill_tiers(self, skill_levels: list[int]) -> None:
+        """Run evaluation against Stockfish at multiple skill levels.
+
+        Args:
+            skill_levels: List of Stockfish skill levels to evaluate against
+        """
+        was_training = self.training
+        self.eval()
+        try:
+            import torch
+            with torch.no_grad():
+                for skill in skill_levels:
+                    try:
+                        results, _ = self.evaluator.single_evaluation_at_skill(
+                            self.policy_model, skill
+                        )
+                        prefix = f"eval_stockfish_skill{skill}/"
+                        self.log(f"{prefix}score", results["score"])
+                        self.log(f"{prefix}elo_diff", results["elo_diff_vs_stockfish_approx"])
+                    except Exception as e:
+                        print(f"Skill {skill} eval failed: {e}")
+        finally:
+            if was_training:
+                self.train()

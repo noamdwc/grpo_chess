@@ -16,7 +16,7 @@ training:
 # GRPO (Group Relative Policy Optimization) Config
 # =============================================================================
 grpo:
-  lr: 0.000001  # 1e-6
+  lr: 0.000003  # 3e-6
   num_trajectories: 16
   trajectory_depth: 16
   clip_ratio: 0.20
@@ -24,6 +24,7 @@ grpo:
   eval_every_n_epochs: 10
   ppo_steps: 1
   rollout_temperature: 1.3
+  sync_every_n_steps: 1
 
   # Safety checks
   enable_safety_checks: false
@@ -31,8 +32,11 @@ grpo:
   max_clip_fraction: 0.95
 
   # Teacher forcing: use Stockfish for rival moves during trajectory sampling
-  teacher_forcing_prob: 0.1
-  teacher_forcing_depth: 4
+  teacher_forcing_prob: 0.3
+  teacher_forcing_depth: 8
+
+  # Multi-skill evaluation tiers (null = disabled)
+  eval_skill_levels: [0, 1, 2]
 
 # =============================================================================
 # Transformer Model Config
@@ -88,7 +92,7 @@ searcher: null
 # =============================================================================
 pretrain:
   checkpoint_path: null  # Path to pretrained checkpoint (e.g., "checkpoints/pretrain/pretrain_final.pt")
-  freeze_layers: 2       # Freeze first 2 transformer layers to preserve learned representations
+  freeze_layers: 0       # Number of transformer layers to freeze (0 = train all layers)
 
 # =============================================================================
 # Dataset Config (Chess Start States)
