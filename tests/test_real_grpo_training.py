@@ -19,10 +19,10 @@ import torch
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
 
-from src.grpo_self_play.chess.boards_dataset import ChessStartStatesDataset, ChessDatasetConfig
-from src.grpo_self_play.grpo_logic.model import GRPOChessTransformer, GRPOConfig
-from src.grpo_self_play.models import ChessTransformerConfig
-from src.grpo_self_play.chess.stockfish import StockfishConfig, StockfishManager
+from src.chess.boards_dataset import ChessStartStatesDataset, ChessDatasetConfig
+from src.grpo_logic.model import GRPOChessTransformer, GRPOConfig
+from src.models import ChessTransformerConfig
+from src.chess.stockfish import StockfishConfig, StockfishManager
 
 
 class DetailedLoggingCallback(pl.Callback):
@@ -55,8 +55,14 @@ class DetailedLoggingCallback(pl.Callback):
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         elapsed = time.time() - self.current_batch_start
         self.batch_times.append(elapsed)
-        loss = outputs.get("loss", outputs) if isinstance(outputs, dict) else outputs
-        print(f" done in {elapsed:.2f}s (loss={loss:.4f})", flush=True)
+        if isinstance(outputs, dict):
+            loss = outputs.get("loss")
+        elif isinstance(outputs, (int, float)):
+            loss = outputs
+        else:
+            loss = None
+        loss_str = f"{loss:.4f}" if loss is not None else "N/A"
+        print(f" done in {elapsed:.2f}s (loss={loss_str})", flush=True)
 
 
 class EpochCounterCallback(pl.Callback):
@@ -119,7 +125,7 @@ class TestRealGRPOTraining:
             pytest.skip("Stockfish not available")
         yield path
         # Cleanup after each test - reset the global engine in rewards.py
-        from src.grpo_self_play.chess import rewards
+        from src.chess import rewards
         rewards._engine = None
         StockfishManager.close_all()
 

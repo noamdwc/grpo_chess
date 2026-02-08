@@ -11,7 +11,6 @@ class GRPOLossInfo:
     mean_clip_fraction: torch.Tensor
     ppo_loss: torch.Tensor
     entropy: torch.Tensor
-    loss_without_entropy: torch.Tensor
     advantage_mean: torch.Tensor
     advantage_std: torch.Tensor
 
@@ -166,13 +165,12 @@ def grpo_ppo_loss(
     pad_mask: torch.Tensor | None = None,  # [B, G, T] or [G, T]
     clip_ratio: float = 0.2,        # PPO clipping ratio (epsilon in paper)
     kl_coef: float = 0.01,          # KL penalty coefficient (beta in paper)
-    entropy_coef: float = 0.1,      # Entropy bonus coefficient (prevents policy collapse)
     return_info: bool = False,      # Return extra info for logging
     ) -> torch.Tensor | Tuple[torch.Tensor, GRPOLossInfo]:
     """
     Compute GRPO (Group Relative Policy Optimization) loss with PPO clipping.
 
-    This combines PPO-clip loss with KL divergence penalty and optional entropy bonus.
+    This combines PPO-clip loss with KL divergence penalty.
     Advantages are computed per-step by normalizing step rewards across trajectories
     (G dimension) for each timestep.
 
@@ -183,7 +181,6 @@ def grpo_ppo_loss(
         pad_mask: Mask indicating valid steps, True=valid, False=padding
         clip_ratio: PPO clipping ratio (default: 0.2)
         kl_coef: KL divergence penalty coefficient (default: 0.01)
-        entropy_coef: Entropy bonus coefficient (default: 0.0, set >0 to encourage exploration)
         return_info: If True, return GRPOLossInfo for logging
 
     Returns:
@@ -214,15 +211,10 @@ def grpo_ppo_loss(
     ppo_loss = ppo_loss.sum() / valid_steps
     kl_div = kl_penalty(logprobs_new, logprobs_old, pad_mask)
 
-    # Entropy bonus: H(π) ≈ -E[log π(a|s)] encourages exploration
-    # We use the negative log_probs of selected actions as an estimate
+    # Entropy: H(π) ≈ -E[log π(a|s)] — logged for monitoring, not part of loss
     entropy = -logprobs_new[pad_mask].mean()
 
-    # Loss components:
-    # - loss_without_entropy = PPO loss + KL penalty
-    # - total loss           = loss_without_entropy - entropy bonus
-    loss_without_entropy = ppo_loss + kl_coef * kl_div
-    loss = loss_without_entropy - entropy_coef * entropy
+    loss = ppo_loss + kl_coef * kl_div
 
     if return_info:
         valid_advantages = advantages[pad_mask]
@@ -232,7 +224,6 @@ def grpo_ppo_loss(
             mean_clip_fraction=mean_clip_fraction.detach(),
             ppo_loss=ppo_loss.detach(),
             entropy=entropy.detach(),
-            loss_without_entropy=loss_without_entropy.detach(),
             advantage_mean=valid_advantages.mean().detach(),
             advantage_std=valid_advantages.std().detach(),
         )

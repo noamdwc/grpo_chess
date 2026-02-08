@@ -14,7 +14,7 @@ Compatible with: Claude Code, GitHub Copilot, Cursor, OpenAI Codex, and other to
 ```
 grpo_chess/
 ├── chess_model_run_git.ipynb    # Main training notebook (Google Colab)
-├── src/grpo_self_play/          # Core GRPO implementation
+├── src/          # Core GRPO implementation
 ├── research_docs/               # Agent research documentation
 │   ├── TEMPLATE.md              # Template for new documents
 │   └── *.md                     # Research insights (dated)
@@ -30,7 +30,7 @@ grpo_chess/
 python -m pytest
 
 # Check syntax
-python -m py_compile src/grpo_self_play/grpo_logic/model.py
+python -m py_compile src/grpo_logic/model.py
 
 # Training is done via Google Colab notebook
 # See chess_model_run_git.ipynb
@@ -49,13 +49,13 @@ python -m py_compile src/grpo_self_play/grpo_logic/model.py
 
 | Task | Primary Files |
 |------|--------------|
-| Training loop | `src/grpo_self_play/grpo_logic/model.py` |
-| Loss computation | `src/grpo_self_play/grpo_logic/loss.py` |
-| Trajectory sampling | `src/grpo_self_play/grpo_logic/sampling.py` |
-| Reward computation | `src/grpo_self_play/chess/rewards.py` |
-| Dataset generation | `src/grpo_self_play/chess/boards_dataset.py` |
-| Model architecture | `src/grpo_self_play/models.py` |
-| Evaluation | `src/grpo_self_play/evaluator.py` |
+| Training loop | `src/grpo_logic/model.py` |
+| Loss computation | `src/grpo_logic/loss.py` |
+| Trajectory sampling | `src/grpo_logic/sampling.py` |
+| Reward computation | `src/chess/rewards.py` |
+| Dataset generation | `src/chess/boards_dataset.py` |
+| Model architecture | `src/models.py` |
+| Evaluation | `src/evaluator.py` |
 
 ## Git Workflow
 
@@ -83,9 +83,9 @@ python -m py_compile src/grpo_self_play/grpo_logic/model.py
 ## Experiment Tracking
 
 Training is tracked with Weights & Biases. Key metrics:
-- `train/avg_reward` - Mean trajectory reward
+- `train/reward_mean` - Mean trajectory reward
 - `eval_stockfish/score` - Win rate vs Stockfish
-- `mean_clip_fraction` - PPO clipping statistics
+- `train/clip_fraction` - PPO clipping statistics
 
 ## Specialized Agents
 

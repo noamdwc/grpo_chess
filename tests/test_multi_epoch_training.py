@@ -35,7 +35,7 @@ import torch
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader, IterableDataset
 
-from src.grpo_self_play.chess.boards_dataset import ChessStartStatesDataset, ChessDatasetConfig
+from src.chess.boards_dataset import ChessStartStatesDataset, ChessDatasetConfig
 
 
 class EpochCounterCallback(pl.Callback):

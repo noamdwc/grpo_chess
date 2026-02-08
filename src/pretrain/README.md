@@ -15,19 +15,19 @@ The pretraining pipeline:
 
 ```bash
 # Run pretraining with default config
-python -m src.grpo_self_play.pretrain.pretrain --config pretrain.yaml
+python -m src.pretrain.pretrain --config pretrain.yaml
 
 # With custom parameters
-python -m src.grpo_self_play.pretrain.pretrain --config pretrain.yaml \
+python -m src.pretrain.pretrain --config pretrain.yaml \
     --lr 1e-4 --batch_size 512 --min_elo 1800
 
 # Disable wandb logging
-python -m src.grpo_self_play.pretrain.pretrain --no_wandb
+python -m src.pretrain.pretrain --no_wandb
 ```
 
 ## Configuration
 
-Configuration is in `src/grpo_self_play/configs/pretrain.yaml`:
+Configuration is in `src/configs/pretrain.yaml`:
 
 ```yaml
 pretrain:
@@ -79,7 +79,7 @@ pretrain:
 
 Or pass the path when running training:
 ```bash
-python -m src.grpo_self_play.train_self_play --config default.yaml
+python -m src.train_self_play --config default.yaml
 ```
 
 ## Module Structure
@@ -100,8 +100,8 @@ pretrain/
 PyTorch Lightning module that wraps the ChessTransformer for supervised learning.
 
 ```python
-from src.grpo_self_play.pretrain.pretrain import PretrainChessTransformer, PretrainConfig
-from src.grpo_self_play.models import ChessTransformerConfig
+from src.pretrain.pretrain import PretrainChessTransformer, PretrainConfig
+from src.models import ChessTransformerConfig
 
 model = PretrainChessTransformer(
     transformer_config=ChessTransformerConfig(embed_dim=256, num_layers=4, num_heads=8),
@@ -114,7 +114,7 @@ model = PretrainChessTransformer(
 Streaming dataset that yields (board_tokens, action, legal_mask) tuples.
 
 ```python
-from src.grpo_self_play.pretrain import ChessPretrainDataset, PretrainDatasetConfig
+from src.pretrain import ChessPretrainDataset, PretrainDatasetConfig
 
 dataset = ChessPretrainDataset(PretrainDatasetConfig(
     min_elo=1800,

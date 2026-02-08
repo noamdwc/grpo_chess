@@ -5,8 +5,8 @@ import chess
 from typing import Optional
 
 from dataclasses import dataclass
-from src.grpo_self_play.searchless_chess_imports import ACTION_TO_MOVE
-from src.grpo_self_play.chess.chess_logic import board_to_tensor, get_legal_moves_indices
+from src.searchless_chess_imports import ACTION_TO_MOVE
+from src.chess.chess_logic import board_to_tensor, get_legal_moves_indices
 
 @dataclass
 class ChessTransformerConfig:

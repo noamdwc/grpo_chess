@@ -4,10 +4,10 @@ This script trains the ChessTransformer model using supervised learning
 on expert moves from Lichess games before GRPO reinforcement learning.
 
 Usage:
-    python -m src.grpo_self_play.pretrain.pretrain --config pretrain.yaml
+    python -m src.pretrain.pretrain --config pretrain.yaml
 
     # Or with overrides:
-    python -m src.grpo_self_play.pretrain.pretrain --config pretrain.yaml \
+    python -m src.pretrain.pretrain --config pretrain.yaml \
         --lr 1e-4 --batch_size 512 --min_elo 1800
 """
 
@@ -23,13 +23,13 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from torch.utils.data import DataLoader
 
-from src.grpo_self_play.models import ChessTransformer, ChessTransformerConfig
-from src.grpo_self_play.pretrain.pretrain_dataset import (
+from src.models import ChessTransformer, ChessTransformerConfig
+from src.pretrain.pretrain_dataset import (
     ChessPretrainDataset,
     PretrainDatasetConfig,
     collate_pretrain_batch,
 )
-from src.grpo_self_play.configs.config_loader import (
+from src.configs.config_loader import (
     load_yaml_file,
     dict_to_dataclass,
 )

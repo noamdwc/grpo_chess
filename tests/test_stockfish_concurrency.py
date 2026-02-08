@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_compl
 import pytest
 import chess
 
-from src.grpo_self_play.chess.stockfish import (
+from src.chess.stockfish import (
     StockfishManager,
     StockfishConfig,
     stockfish_analyse,
@@ -132,7 +132,7 @@ engine_name = sys.argv[5]
 stockfish_path = sys.argv[6]
 try:
     import chess
-    from src.grpo_self_play.chess.stockfish import (
+    from src.chess.stockfish import (
         StockfishManager, StockfishConfig, stockfish_analyse, stockfish_play,
         DEFAULT_STOCKFISH_TIMEOUT,
     )
@@ -160,7 +160,7 @@ except Exception as e:
     sys.exit(1)
 finally:
     try:
-        from src.grpo_self_play.chess.stockfish import StockfishManager
+        from src.chess.stockfish import StockfishManager
         StockfishManager.close_all()
     except Exception:
         pass

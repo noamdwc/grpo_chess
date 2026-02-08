@@ -7,11 +7,11 @@ import torch
 import torch.nn.functional as F
 from dataclasses import dataclass
 
-from src.grpo_self_play.chess.rewards import reward_board, evaluate_board, normalize_cp
-from src.grpo_self_play.models import ChessTransformer
-from src.grpo_self_play.searchless_chess_imports import ACTION_TO_MOVE, SEQUENCE_LENGTH, MOVE_TO_ACTION
-from src.grpo_self_play.chess.chess_logic import board_to_tensor,  get_legal_moves_mask
-from src.grpo_self_play.chess.stockfish import stockfish_play, DEFAULT_STOCKFISH_TIMEOUT
+from src.chess.rewards import reward_board, evaluate_board, normalize_cp
+from src.models import ChessTransformer
+from src.searchless_chess_imports import ACTION_TO_MOVE, SEQUENCE_LENGTH, MOVE_TO_ACTION
+from src.chess.chess_logic import board_to_tensor,  get_legal_moves_mask
+from src.chess.stockfish import stockfish_play, DEFAULT_STOCKFISH_TIMEOUT
 
 
 def _get_teacher_engine_name() -> str:

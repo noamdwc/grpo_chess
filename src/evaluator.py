@@ -2,10 +2,10 @@ from typing import Dict, List, Optional, Tuple
 from chess import engine
 import torch.nn as nn
 
-from src.grpo_self_play.chess.policy_player import PolicyPlayer, PolicyConfig
-from src.grpo_self_play.chess.searcher import TrajectorySearcher, SearchConfig
-from src.grpo_self_play.chess.stockfish import StockfishPlayer, StockfishConfig, StockfishManager
-from src.grpo_self_play.eval_utils import EvalConfig, evaluate_policy_vs_stockfish
+from src.chess.policy_player import PolicyPlayer, PolicyConfig
+from src.chess.searcher import TrajectorySearcher, SearchConfig
+from src.chess.stockfish import StockfishPlayer, StockfishConfig, StockfishManager
+from src.eval_utils import EvalConfig, evaluate_policy_vs_stockfish
 
 
 

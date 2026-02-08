@@ -1,4 +1,3 @@
 # Cursor MCP configuration (contains API keys)
 .cursor-mcp-config.json
 *__pycache__/
-src/searchless_chess_model/

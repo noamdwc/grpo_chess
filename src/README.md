@@ -50,7 +50,7 @@ pip install torch pytorch-lightning wandb chess python-chess
 The easiest way to start training is using the YAML-based configuration system:
 
 ```python
-from src.grpo_self_play.train_self_play import train
+from src.train_self_play import train
 
 # Use default configuration (loads from configs/default.yaml)
 train()
@@ -92,8 +92,8 @@ The notebook handles all setup steps including:
 ### Evaluation
 
 ```python
-from src.grpo_self_play import Evaluator, EvalConfig
-from src.grpo_self_play.chess.stockfish import StockfishConfig
+from src import Evaluator, EvalConfig
+from src.chess.stockfish import StockfishConfig
 
 # Create evaluator
 evaluator = Evaluator(
@@ -153,7 +153,7 @@ The loss function combines:
 ## Module Structure
 
 ```
-grpo_self_play/
+src/
 ├── models.py              # ChessTransformer architecture
 ├── trainer.py             # PyTorch Lightning trainer setup
 ├── train_self_play.py     # Main training script
@@ -224,7 +224,7 @@ The default configuration file is `configs/default.yaml`, which contains all hyp
 #### Loading Configurations
 
 ```python
-from src.grpo_self_play.configs.config_loader import load_experiment_config
+from src.configs.config_loader import load_experiment_config
 
 # Load default config
 config = load_experiment_config("default.yaml")
@@ -244,7 +244,7 @@ print(config.transformer.embed_dim)
 #### Training with Configurations
 
 ```python
-from src.grpo_self_play.train_self_play import train
+from src.train_self_play import train
 
 # Use default config
 train()
@@ -325,7 +325,7 @@ See `configs/default.yaml` for the complete list of all hyperparameters and thei
 ### Custom Reward Function
 
 ```python
-from src.grpo_self_play.chess.rewards import reward_board
+from src.chess.rewards import reward_board
 
 def custom_reward(board, start_board):
     # Your custom reward logic
@@ -335,8 +335,8 @@ def custom_reward(board, start_board):
 ### Trajectory Search
 
 ```python
-from src.grpo_self_play.chess.searcher import TrajectorySearcher, SearchConfig
-from src.grpo_self_play.chess.policy_player import PolicyPlayer
+from src.chess.searcher import TrajectorySearcher, SearchConfig
+from src.chess.policy_player import PolicyPlayer
 
 policy = PolicyPlayer(model)
 searcher = TrajectorySearcher(
@@ -349,7 +349,7 @@ searcher = TrajectorySearcher(
 
 ```python
 import pytorch_lightning as pl
-from src.grpo_self_play.grpo_logic.model import GRPOChessTransformer
+from src.grpo_logic.model import GRPOChessTransformer
 
 model = GRPOChessTransformer(transformer_config, grpo_config)
 trainer = pl.Trainer(
