@@ -11,10 +11,10 @@ import torch
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
-from src.grpo_self_play.chess.chess_logic import MOVE_TO_ACTION
-from src.grpo_self_play.chess.policy_player import PolicyPlayer, PolicyConfig
-from src.grpo_self_play.chess.searcher import TrajectorySearcher, SearchConfig
-from src.grpo_self_play.chess.stockfish import StockfishPlayer, StockfishConfig, DEFAULT_STOCKFISH_PATH as STOCKFISH_PATH
+from src.chess.chess_logic import MOVE_TO_ACTION
+from src.chess.policy_player import PolicyPlayer, PolicyConfig
+from src.chess.searcher import TrajectorySearcher, SearchConfig
+from src.chess.stockfish import StockfishPlayer, StockfishConfig, DEFAULT_STOCKFISH_PATH as STOCKFISH_PATH
 
 
 @dataclass

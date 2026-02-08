@@ -6,8 +6,8 @@ import torch
 from typing import Optional
 from dataclasses import dataclass
 from concurrent.futures import TimeoutError as FuturesTimeoutError
-from src.grpo_self_play.chess.chess_logic import ChessPlayer
-from src.grpo_self_play.logging_utils import get_logger
+from src.chess.chess_logic import ChessPlayer
+from src.logging_utils import get_logger
 
 logger = get_logger("grpo_chess.stockfish")
 

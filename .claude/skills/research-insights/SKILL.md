@@ -32,7 +32,7 @@ This project trains a chess-playing transformer using **GRPO (Group Relative Pol
 ## Key Files to Know
 
 ```
-src/grpo_self_play/
+src/
 ├── grpo_logic/
 │   ├── model.py        # GRPOChessTransformer (Lightning module)
 │   ├── loss.py         # GRPO/PPO loss functions

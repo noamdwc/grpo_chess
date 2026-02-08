@@ -4,10 +4,10 @@ import warnings
 from typing import Any
 from torch.utils.data import DataLoader
 
-from src.grpo_self_play.trainer import get_trainer
-from src.grpo_self_play.chess.boards_dataset import ChessStartStatesDataset
-from src.grpo_self_play.grpo_logic.model import GRPOChessTransformer
-from src.grpo_self_play.configs.config_loader import load_experiment_config
+from src.trainer import get_trainer
+from src.chess.boards_dataset import ChessStartStatesDataset
+from src.grpo_logic.model import GRPOChessTransformer
+from src.configs.config_loader import load_experiment_config
 
 
 def train(
@@ -21,7 +21,7 @@ def train(
         config_path: Path to the YAML config file (relative to configs directory)
         overrides: Optional dict of overrides per section. Example:
             {
-                "grpo": {"lr": 1e-4, "entropy_coef": 0.2},
+                "grpo": {"lr": 1e-4},
                 "training": {"num_epochs": 100},
                 "stockfish": {"skill_level": 5},
             }

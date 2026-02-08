@@ -3,7 +3,7 @@ import chess
 import chess.engine
 
 from functools import lru_cache
-from src.grpo_self_play.chess.stockfish import stockfish_analyse, DEFAULT_STOCKFISH_TIMEOUT
+from src.chess.stockfish import stockfish_analyse, DEFAULT_STOCKFISH_TIMEOUT
 
 # Engine name for reward evaluation
 REWARD_ENGINE_NAME = f"reward_engine_{os.getpid()}"

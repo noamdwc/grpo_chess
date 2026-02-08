@@ -14,42 +14,24 @@ training:
 
 # =============================================================================
 # GRPO (Group Relative Policy Optimization) Config
-# Clean run config (see research_docs/2026-02-06_loss-budget-and-monitor-analysis.md)
 # =============================================================================
 grpo:
-  lr: 0.000001  # 1e-6: reduced because PPO signal now dominates gradient
+  lr: 0.000001  # 1e-6
   num_trajectories: 16
   trajectory_depth: 16
   clip_ratio: 0.20
-  kl_coef: 0.001  # reduced from 0.01 (was being overridden to 0.1 by adaptive KL)
-  entropy_coef: 0.0  # removed: not part of original GRPO loss, was 95% of gradient
+  kl_coef: 0.001
   eval_every_n_epochs: 10
   ppo_steps: 1
   rollout_temperature: 1.3
-
-  # Entropy floor monitoring — disabled (never triggered, see research doc)
-  use_entropy_floor: false
-  entropy_floor: 1.5
-  entropy_floor_steps: 150
-  entropy_floor_action: "boost"
-  entropy_boost_factor: 1.5
-
-  # Adaptive KL controller — disabled (saturated at max instantly, see research doc)
-  adaptive_kl: false
-  target_kl: 0.012
-  kl_adapt_rate: 1.2
-  kl_coef_min: 0.001
-  kl_coef_max: 0.1
 
   # Safety checks
   enable_safety_checks: false
   safety_patience_steps: 1000
   max_clip_fraction: 0.95
-  min_entropy: 0.5
-  max_kl_divergence: 0.08
 
   # Teacher forcing: use Stockfish for rival moves during trajectory sampling
-  teacher_forcing_prob: 0.1  # 10% of rival moves will be from Stockfish
+  teacher_forcing_prob: 0.1
   teacher_forcing_depth: 4
 
 # =============================================================================

@@ -7,8 +7,8 @@ import torch
 
 from typing import Optional
 from dataclasses import dataclass
-from src.grpo_self_play.chess.chess_logic import ChessPlayer
-from src.grpo_self_play.chess.policy_player import PolicyPlayer
+from src.chess.chess_logic import ChessPlayer
+from src.chess.policy_player import PolicyPlayer
 
 @dataclass
 class SearchConfig:

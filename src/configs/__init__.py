@@ -4,7 +4,7 @@ Config module for GRPO Chess experiments.
 Provides YAML-based configuration loading with override support.
 
 Usage:
-    from src.grpo_self_play.configs import load_experiment_config
+    from src.configs import load_experiment_config
 
     # Load default config
     config = load_experiment_config()
@@ -16,7 +16,7 @@ Usage:
     })
 """
 
-from src.grpo_self_play.configs.config_loader import (
+from src.configs.config_loader import (
     ExperimentConfig,
     TrainingConfig,
     load_experiment_config,
