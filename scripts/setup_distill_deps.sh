@@ -69,12 +69,12 @@ if [ "$IS_COLAB" = "1" ]; then
     # Pin ecosystem packages so pip doesn't downgrade jax/jaxlib and break
     # the CUDA PJRT plugin.
     $PIP install --quiet \
-        "dm-haiku==0.0.16" \
-        "chex==0.1.91" \
-        "optax==0.2.7" \
-        "orbax-checkpoint==0.11.32" \
-        "grain==0.2.15" \
-        "jaxtyping==0.3.4" \
+        "dm-haiku" \
+        "chex" \
+        "optax" \
+        "orbax-checkpoint" \
+        "grain" \
+        "jaxtyping" \
         apache-beam
 else
     # Local: pin versions tested on macOS / Python 3.14 (2026-02-10).
