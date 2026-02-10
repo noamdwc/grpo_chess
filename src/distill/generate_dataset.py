@@ -39,6 +39,7 @@ class GenerateConfig:
     teacher_batch_size: int = 64
     top_k: int = 8
     teacher_temperature: float = 1.0
+    hf_cache_dir: Optional[str] = None  # e.g. "/content/drive/MyDrive/hf_cache"
     output_dir: str = "data/distill"
     shard_size: int = 50_000
     min_elo: int = 1800
@@ -278,7 +279,7 @@ def save_shard(samples: list[dict], shard_path: str):
 def load_positions(config: GenerateConfig) -> list[str]:
     """Load chess positions from HuggingFace dataset."""
     print("Downloading angeluriot/chess_games...")
-    dataset = load_dataset("angeluriot/chess_games", split="train")
+    dataset = load_dataset("angeluriot/chess_games", split="train", cache_dir=config.hf_cache_dir)
     print(f"Loaded {len(dataset):,} games")
 
     # Filter by ELO
@@ -423,6 +424,7 @@ def main():
     parser = argparse.ArgumentParser(description="Generate distillation dataset")
     parser.add_argument("--config", type=str, default="distill.yaml", help="Path to config file")
     parser.add_argument("--max_samples", type=int, help="Override max_samples")
+    parser.add_argument("--hf_cache_dir", type=str, help="HuggingFace dataset cache directory")
     args = parser.parse_args()
 
     data = load_yaml_file(args.config)
@@ -430,6 +432,8 @@ def main():
 
     if args.max_samples:
         config.max_samples = args.max_samples
+    if args.hf_cache_dir:
+        config.hf_cache_dir = args.hf_cache_dir
 
     generate(config)
 

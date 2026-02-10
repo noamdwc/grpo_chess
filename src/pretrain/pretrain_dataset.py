@@ -48,6 +48,7 @@ class PretrainDatasetConfig:
     is_eval: bool = False
     eval_fraction: float = 0.05
     cache_path: Optional[str] = None
+    hf_cache_dir: Optional[str] = None
 
 
 def uci_to_action(uci_move: str) -> Optional[int]:
@@ -223,7 +224,7 @@ class ChessPretrainDataset(Dataset):
         """Download and filter dataset."""
         # Download (uses cache_path for HuggingFace cache)
         print("Downloading angeluriot/chess_games (7.3GB)...")
-        cache_dir = self.config.cache_path if self.config.cache_path else None
+        cache_dir = self.config.hf_cache_dir or self.config.cache_path or None
         dataset = load_dataset("angeluriot/chess_games", split="train", cache_dir=cache_dir)
         print(f"Loaded {len(dataset):,} games")
 
