@@ -160,8 +160,8 @@ def build_teacher_engine(
 
     predictor = sc_transformer.build_transformer_predictor(config=predictor_config)
 
-    # Resolve checkpoint directory
-    ckpt_dir = os.path.join(checkpoint_dir, model_name)
+    # Resolve checkpoint directory (orbax requires absolute paths)
+    ckpt_dir = os.path.abspath(os.path.join(checkpoint_dir, model_name))
     print(f"Loading checkpoint from {ckpt_dir} at step {checkpoint_step}...")
 
     params = sc_training_utils.load_parameters(

@@ -118,28 +118,51 @@ echo "    Module loading OK."
 
 # ── Step 4: Download checkpoint ──────────────────────────────────────────────
 
+# On Colab, persist checkpoints to Drive so they survive session restarts.
+# The repo's searchless_chess/checkpoints/<MODEL> is symlinked to Drive.
+DRIVE_CKPT_DIR="/content/drive/MyDrive/data/grpo-chess/searchless_chess_checkpoints"
+
 if $SKIP_CKPT; then
     echo ">>> [4/4] Skipping checkpoint download (--skip-checkpoint)."
-elif [ -d "$CKPT_DIR/$MODEL" ]; then
+elif [ -d "$CKPT_DIR/$MODEL" ] || [ -L "$CKPT_DIR/$MODEL" ]; then
     echo ">>> [4/4] Checkpoint already exists at $CKPT_DIR/$MODEL — skipping."
 else
     ZIP_URL="https://storage.googleapis.com/searchless_chess/checkpoints/${MODEL}.zip"
-    ZIP_PATH="$CKPT_DIR/${MODEL}.zip"
 
-    echo ">>> [4/4] Downloading $MODEL checkpoint..."
-    echo "    URL: $ZIP_URL"
-
-    mkdir -p "$CKPT_DIR"
-
-    if command -v wget &>/dev/null; then
-        wget -q --show-progress "$ZIP_URL" -O "$ZIP_PATH"
+    # Decide where to download
+    if [ "$IS_COLAB" = "1" ] && [ -d "/content/drive/MyDrive" ]; then
+        TARGET_DIR="$DRIVE_CKPT_DIR"
     else
-        curl -L --progress-bar "$ZIP_URL" -o "$ZIP_PATH"
+        TARGET_DIR="$CKPT_DIR"
     fi
 
-    echo "    Extracting..."
-    unzip -o -q "$ZIP_PATH" -d "$CKPT_DIR"
-    rm "$ZIP_PATH"
+    if [ -d "$TARGET_DIR/$MODEL" ]; then
+        echo ">>> [4/4] Found checkpoint on Drive at $TARGET_DIR/$MODEL"
+    else
+        ZIP_PATH="$TARGET_DIR/${MODEL}.zip"
+
+        echo ">>> [4/4] Downloading $MODEL checkpoint..."
+        echo "    URL: $ZIP_URL"
+
+        mkdir -p "$TARGET_DIR"
+
+        if command -v wget &>/dev/null; then
+            wget -q --show-progress "$ZIP_URL" -O "$ZIP_PATH"
+        else
+            curl -L --progress-bar "$ZIP_URL" -o "$ZIP_PATH"
+        fi
+
+        echo "    Extracting..."
+        unzip -o -q "$ZIP_PATH" -d "$TARGET_DIR"
+        rm "$ZIP_PATH"
+    fi
+
+    # On Colab, symlink from repo path to Drive so generate_dataset.py finds it
+    if [ "$TARGET_DIR" != "$CKPT_DIR" ]; then
+        mkdir -p "$CKPT_DIR"
+        ln -sfn "$TARGET_DIR/$MODEL" "$CKPT_DIR/$MODEL"
+        echo "    Symlinked $CKPT_DIR/$MODEL → $TARGET_DIR/$MODEL"
+    fi
 
     echo "    Checkpoint ready at $CKPT_DIR/$MODEL"
 fi
