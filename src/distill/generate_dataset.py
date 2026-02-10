@@ -48,8 +48,45 @@ class GenerateConfig:
     sample_positions_per_game: int = 3
 
 
+def _ensure_apache_beam_stub():
+    """Register a minimal apache_beam stub if the real package can't be imported.
+
+    searchless_chess constants.py imports apache_beam.coders at module level,
+    but the coders are only used for data pipelines, never for inference.
+    On environments where apache_beam is unavailable (e.g. Python 3.14),
+    we provide a stub so that constants.py can load.
+    """
+    try:
+        from apache_beam import coders  # noqa: F401
+    except Exception:
+        import types
+
+        def _make_stub(name):
+            mod = types.ModuleType(name)
+            mod.__path__ = []
+            return mod
+
+        # Minimal stub: apache_beam.coders with dummy coder classes
+        beam = _make_stub("apache_beam")
+        coders_mod = _make_stub("apache_beam.coders")
+
+        class _DummyCoder:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        for coder_name in (
+            "StrUtf8Coder", "BigIntegerCoder", "FloatCoder", "TupleCoder",
+        ):
+            setattr(coders_mod, coder_name, _DummyCoder)
+
+        beam.coders = coders_mod
+        sys.modules.setdefault("apache_beam", beam)
+        sys.modules.setdefault("apache_beam.coders", coders_mod)
+
+
 def _load_sc_module(name: str):
     """Load a module from searchless_chess/src/ via importlib."""
+    _ensure_apache_beam_stub()
     spec = importlib.util.spec_from_file_location(name, _SC_SRC / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -58,6 +95,7 @@ def _load_sc_module(name: str):
 
 def _load_sc_engine_module(name: str):
     """Load a module from searchless_chess/src/engines/ via importlib."""
+    _ensure_apache_beam_stub()
     spec = importlib.util.spec_from_file_location(
         name, _SC_SRC / "engines" / f"{name}.py"
     )
@@ -289,6 +327,21 @@ def load_positions(config: GenerateConfig) -> list[str]:
 
 def generate(config: GenerateConfig):
     """Main generation loop: load teacher, run inference, save shards."""
+    print("=" * 60)
+    print("Distillation Dataset Generation")
+    print("=" * 60)
+    print(f"  Teacher model:    {config.teacher_model}")
+    print(f"  Checkpoint dir:   {config.checkpoint_dir}")
+    print(f"  Checkpoint step:  {config.checkpoint_step:,}")
+    print(f"  Top-k:            {config.top_k}")
+    print(f"  Temperature:      {config.teacher_temperature}")
+    print(f"  Max samples:      {config.max_samples:,}")
+    print(f"  Shard size:       {config.shard_size:,}")
+    print(f"  Min ELO:          {config.min_elo}")
+    print(f"  Output dir:       {config.output_dir}")
+    print(f"  Batch size:       {config.teacher_batch_size}")
+    print("=" * 60)
+
     os.makedirs(config.output_dir, exist_ok=True)
 
     # Count existing shards to support resuming
