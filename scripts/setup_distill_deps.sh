@@ -113,7 +113,7 @@ echo "    Imports OK."
 echo ">>> [3/4] Verifying searchless_chess module loading..."
 
 cd "$REPO_DIR"
-$PYTHON -c "from src.distill.generate_dataset import build_teacher_engine; print('  build_teacher_engine: OK')"
+$PYTHON -c "from src.distill.teacher import build_teacher_engine; print('  build_teacher_engine: OK')"
 
 echo "    Module loading OK."
 

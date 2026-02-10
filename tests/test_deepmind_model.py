@@ -17,11 +17,14 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.searchless_chess_imports import MOVE_TO_ACTION
-from src.distill.generate_dataset import (
-    GenerateConfig,
+from src.distill.generate_dataset import GenerateConfig, save_shard, count_existing_shards
+from src.distill.teacher import (
     process_position,
-    save_shard,
-    _ACTION_SPACE_SIZE,
+    ACTION_SPACE_SIZE,
+    FENPrepDataset,
+    collate_positions,
+    postprocess_teacher_batch,
+    postprocess_teacher_output,
 )
 from src.distill.distill_dataset import DistillDataset, collate_distill_batch
 
@@ -109,7 +112,7 @@ class TestProcessPosition:
         bucket_values = _make_bucket_values()
         result = process_position(engine, bucket_values, _STARTING_FEN, top_k=8, temperature=1.0)
 
-        assert result["legal_mask"].shape == (_ACTION_SPACE_SIZE,)
+        assert result["legal_mask"].shape == (ACTION_SPACE_SIZE,)
         assert result["legal_mask"].dtype == torch.bool
 
     def test_legal_mask_has_correct_count(self):
@@ -196,7 +199,7 @@ class TestSaveAndLoadShard:
         loaded = torch.load(shard_path, weights_only=False)
         assert loaded["board_tokens"].shape[0] == len(samples)
         assert loaded["board_tokens"].shape[1] == 77
-        assert loaded["legal_mask"].shape == (len(samples), _ACTION_SPACE_SIZE)
+        assert loaded["legal_mask"].shape == (len(samples), ACTION_SPACE_SIZE)
         assert len(loaded["teacher_action_indices"]) == len(samples)
         assert len(loaded["teacher_probs"]) == len(samples)
 
@@ -214,6 +217,213 @@ class TestSaveAndLoadShard:
         assert torch.equal(loaded["legal_mask"][0], sample["legal_mask"])
         assert torch.equal(loaded["teacher_action_indices"][0], sample["teacher_action_indices"])
         assert torch.allclose(loaded["teacher_probs"][0], sample["teacher_probs"])
+
+
+# ---------------------------------------------------------------------------
+# Batched pipeline tests (FENPrepDataset → collate → postprocess)
+# ---------------------------------------------------------------------------
+
+
+class TestFENPrepDataset:
+    """Test FENPrepDataset.__getitem__."""
+
+    def test_valid_fen_returns_dict(self):
+        ds = FENPrepDataset([_STARTING_FEN])
+        item = ds[0]
+        assert item is not None
+        assert set(item.keys()) == {"sequences", "board_tokens", "legal_mask", "action_indices"}
+
+    def test_sequences_shape(self):
+        ds = FENPrepDataset([_STARTING_FEN])
+        item = ds[0]
+        board = chess.Board(_STARTING_FEN)
+        n_legal = len(list(board.legal_moves))
+        # sequences: [num_legal, SEQUENCE_LENGTH + 2]
+        assert item["sequences"].shape[0] == n_legal
+        assert item["sequences"].shape[1] == 77 + 2  # FEN tokens + action + return bucket
+
+    def test_board_tokens_shape(self):
+        ds = FENPrepDataset([_STARTING_FEN])
+        item = ds[0]
+        assert item["board_tokens"].shape == (77,)
+        assert item["board_tokens"].dtype == torch.long
+
+    def test_legal_mask_shape(self):
+        ds = FENPrepDataset([_STARTING_FEN])
+        item = ds[0]
+        assert item["legal_mask"].shape == (ACTION_SPACE_SIZE,)
+        assert item["legal_mask"].dtype == torch.bool
+
+    def test_action_indices_match_legal_moves(self):
+        ds = FENPrepDataset([_STARTING_FEN])
+        item = ds[0]
+        board = chess.Board(_STARTING_FEN)
+        n_legal = len(list(board.legal_moves))
+        assert item["action_indices"].shape == (n_legal,)
+        # All action indices should be marked legal in the mask
+        for idx in item["action_indices"]:
+            assert item["legal_mask"][idx.item()]
+
+    def test_invalid_fen_returns_none(self):
+        ds = FENPrepDataset(["not a valid fen"])
+        assert ds[0] is None
+
+    def test_checkmate_returns_none(self):
+        checkmate_fen = "rnb1kbnr/pppp1ppp/4p3/8/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3"
+        ds = FENPrepDataset([checkmate_fen])
+        assert ds[0] is None
+
+    def test_len(self):
+        fens = [_STARTING_FEN, _TEST_FEN, "invalid"]
+        ds = FENPrepDataset(fens)
+        assert len(ds) == 3
+
+
+class TestCollatePositions:
+    """Test collate_positions collate function."""
+
+    def test_filters_nones(self):
+        ds = FENPrepDataset([_STARTING_FEN, "invalid", _TEST_FEN])
+        batch = [ds[i] for i in range(3)]
+        collated = collate_positions(batch)
+        assert collated["valid"] is True
+        assert collated["num_failed"] == 1
+        assert len(collated["seq_counts"]) == 2
+
+    def test_all_invalid_returns_not_valid(self):
+        collated = collate_positions([None, None])
+        assert collated["valid"] is False
+        assert collated["num_failed"] == 2
+
+    def test_sequences_concatenated(self):
+        ds = FENPrepDataset([_STARTING_FEN, _TEST_FEN])
+        batch = [ds[0], ds[1]]
+        collated = collate_positions(batch)
+        total_seqs = sum(collated["seq_counts"])
+        assert collated["sequences"].shape[0] == total_seqs
+        assert collated["sequences"].shape[1] == 77 + 2
+
+    def test_lists_have_correct_length(self):
+        ds = FENPrepDataset([_STARTING_FEN, _TEST_FEN])
+        batch = [ds[0], ds[1]]
+        collated = collate_positions(batch)
+        n = len(collated["seq_counts"])
+        assert len(collated["board_tokens"]) == n
+        assert len(collated["legal_masks"]) == n
+        assert len(collated["action_indices"]) == n
+
+
+class TestPostprocessTeacherBatch:
+    """Test vectorized postprocess_teacher_batch."""
+
+    @staticmethod
+    def _make_mock_batch_data(fens, num_buckets=128):
+        """Build a collated batch and matching mock log_probs."""
+        ds = FENPrepDataset(fens)
+        items = [ds[i] for i in range(len(fens))]
+        batch = collate_positions(items)
+        total_seqs = batch["sequences"].shape[0]
+        # Mock log-probs: [total_seqs, num_buckets]
+        all_log_probs = np.random.randn(total_seqs, num_buckets).astype(np.float32)
+        bucket_values = np.linspace(0.0, 1.0, num_buckets + 1)
+        bucket_values = (bucket_values[:-1] + bucket_values[1:]) / 2
+        return batch, all_log_probs, bucket_values
+
+    def test_returns_correct_count(self):
+        fens = [_STARTING_FEN, _TEST_FEN]
+        batch, log_probs, bv = self._make_mock_batch_data(fens)
+        samples = postprocess_teacher_batch(log_probs, bv, batch, top_k=5, temperature=1.0)
+        assert len(samples) == 2
+
+    def test_sample_keys(self):
+        batch, log_probs, bv = self._make_mock_batch_data([_STARTING_FEN])
+        samples = postprocess_teacher_batch(log_probs, bv, batch, top_k=5, temperature=1.0)
+        assert set(samples[0].keys()) == {
+            "board_tokens", "legal_mask", "teacher_action_indices", "teacher_probs",
+        }
+
+    def test_probs_sum_to_one(self):
+        batch, log_probs, bv = self._make_mock_batch_data([_STARTING_FEN, _TEST_FEN])
+        samples = postprocess_teacher_batch(log_probs, bv, batch, top_k=8, temperature=1.0)
+        for s in samples:
+            assert abs(s["teacher_probs"].sum().item() - 1.0) < 1e-5
+
+    def test_top_k_limits(self):
+        batch, log_probs, bv = self._make_mock_batch_data([_STARTING_FEN])
+        for k in [1, 3, 5, 8]:
+            samples = postprocess_teacher_batch(log_probs, bv, batch, top_k=k, temperature=1.0)
+            assert len(samples[0]["teacher_action_indices"]) <= k
+            assert len(samples[0]["teacher_probs"]) == len(samples[0]["teacher_action_indices"])
+
+    def test_teacher_actions_are_legal(self):
+        batch, log_probs, bv = self._make_mock_batch_data([_STARTING_FEN, _TEST_FEN])
+        samples = postprocess_teacher_batch(log_probs, bv, batch, top_k=5, temperature=1.0)
+        for s in samples:
+            for idx in s["teacher_action_indices"]:
+                assert s["legal_mask"][idx.item()], f"Action {idx.item()} not legal"
+
+    def test_temperature_affects_distribution(self):
+        batch, log_probs, bv = self._make_mock_batch_data([_STARTING_FEN])
+        s_t1 = postprocess_teacher_batch(log_probs, bv, batch, top_k=8, temperature=1.0)
+        s_t01 = postprocess_teacher_batch(log_probs, bv, batch, top_k=8, temperature=0.1)
+        max_t1 = s_t1[0]["teacher_probs"].max().item()
+        max_t01 = s_t01[0]["teacher_probs"].max().item()
+        assert max_t01 >= max_t1
+
+    def test_matches_per_position_output(self):
+        """Vectorized batch should match per-position postprocess_teacher_output."""
+        fens = [_STARTING_FEN, _TEST_FEN]
+        batch, all_log_probs, bv = self._make_mock_batch_data(fens)
+
+        # Batch result
+        batch_samples = postprocess_teacher_batch(
+            all_log_probs, bv, batch, top_k=5, temperature=1.0,
+        )
+
+        # Per-position result
+        offset = 0
+        for i, count in enumerate(batch["seq_counts"]):
+            lp = all_log_probs[offset : offset + count]
+            offset += count
+            indices, probs = postprocess_teacher_output(
+                lp, bv, batch["action_indices"][i], top_k=5, temperature=1.0,
+            )
+            assert torch.equal(batch_samples[i]["teacher_action_indices"], indices)
+            assert torch.allclose(batch_samples[i]["teacher_probs"], probs, atol=1e-6)
+
+
+class TestCountExistingShards:
+    """Test count_existing_shards resume helper."""
+
+    def test_empty_dir(self, tmp_path):
+        shard_idx, samples = count_existing_shards(str(tmp_path))
+        assert shard_idx == 0
+        assert samples == 0
+
+    def test_counts_samples(self, tmp_path):
+        engine = _make_mock_engine()
+        bv = _make_bucket_values()
+        samples = []
+        for fen in [_STARTING_FEN, _TEST_FEN]:
+            s = process_position(engine, bv, fen, top_k=5, temperature=1.0)
+            if s is not None:
+                samples.append(s)
+        save_shard(samples, str(tmp_path / "shard_0000.pt"))
+
+        shard_idx, count = count_existing_shards(str(tmp_path))
+        assert shard_idx == 1
+        assert count == len(samples)
+
+    def test_counts_multiple_shards(self, tmp_path):
+        engine = _make_mock_engine()
+        bv = _make_bucket_values()
+        s = process_position(engine, bv, _STARTING_FEN, top_k=5, temperature=1.0)
+        save_shard([s], str(tmp_path / "shard_0000.pt"))
+        save_shard([s, s], str(tmp_path / "shard_0001.pt"))
+
+        shard_idx, count = count_existing_shards(str(tmp_path))
+        assert shard_idx == 2
+        assert count == 3
 
 
 class TestDistillDatasetAndCollate:
@@ -254,7 +464,7 @@ class TestDistillDatasetAndCollate:
         board_tokens, legal_mask, teacher_indices, teacher_probs = ds[0]
 
         assert board_tokens.shape == (77,)
-        assert legal_mask.shape == (_ACTION_SPACE_SIZE,)
+        assert legal_mask.shape == (ACTION_SPACE_SIZE,)
         assert teacher_indices.dim() == 1
         assert teacher_probs.dim() == 1
         assert len(teacher_indices) == len(teacher_probs)
@@ -274,7 +484,7 @@ class TestDistillDatasetAndCollate:
 
         B = len(batch)
         assert board_tokens.shape == (B, 77)
-        assert legal_masks.shape == (B, _ACTION_SPACE_SIZE)
+        assert legal_masks.shape == (B, ACTION_SPACE_SIZE)
         # teacher_indices and teacher_probs are padded to max_k
         assert teacher_indices.shape[0] == B
         assert teacher_probs.shape[0] == B
@@ -305,6 +515,8 @@ class TestGenerateConfig:
         assert cfg.top_k == 8
         assert cfg.teacher_temperature == 1.0
         assert cfg.checkpoint_step == 6_400_000
+        assert cfg.process_batch_size == 256
+        assert cfg.num_workers == 4
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +532,7 @@ class TestBuildAndUseTeacherEngine:
     @pytest.fixture(scope="class")
     def teacher(self):
         """Build the 270M teacher engine (shared across tests in this class)."""
-        from src.distill.generate_dataset import build_teacher_engine
+        from src.distill.teacher import build_teacher_engine
 
         engine, bucket_values = build_teacher_engine(
             model_name="270M",
@@ -378,6 +590,31 @@ class TestBuildAndUseTeacherEngine:
         for fen in fens:
             result = process_position(engine, bucket_values, fen, top_k=5, temperature=1.0)
             assert result is not None, f"process_position returned None for {fen}"
+
+    def test_batched_pipeline_integration(self, teacher):
+        """Full batched pipeline: FENPrepDataset → collate → predict_fn → postprocess."""
+        engine, bucket_values = teacher
+        fens = [
+            _STARTING_FEN,
+            _TEST_FEN,
+            "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq c6 0 2",
+        ]
+        ds = FENPrepDataset(fens)
+        items = [ds[i] for i in range(len(fens))]
+        batch = collate_positions(items)
+
+        assert batch["valid"]
+        all_log_probs = engine.predict_fn(batch["sequences"].numpy())[:, -1]
+        samples = postprocess_teacher_batch(
+            all_log_probs, bucket_values, batch, top_k=5, temperature=1.0,
+        )
+
+        assert len(samples) == 3
+        for s in samples:
+            assert s["teacher_probs"].sum().item() == pytest.approx(1.0, abs=1e-5)
+            assert len(s["teacher_action_indices"]) <= 5
+            for idx in s["teacher_action_indices"]:
+                assert s["legal_mask"][idx.item()]
 
     def test_end_to_end_shard_pipeline(self, teacher, tmp_path):
         """Full pipeline: teacher inference -> save shard -> load dataset -> collate."""
