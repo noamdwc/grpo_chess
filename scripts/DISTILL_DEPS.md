@@ -17,15 +17,22 @@ os.environ["COLAB"] = "1"
 
 ## Required Packages
 
-| Package | Purpose | Installs on Colab? | Installs on Python 3.14? |
-|---------|---------|-------------------|------------------------|
-| `jax` | DeepMind model runtime | Yes | Yes |
-| `dm-haiku` | DeepMind model architecture | Yes | Yes |
-| `chex` | JAX testing/assertions | Yes | Yes |
-| `optax` | Optimizer (transitive dep of `training_utils.py`) | Yes | Yes |
-| `orbax-checkpoint` | Checkpoint loading | Yes | Yes |
-| `grain` | Data loading (transitive dep of `constants.py`) | Yes | Yes |
-| `apache-beam` | Data pipeline coders (transitive dep of `constants.py`) | Yes | **No** |
+| Package | Purpose | Colab | Local (3.14) |
+|---------|---------|-------|--------------|
+| `jax` / `jaxlib` | DeepMind model runtime | Pre-installed (0.7.2 + CUDA) | Pinned 0.8.2 |
+| `dm-haiku` | DeepMind model architecture | Installed | Pinned 0.0.16 |
+| `chex` | JAX testing/assertions | Installed | Pinned 0.1.91 |
+| `optax` | Optimizer (transitive dep of `training_utils.py`) | Installed | Pinned 0.2.7 |
+| `orbax-checkpoint` | Checkpoint loading | Installed | Pinned 0.11.32 |
+| `grain` | Data loading (transitive dep of `constants.py`) | Installed | Pinned 0.2.15 |
+| `apache-beam` | Data pipeline coders (transitive dep of `constants.py`) | Installed | **Skipped** (stub) |
+
+### Pinning strategy
+
+- **Colab**: JAX/jaxlib are pre-installed with matching CUDA drivers — we don't
+  touch them. Only the extras (`dm-haiku`, `chex`, etc.) are installed unpinned
+  so they resolve against Colab's JAX.
+- **Local**: All versions pinned to tested-working set (2026-02-10). No CUDA needed.
 
 ## The `apache_beam` Problem
 
@@ -54,19 +61,27 @@ because `apache_beam.coders` pulls in a deep chain of internal imports that
 require `grpc`, `proto`, and other packages — each with their own build issues
 on 3.14.
 
-### Solution: `_ensure_apache_beam_stub()`
+### Solution: `_patch_searchless_chess_compat()`
 
-`src/distill/generate_dataset.py` registers a minimal `apache_beam` stub in
-`sys.modules` before loading any searchless_chess modules. The stub provides
-dummy `StrUtf8Coder`, `BigIntegerCoder`, `FloatCoder`, and `TupleCoder` classes
-that accept arbitrary arguments. This is safe because:
+`src/distill/generate_dataset.py` calls `_patch_searchless_chess_compat()` before
+loading any searchless_chess modules. This function handles two issues:
 
-1. The coders are only used in `constants.CODERS` dict, which is for data
-   pipeline serialization (Beam workers).
-2. Our code never reads `constants.CODERS` — we only use `constants.Predictor`
-   (a simple dataclass) and `constants.Sequences` (a type alias).
-3. The stub is only activated when the real `apache_beam` can't be imported.
-   On Colab (Python 3.10-3.12) the real package loads normally.
+**1. `apache_beam` stub** — Registers a minimal `apache_beam` module in
+`sys.modules` with dummy `StrUtf8Coder`, `BigIntegerCoder`, `FloatCoder`, and
+`TupleCoder` classes. This is safe because:
+
+- The coders are only used in `constants.CODERS` dict for Beam pipeline
+  serialization. Our code never reads `constants.CODERS`.
+- The stub is only activated when the real `apache_beam` can't be imported.
+  On Colab (Python 3.10-3.12) the real package loads normally.
+
+**2. `jax.sharding.PositionalSharding` shim** — `training_utils.py` uses
+`jax.sharding.PositionalSharding` as a type annotation on its `replicate()`
+function. This attribute was removed/moved in newer JAX versions (missing on
+both JAX 0.8.x locally and older Colab JAX). Since Python evaluates function
+annotations at definition time (no `from __future__ import annotations` in that
+file), the module fails to load. We add a dummy class at that path since
+`replicate()` is never called by our inference code.
 
 ### The dependency chain that fails
 
@@ -78,6 +93,7 @@ build_teacher_engine()
       → constants.py: from grain import python as pygrain     ← needs grain
       → constants.py: import haiku as hk                      ← needs dm-haiku
   → _load_sc_module("training_utils")
+    → training_utils.py: jax.sharding.PositionalSharding      ← MISSING in JAX 0.8.x and Colab
     → training_utils.py: import optax                         ← needs optax
     → training_utils.py: import orbax.checkpoint              ← needs orbax
 ```

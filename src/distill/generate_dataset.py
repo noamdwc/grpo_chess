@@ -48,14 +48,15 @@ class GenerateConfig:
     sample_positions_per_game: int = 3
 
 
-def _ensure_apache_beam_stub():
-    """Register a minimal apache_beam stub if the real package can't be imported.
+def _patch_searchless_chess_compat():
+    """Patch missing dependencies so searchless_chess modules can load.
 
-    searchless_chess constants.py imports apache_beam.coders at module level,
-    but the coders are only used for data pipelines, never for inference.
-    On environments where apache_beam is unavailable (e.g. Python 3.14),
-    we provide a stub so that constants.py can load.
+    searchless_chess was built against a specific JAX/Beam environment.
+    We only use it for inference, so we stub out the parts we don't need.
+    See scripts/DISTILL_DEPS.md for full details.
     """
+    # 1) apache_beam stub — constants.py imports coders at module level,
+    #    but they're only used for data pipelines, never inference.
     try:
         from apache_beam import coders  # noqa: F401
     except Exception:
@@ -66,7 +67,6 @@ def _ensure_apache_beam_stub():
             mod.__path__ = []
             return mod
 
-        # Minimal stub: apache_beam.coders with dummy coder classes
         beam = _make_stub("apache_beam")
         coders_mod = _make_stub("apache_beam.coders")
 
@@ -83,10 +83,17 @@ def _ensure_apache_beam_stub():
         sys.modules.setdefault("apache_beam", beam)
         sys.modules.setdefault("apache_beam.coders", coders_mod)
 
+    # 2) jax.sharding.PositionalSharding — training_utils.py uses it as a type
+    #    annotation on replicate(), which we never call. It was removed/moved
+    #    in newer JAX versions.
+    import jax
+    if not hasattr(jax.sharding, "PositionalSharding"):
+        jax.sharding.PositionalSharding = type("PositionalSharding", (), {})
+
 
 def _load_sc_module(name: str):
     """Load a module from searchless_chess/src/ via importlib."""
-    _ensure_apache_beam_stub()
+    _patch_searchless_chess_compat()
     spec = importlib.util.spec_from_file_location(name, _SC_SRC / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -95,7 +102,7 @@ def _load_sc_module(name: str):
 
 def _load_sc_engine_module(name: str):
     """Load a module from searchless_chess/src/engines/ via importlib."""
-    _ensure_apache_beam_stub()
+    _patch_searchless_chess_compat()
     spec = importlib.util.spec_from_file_location(
         name, _SC_SRC / "engines" / f"{name}.py"
     )

@@ -64,23 +64,29 @@ echo
 
 echo ">>> [1/4] Installing JAX ecosystem packages..."
 
-$PIP install --quiet \
-    jax \
-    dm-haiku \
-    chex \
-    optax \
-    orbax-checkpoint \
-    grain \
-    jaxtyping
-
-# apache_beam: installs cleanly on Python <=3.12 (Colab) but broken on 3.14+
-# because pyarrow<19 can't build from source. On 3.13+ we skip it and rely on
-# the stub in generate_dataset.py (see scripts/DISTILL_DEPS.md).
-if [ "$PY_MINOR" -lt 13 ]; then
-    echo "    Installing apache-beam (Python $PY_VERSION)..."
-    $PIP install --quiet apache-beam
+if [ "$IS_COLAB" = "1" ]; then
+    # Colab: JAX/jaxlib are pre-installed with CUDA — don't touch them.
+    # Only install the extras that searchless_chess needs.
+    $PIP install --quiet \
+        dm-haiku \
+        chex \
+        optax \
+        orbax-checkpoint \
+        grain \
+        jaxtyping \
+        apache-beam
 else
-    echo "    Skipping apache-beam (Python $PY_VERSION — will use built-in stub)"
+    # Local: pin versions tested on macOS / Python 3.14 (2026-02-10).
+    # apache_beam skipped — can't build pyarrow<19 on 3.14, uses stub instead.
+    $PIP install --quiet \
+        "jax==0.8.2" \
+        "jaxlib==0.8.2" \
+        "dm-haiku==0.0.16" \
+        "chex==0.1.91" \
+        "optax==0.2.7" \
+        "orbax-checkpoint==0.11.32" \
+        "grain==0.2.15" \
+        "jaxtyping==0.3.4"
 fi
 
 echo "    Done."
