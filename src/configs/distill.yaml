@@ -1,0 +1,39 @@
+generate:
+  teacher_model: "270M"
+  checkpoint_dir: "searchless_chess/checkpoints"
+  checkpoint_step: 6400000
+  teacher_batch_size: 64
+  top_k: 8
+  teacher_temperature: 1.0
+  output_dir: "data/distill"
+  shard_size: 50000
+  min_elo: 1800
+  max_samples: 2000000
+  skip_first_n_moves: 5
+  skip_last_n_moves: 5
+  sample_positions_per_game: 3
+
+distill:
+  lr: 0.0001
+  batch_size: 2048
+  num_epochs: 10
+  warmup_steps: 1000
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  checkpoint_dir: "checkpoints/distill"
+  use_wandb: true
+  wandb_project: "chess-grpo-pretrain"
+  num_workers: 4
+  val_check_interval: 0.1
+
+dataset:
+  data_dir: "data/distill"
+  top_k: 8
+  eval_fraction: 0.05
+
+transformer:
+  vocab_size: 300
+  embed_dim: 256
+  num_layers: 4
+  num_heads: 8
+  action_dim: 1968
