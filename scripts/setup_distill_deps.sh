@@ -66,14 +66,15 @@ echo ">>> [1/4] Installing JAX ecosystem packages..."
 
 if [ "$IS_COLAB" = "1" ]; then
     # Colab: JAX/jaxlib are pre-installed with CUDA — don't touch them.
-    # Only install the extras that searchless_chess needs.
+    # Pin ecosystem packages so pip doesn't downgrade jax/jaxlib and break
+    # the CUDA PJRT plugin.
     $PIP install --quiet \
-        dm-haiku \
-        chex \
-        optax \
-        orbax-checkpoint \
-        grain \
-        jaxtyping \
+        "dm-haiku==0.0.16" \
+        "chex==0.1.91" \
+        "optax==0.2.7" \
+        "orbax-checkpoint==0.11.32" \
+        "grain==0.2.15" \
+        "jaxtyping==0.3.4" \
         apache-beam
 else
     # Local: pin versions tested on macOS / Python 3.14 (2026-02-10).
