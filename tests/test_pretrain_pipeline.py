@@ -1,7 +1,7 @@
 """Tests for the pretraining pipeline.
 
 This module tests the pretraining components:
-- ChessPretrainDataset: Streaming dataset from HuggingFace
+- ChessPretrainDataset: Dataset from angeluriot/chess_games (UCI moves)
 - PretrainChessTransformer: PyTorch Lightning module for supervised learning
 - Hash-based train/eval splitting
 - Collate function and data loading
@@ -53,14 +53,14 @@ class TestPretrainDatasetConfig:
 
         config = PretrainDatasetConfig()
 
-        assert config.min_elo == 1500
+        assert config.min_elo == 2000
         assert config.max_samples is None
         assert config.skip_first_n_moves == 5
         assert config.skip_last_n_moves == 5
         assert config.sample_positions_per_game == 3
-        assert config.buffer_size == 10000
         assert config.is_eval is False
         assert config.eval_fraction == 0.05
+        assert config.cache_path is None
 
     def test_custom_config(self):
         """Test custom configuration values."""
@@ -77,53 +77,6 @@ class TestPretrainDatasetConfig:
         assert config.max_samples == 1000
         assert config.is_eval is True
         assert config.eval_fraction == 0.10
-
-
-class TestPGNParsing:
-    """Tests for PGN move parsing."""
-
-    def test_parse_simple_pgn(self):
-        """Test parsing simple PGN movetext."""
-        from src.pretrain.pretrain_dataset import parse_pgn_moves
-
-        movetext = "1. e4 e5 2. Nf3 Nc6"
-        moves = parse_pgn_moves(movetext)
-
-        assert len(moves) == 4
-        assert moves[0] == "e2e4"
-        assert moves[1] == "e7e5"
-        assert moves[2] == "g1f3"
-        assert moves[3] == "b8c6"
-
-    def test_parse_pgn_with_clock(self):
-        """Test parsing PGN with clock annotations."""
-        from src.pretrain.pretrain_dataset import parse_pgn_moves
-
-        movetext = "1. e4 {[%clk 0:10:00]} e5 {[%clk 0:10:00]} 2. Nf3"
-        moves = parse_pgn_moves(movetext)
-
-        assert len(moves) == 3
-        assert moves[0] == "e2e4"
-        assert moves[1] == "e7e5"
-        assert moves[2] == "g1f3"
-
-    def test_parse_pgn_with_result(self):
-        """Test parsing PGN with game result."""
-        from src.pretrain.pretrain_dataset import parse_pgn_moves
-
-        movetext = "1. e4 e5 1-0"
-        moves = parse_pgn_moves(movetext)
-
-        assert len(moves) == 2
-        assert moves[0] == "e2e4"
-        assert moves[1] == "e7e5"
-
-    def test_parse_empty_pgn(self):
-        """Test parsing empty PGN."""
-        from src.pretrain.pretrain_dataset import parse_pgn_moves
-
-        assert parse_pgn_moves("") == []
-        assert parse_pgn_moves(None) == []
 
 
 class TestPositionExtraction:
@@ -316,14 +269,15 @@ class TestHashBasedSplit:
     """Tests for the hash-based train/eval split."""
 
     def test_split_is_deterministic(self):
-        """Test that the same site URL always goes to the same split."""
-        # The split is based on hash(site) % 10000 < threshold
-        site1 = "https://lichess.org/abc123"
-        site2 = "https://lichess.org/def456"
+        """Test that the same game_id always goes to the same split."""
+        # The split is based on hash(game_id) % 10000 < threshold
+        # game_id = f"{date}-{white_elo}-{black_elo}"
+        game_id1 = "2024.01.15-2400-2350"
+        game_id2 = "2024.03.20-2100-2200"
 
         # Hash should be consistent
-        hash1_a = hash(site1) % 10000
-        hash1_b = hash(site1) % 10000
+        hash1_a = hash(game_id1) % 10000
+        hash1_b = hash(game_id1) % 10000
 
         assert hash1_a == hash1_b
 
@@ -332,13 +286,13 @@ class TestHashBasedSplit:
         eval_fraction = 0.05
         threshold = int(eval_fraction * 10000)
 
-        # Generate some test sites
+        # Generate some test game IDs
         train_count = 0
         eval_count = 0
 
         for i in range(1000):
-            site = f"https://lichess.org/game{i}"
-            hash_val = hash(site) % 10000
+            game_id = f"2024.01.{i % 28 + 1:02d}-{2000 + i}-{2000 + i + 50}"
+            hash_val = hash(game_id) % 10000
 
             if hash_val < threshold:
                 eval_count += 1
