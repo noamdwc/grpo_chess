@@ -5,6 +5,8 @@ import chess
 import chess.pgn
 import chess.engine
 import random
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import torch
 
@@ -14,7 +16,7 @@ from typing import Dict, List, Tuple
 from src.chess.chess_logic import MOVE_TO_ACTION
 from src.chess.policy_player import PolicyPlayer, PolicyConfig
 from src.chess.searcher import TrajectorySearcher, SearchConfig
-from src.chess.stockfish import StockfishPlayer, StockfishConfig, DEFAULT_STOCKFISH_PATH as STOCKFISH_PATH
+from src.chess.stockfish import StockfishPlayer, StockfishConfig, StockfishManager, DEFAULT_STOCKFISH_PATH as STOCKFISH_PATH
 
 
 @dataclass
@@ -24,6 +26,7 @@ class EvalConfig:
     max_plies: int = 400  # safety to avoid extremely long games
     randomize_opening: bool = False
     opening_plies: int = 6  # random legal moves to diversify early positions
+    num_workers: int = 1  # number of parallel workers for game play
 
 
 # Register as safe for torch.load with weights_only=True (PyTorch 2.6+ compatibility)
@@ -60,6 +63,7 @@ def play_one_game(
     policy_is_white: bool,
     cfg: EvalConfig,
     game_number: int = 0,
+    rng: random.Random | None = None,
 ) -> Tuple[str, str, str]:
     """Play a single game between policy and Stockfish.
 
@@ -69,11 +73,14 @@ def play_one_game(
         policy_is_white: Whether policy plays as white
         cfg: Evaluation configuration
         game_number: Game number for PGN metadata
+        rng: Optional Random instance for thread-safe randomness.
+             If None, uses the global random module.
 
     Returns:
         Tuple of (result_str, termination_reason, pgn_str)
         result_str in {"1-0", "0-1", "1/2-1/2"}
     """
+    _choice = rng.choice if rng is not None else random.choice
 
     board = chess.Board()
     game = chess.pgn.Game()
@@ -88,7 +95,7 @@ def play_one_game(
         for _ in range(cfg.opening_plies):
             if board.is_game_over():
                 break
-            move = random.choice(list(board.legal_moves))
+            move = _choice(list(board.legal_moves))
             board.push(move)
             node = node.add_variation(move)
 
@@ -146,6 +153,62 @@ def estimate_elo_diff(score: float) -> float:
     return -400.0 * math.log10(1.0 / s - 1.0)
 
 
+def _aggregate_results(
+    game_results: List[Tuple[int, str, str, str]],
+    eval_cfg: EvalConfig,
+    policy: PolicyPlayer | TrajectorySearcher,
+) -> Tuple[Dict, PolicyPlayer | TrajectorySearcher, List[str]]:
+    """Aggregate individual game results into summary statistics.
+
+    Args:
+        game_results: List of (game_number, result_str, reason, pgn_str)
+        eval_cfg: Evaluation configuration
+        policy: Policy player (returned as-is)
+
+    Returns:
+        Same format as evaluate_policy_vs_stockfish
+    """
+    wins = draws = losses = 0
+    term_reasons: Dict[str, int] = {}
+    pgns: List[str] = []
+
+    # Sort by game number to maintain deterministic PGN ordering
+    game_results.sort(key=lambda x: x[0])
+
+    for g, res, reason, pgn in game_results:
+        policy_is_white = (g % 2 == 0)
+        term_reasons[reason] = term_reasons.get(reason, 0) + 1
+        pgns.append(pgn)
+
+        if res == "1-0":
+            if policy_is_white:
+                wins += 1
+            else:
+                losses += 1
+        elif res == "0-1":
+            if policy_is_white:
+                losses += 1
+            else:
+                wins += 1
+        else:
+            draws += 1
+
+    total = wins + draws + losses
+    score = (wins + 0.5 * draws) / total if total else 0.0
+    elo_diff = estimate_elo_diff(score) if total else 0.0
+
+    return {
+        "games": total,
+        "wins": wins,
+        "draws": draws,
+        "losses": losses,
+        "score": score,
+        "elo_diff_vs_stockfish_approx": elo_diff,
+        "termination_reasons": term_reasons,
+        "eval_cfg": eval_cfg,
+    }, policy, pgns
+
+
 def evaluate_policy_vs_stockfish(
     policy: PolicyPlayer | TrajectorySearcher,
     sf: StockfishPlayer,
@@ -163,49 +226,69 @@ def evaluate_policy_vs_stockfish(
         results_dict contains: games, wins, draws, losses, score, elo_diff, etc.
         pgns is a list of PGN strings for all games played
     """
+    if eval_cfg.num_workers > 1:
+        return _evaluate_parallel(policy, sf, eval_cfg)
+    return _evaluate_sequential(policy, sf, eval_cfg)
+
+
+def _evaluate_sequential(
+    policy: PolicyPlayer | TrajectorySearcher,
+    sf: StockfishPlayer,
+    eval_cfg: EvalConfig,
+) -> Tuple[Dict, PolicyPlayer | TrajectorySearcher, List[str]]:
+    """Sequential evaluation (original behavior)."""
     random.seed(eval_cfg.seed)
     torch.manual_seed(eval_cfg.seed)
 
-    wins = draws = losses = 0
-    term_reasons = {}
-    pgns: List[str] = []
-
+    game_results = []
     try:
         for g in range(eval_cfg.games):
             policy_is_white = (g % 2 == 0)
             res, reason, pgn = play_one_game(policy, sf, policy_is_white, eval_cfg, game_number=g)
-            term_reasons[reason] = term_reasons.get(reason, 0) + 1
-            pgns.append(pgn)
-
-            # From policy perspective
-            if res == "1-0":
-                if policy_is_white:
-                    wins += 1
-                else:
-                    losses += 1
-            elif res == "0-1":
-                if policy_is_white:
-                    losses += 1
-                else:
-                    wins += 1
-            else:
-                draws += 1
-
+            game_results.append((g, res, reason, pgn))
     finally:
         sf.close()
 
-    total = wins + draws + losses
-    score = (wins + 0.5 * draws) / total if total else 0.0
-    elo_diff = estimate_elo_diff(score) if total else 0.0
+    return _aggregate_results(game_results, eval_cfg, policy)
 
-    return {
-        "games": total,
-        "wins": wins,
-        "draws": draws,
-        "losses": losses,
-        "score": score,
-        "elo_diff_vs_stockfish_approx": elo_diff,
-        "termination_reasons": term_reasons,
-        "eval_cfg": eval_cfg,
-    }, policy, pgns
+
+def _evaluate_parallel(
+    policy: PolicyPlayer | TrajectorySearcher,
+    sf: StockfishPlayer,
+    eval_cfg: EvalConfig,
+) -> Tuple[Dict, PolicyPlayer | TrajectorySearcher, List[str]]:
+    """Parallel evaluation using ThreadPoolExecutor.
+
+    Each worker thread gets its own Stockfish engine. The policy player
+    is shared across threads (PyTorch inference is thread-safe).
+    """
+    sf_cfg = sf.cfg
+    sf.close()  # Close original; workers create their own
+
+    engine_names_lock = threading.Lock()
+    engine_names: set = set()
+
+    def play_game(g: int) -> Tuple[int, str, str, str]:
+        # Per-thread Stockfish engine (reused across games on same thread)
+        ename = f"eval_parallel_{threading.current_thread().ident}"
+        with engine_names_lock:
+            engine_names.add(ename)
+        sf_player = StockfishPlayer(sf_cfg, engine_name=ename)
+
+        # Per-game deterministic seed for opening randomization
+        rng = random.Random(eval_cfg.seed + g)
+        policy_is_white = (g % 2 == 0)
+        res, reason, pgn = play_one_game(
+            policy, sf_player, policy_is_white, eval_cfg, game_number=g, rng=rng,
+        )
+        return g, res, reason, pgn
+
+    try:
+        with ThreadPoolExecutor(max_workers=eval_cfg.num_workers) as executor:
+            game_results = list(executor.map(play_game, range(eval_cfg.games)))
+    finally:
+        for ename in engine_names:
+            StockfishManager.close(ename)
+
+    return _aggregate_results(game_results, eval_cfg, policy)
     

@@ -57,6 +57,7 @@ eval:
   max_plies: 400
   randomize_opening: true
   opening_plies: 6
+  num_workers: 8
 
 # =============================================================================
 # Stockfish Config
