@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 from datasets import load_dataset
@@ -82,14 +83,39 @@ def count_existing_shards(output_dir: str) -> tuple[int, int]:
 # Position loading from HuggingFace
 # ---------------------------------------------------------------------------
 
+def _positions_cache_path(config: GenerateConfig) -> str:
+    """Build a cache file path that encodes the extraction parameters."""
+    return os.path.join(
+        config.output_dir,
+        f"positions_cache_elo{config.min_elo}_n{config.max_samples}"
+        f"_skip{config.skip_first_n_moves}-{config.skip_last_n_moves}"
+        f"_samp{config.sample_positions_per_game}.parquet",
+    )
+
+
 def load_positions(config: GenerateConfig) -> list[str]:
-    """Load chess positions from HuggingFace dataset."""
+    """Load chess positions, using a parquet cache if available."""
+    cache_path = _positions_cache_path(config)
+
+    if os.path.exists(cache_path):
+        print(f"Loading cached positions from {cache_path}...")
+        positions = pd.read_parquet(cache_path)["fen"].tolist()
+        print(f"Loaded {len(positions):,} cached positions")
+        return positions
+
     print("Downloading angeluriot/chess_games...")
     dataset = load_dataset("angeluriot/chess_games", split="train", cache_dir=config.hf_cache_dir)
     print(f"Loaded {len(dataset):,} games")
 
     dataset = _filter_by_elo(dataset, config.min_elo)
-    return _extract_positions(dataset, config)
+    positions = _extract_positions(dataset, config)
+
+    # Save cache for next run
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    pd.DataFrame({"fen": positions}).to_parquet(cache_path, index=False)
+    print(f"Saved positions cache to {cache_path}")
+
+    return positions
 
 
 def _filter_by_elo(dataset, min_elo: int):
@@ -259,6 +285,7 @@ def main():
     parser.add_argument("--max_samples", type=int, help="Override max_samples")
     parser.add_argument("--batch_size", type=int, help="Override process_batch_size (positions per batch)")
     parser.add_argument("--num_workers", type=int, help="Override num_workers for DataLoader")
+    parser.add_argument("--output_dir", type=str, help="Override output directory for shards and cache")
     parser.add_argument("--hf_cache_dir", type=str, help="HuggingFace dataset cache directory")
     args = parser.parse_args()
 
@@ -271,6 +298,8 @@ def main():
         config.process_batch_size = args.batch_size
     if args.num_workers is not None:
         config.num_workers = args.num_workers
+    if args.output_dir:
+        config.output_dir = args.output_dir
     if args.hf_cache_dir:
         config.hf_cache_dir = args.hf_cache_dir
 
