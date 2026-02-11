@@ -104,16 +104,23 @@ def build_teacher_engine(
     checkpoint_dir: str,
     checkpoint_step: int,
     batch_size: int,
+    use_half: bool = True,
 ):
     """Build the DeepMind action-value engine and return (engine, bucket_values).
 
     Replicates _build_neural_engine from searchless_chess constants.py
     with configurable checkpoint_dir.
+
+    Args:
+        use_half: Cast params to bfloat16 for ~4x faster inference on GPUs
+                  with Tensor Core support (L4, A100, etc.). Safe for
+                  distillation labels where exact float32 precision isn't needed.
     """
     if model_name not in MODEL_CONFIGS:
         raise ValueError(f"Unknown model: {model_name}. Choose from {list(MODEL_CONFIGS.keys())}")
 
     import jax
+    import jax.numpy as jnp
     from jax import random as jrandom
 
     devices = jax.devices()
@@ -154,6 +161,13 @@ def build_teacher_engine(
         ),
         step=checkpoint_step,
     )
+
+    if use_half:
+        params = jax.tree_util.tree_map(
+            lambda x: x.astype(jnp.bfloat16) if hasattr(x, 'dtype') and jnp.issubdtype(x.dtype, jnp.floating) else x,
+            params,
+        )
+        print("Params cast to bfloat16 for faster inference")
 
     _, return_buckets_values = sc_utils.get_uniform_buckets_edges_values(num_return_buckets)  # [num_return_buckets]
 
