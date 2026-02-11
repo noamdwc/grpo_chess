@@ -300,6 +300,7 @@ def main():
     parser = argparse.ArgumentParser(description="Generate distillation dataset")
     parser.add_argument("--config", type=str, default="distill.yaml", help="Path to config file")
     parser.add_argument("--max_samples", type=int, help="Override max_samples")
+    parser.add_argument("--teacher_model", type=str, help="Override teacher model (e.g. 136M, 270M)")
     parser.add_argument("--batch_size", type=int, help="Override process_batch_size (positions per batch)")
     parser.add_argument("--teacher_batch_size", type=int, help="Override teacher_batch_size (sequences per GPU call)")
     parser.add_argument("--num_workers", type=int, help="Override num_workers for DataLoader")
@@ -312,6 +313,8 @@ def main():
 
     if args.max_samples:
         config.max_samples = args.max_samples
+    if args.teacher_model:
+        config.teacher_model = args.teacher_model
     if args.batch_size:
         config.process_batch_size = args.batch_size
     if args.teacher_batch_size:

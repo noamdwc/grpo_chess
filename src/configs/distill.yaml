@@ -1,5 +1,5 @@
 generate:
-  teacher_model: "270M"
+  teacher_model: "136M"
   checkpoint_dir: "searchless_chess/checkpoints"
   checkpoint_step: 6400000
   teacher_batch_size: 512
