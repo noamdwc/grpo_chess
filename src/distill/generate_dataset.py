@@ -37,7 +37,7 @@ class GenerateConfig:
     checkpoint_step: int = 6_400_000
     teacher_batch_size: int = 64
     process_batch_size: int = 256
-    num_workers: int = 4
+    num_workers: int = 0
     top_k: int = 8
     teacher_temperature: float = 1.0
     hf_cache_dir: Optional[str] = None  # e.g. "/content/drive/MyDrive/hf_cache"
