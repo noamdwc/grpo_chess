@@ -455,7 +455,8 @@ class GRPOChessTransformer(pl.LightningModule):
 
     def on_train_epoch_end(self) -> None:
         """Called at the end of each training epoch. Runs evaluation if scheduled."""
-        if (self.current_epoch + 1) % self.eval_every_n_epochs == 0:
+        current_epoch = (self.current_epoch + 1) * self.hparams.grpo_config.ppo_steps
+        if current_epoch % self.eval_every_n_epochs == 0:
             eval_result = self._evaluate_against_stockfish()
             if eval_result is not None:
                 results, pgns = eval_result
