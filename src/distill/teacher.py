@@ -113,7 +113,11 @@ def build_teacher_engine(
     if model_name not in MODEL_CONFIGS:
         raise ValueError(f"Unknown model: {model_name}. Choose from {list(MODEL_CONFIGS.keys())}")
 
+    import jax
     from jax import random as jrandom
+
+    devices = jax.devices()
+    print(f"JAX backend: {jax.default_backend()}, devices: {devices}")
 
     sc_transformer = _load_sc_module("transformer")
     sc_training_utils = _load_sc_module("training_utils")

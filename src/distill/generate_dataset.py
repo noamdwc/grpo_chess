@@ -284,6 +284,7 @@ def main():
     parser.add_argument("--config", type=str, default="distill.yaml", help="Path to config file")
     parser.add_argument("--max_samples", type=int, help="Override max_samples")
     parser.add_argument("--batch_size", type=int, help="Override process_batch_size (positions per batch)")
+    parser.add_argument("--teacher_batch_size", type=int, help="Override teacher_batch_size (sequences per GPU call)")
     parser.add_argument("--num_workers", type=int, help="Override num_workers for DataLoader")
     parser.add_argument("--output_dir", type=str, help="Override output directory for shards and cache")
     parser.add_argument("--hf_cache_dir", type=str, help="HuggingFace dataset cache directory")
@@ -296,6 +297,8 @@ def main():
         config.max_samples = args.max_samples
     if args.batch_size:
         config.process_batch_size = args.batch_size
+    if args.teacher_batch_size:
+        config.teacher_batch_size = args.teacher_batch_size
     if args.num_workers is not None:
         config.num_workers = args.num_workers
     if args.output_dir:
