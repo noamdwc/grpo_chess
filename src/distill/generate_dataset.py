@@ -6,6 +6,7 @@ Requires JAX environment. Run as:
 
 import argparse
 import os
+import time
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -234,23 +235,39 @@ def generate(config: GenerateConfig):
     total_processed = existing_samples
     failed = 0
 
+    t_prev = time.time()
+
     for batch in tqdm(loader, desc="Processing positions"):
+        t_data = time.time()
         if total_processed >= config.max_samples:
             break
 
         failed += batch["num_failed"]
         if not batch["valid"]:
+            t_prev = time.time()
             continue
 
         # Batched JAX inference + vectorized post-processing
-        all_log_probs = engine.predict_fn(batch["sequences"].numpy())[:, -1]
+        seqs = batch["sequences"].numpy()
+        t_to_numpy = time.time()
+        all_log_probs = engine.predict_fn(seqs)[:, -1]
+        t_infer = time.time()
         samples = postprocess_teacher_batch(
             all_log_probs, bucket_values, batch,
             config.top_k, config.teacher_temperature,
         )
+        t_post = time.time()
+
+        n_seqs = seqs.shape[0]
+        if total_processed % (config.process_batch_size * 5) < config.process_batch_size:
+            print(f"  [timing] data_wait={t_data - t_prev:.1f}s  "
+                  f"to_numpy={t_to_numpy - t_data:.2f}s  "
+                  f"inference={t_infer - t_to_numpy:.1f}s ({n_seqs} seqs)  "
+                  f"postprocess={t_post - t_infer:.2f}s")
 
         current_shard.extend(samples)
         total_processed += len(samples)
+        t_prev = time.time()
 
         # Flush full shards
         while len(current_shard) >= config.shard_size:
