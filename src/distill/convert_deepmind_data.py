@@ -1,0 +1,277 @@
+"""Convert DeepMind .bag shards to .pt shard format for distillation.
+
+Downloads a subset of pre-computed action_value shards from
+storage.googleapis.com/searchless_chess/data/ and converts them
+to the .pt format consumed by DistillDataset.
+
+Each .bag record is a (fen, move, win_prob) tuple evaluated by Stockfish.
+Records are streamed and converted individually — no FEN grouping needed
+since positions are essentially unique within each shard.
+
+Run as:
+    python -m src.distill.convert_deepmind_data --num_shards 2
+"""
+
+import argparse
+import os
+import struct
+import urllib.request
+from dataclasses import dataclass
+
+import chess
+import numpy as np
+import torch
+from tqdm import tqdm
+
+from src.searchless_chess_imports import tokenize, MOVE_TO_ACTION
+from src.distill.generate_dataset import save_shard
+from src.configs.config_loader import load_yaml_file, dict_to_dataclass
+
+
+BAG_URL_TEMPLATE = (
+    "https://storage.googleapis.com/searchless_chess/data/train/"
+    "action_value-{shard_idx:05d}-of-02148_data.bag"
+)
+TOTAL_SHARDS = 2148
+
+
+@dataclass
+class ConvertConfig:
+    num_shards: int = 50
+    top_k: int = 8
+    temperature: float = 1.0
+    min_win_prob: float = 0.55
+    output_dir: str = "data/distill"
+    shard_size: int = 50_000
+
+
+# ---------------------------------------------------------------------------
+# Minimal .bag reader (avoids zstandard/etils deps from bagz.py)
+# ---------------------------------------------------------------------------
+
+def read_bag_records(path: str):
+    """Iterate over all records in an uncompressed .bag file."""
+    file_size = os.path.getsize(path)
+    if file_size < 8:
+        return
+
+    with open(path, "rb") as f:
+        data = f.read()
+
+    # Last 8 bytes: uint64 pointing to index start
+    index_start = struct.unpack_from("<Q", data, file_size - 8)[0]
+
+    # Index: array of int64 cumulative end-offsets
+    index_data = data[index_start : file_size - 8]
+    num_records = len(index_data) // 8
+
+    prev_end = 0
+    for i in range(num_records):
+        end = struct.unpack_from("<q", index_data, i * 8)[0]
+        yield data[prev_end:end]
+        prev_end = end
+
+
+def count_bag_records(path: str) -> int:
+    """Count records in a .bag file without reading them all."""
+    file_size = os.path.getsize(path)
+    if file_size < 8:
+        return 0
+    with open(path, "rb") as f:
+        f.seek(-8, 2)
+        index_start = struct.unpack("<Q", f.read(8))[0]
+    index_size = file_size - 8 - index_start
+    return index_size // 8
+
+
+# ---------------------------------------------------------------------------
+# Apache Beam coder decoding (TupleCoder of StrUtf8, StrUtf8, Float)
+# ---------------------------------------------------------------------------
+
+def _decode_varint(data: bytes, offset: int) -> tuple[int, int]:
+    """Decode a protobuf-style varint. Returns (value, new_offset)."""
+    result = 0
+    shift = 0
+    while True:
+        byte = data[offset]
+        offset += 1
+        result |= (byte & 0x7F) << shift
+        if not (byte & 0x80):
+            break
+        shift += 7
+    return result, offset
+
+
+def decode_action_value(data: bytes) -> tuple[str, str, float]:
+    """Decode (fen, move, win_prob) from Apache Beam TupleCoder format.
+
+    Layout: varint(len) + fen_utf8 | varint(len) + move_utf8 | float64_be
+    """
+    offset = 0
+    fen_len, offset = _decode_varint(data, offset)
+    fen = data[offset : offset + fen_len].decode("utf-8")
+    offset += fen_len
+    move_len, offset = _decode_varint(data, offset)
+    move = data[offset : offset + move_len].decode("utf-8")
+    offset += move_len
+    win_prob = struct.unpack(">d", data[offset : offset + 8])[0]
+    return fen, move, win_prob
+
+
+# ---------------------------------------------------------------------------
+# Single-record processing
+# ---------------------------------------------------------------------------
+
+def make_sample(fen: str, move_str: str) -> dict | None:
+    """Create a distillation sample from a single (fen, move) record."""
+    action_idx = MOVE_TO_ACTION.get(move_str)
+    if action_idx is None:
+        return None
+
+    try:
+        board = chess.Board(fen)
+    except ValueError:
+        return None
+
+    board_tokens = torch.tensor(tokenize(fen), dtype=torch.long)
+
+    legal_mask = torch.zeros(1968, dtype=torch.bool)
+    for legal_move in board.legal_moves:
+        idx = MOVE_TO_ACTION.get(legal_move.uci())
+        if idx is not None:
+            legal_mask[idx] = True
+
+    return {
+        "board_tokens": board_tokens,
+        "legal_mask": legal_mask,
+        "teacher_action_indices": torch.tensor([action_idx], dtype=torch.long),
+        "teacher_probs": torch.tensor([1.0], dtype=torch.float32),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Download
+# ---------------------------------------------------------------------------
+
+def download_shard(shard_idx: int, download_dir: str) -> str:
+    """Download a .bag shard from GCS. Returns local path."""
+    url = BAG_URL_TEMPLATE.format(shard_idx=shard_idx)
+    filename = f"action_value-{shard_idx:05d}-of-02148_data.bag"
+    local_path = os.path.join(download_dir, filename)
+
+    if os.path.exists(local_path):
+        size_mb = os.path.getsize(local_path) / (1024 * 1024)
+        print(f"  Already downloaded: {filename} ({size_mb:.0f} MB)")
+        return local_path
+
+    print(f"  Downloading {filename}...")
+    urllib.request.urlretrieve(url, local_path)
+    size_mb = os.path.getsize(local_path) / (1024 * 1024)
+    print(f"  Downloaded: {size_mb:.0f} MB")
+    return local_path
+
+
+# ---------------------------------------------------------------------------
+# Main conversion loop
+# ---------------------------------------------------------------------------
+
+def convert(config: ConvertConfig):
+    """Download and convert DeepMind .bag shards to .pt format."""
+    os.makedirs(config.output_dir, exist_ok=True)
+    download_dir = os.path.join(config.output_dir, "raw_bags")
+    os.makedirs(download_dir, exist_ok=True)
+
+    # Evenly-spaced shard indices for position diversity
+    shard_indices = np.linspace(0, TOTAL_SHARDS - 1, config.num_shards, dtype=int).tolist()
+
+    print(f"Converting {config.num_shards} shards (of {TOTAL_SHARDS})")
+    print(f"  min_win_prob: {config.min_win_prob}")
+    print(f"  Output: {config.output_dir}")
+    print(f"  Shard size: {config.shard_size:,}")
+
+    buffer: list[dict] = []
+    out_shard_idx = 0
+    total_saved = 0
+
+    for i, bag_idx in enumerate(shard_indices):
+        print(f"\nShard {i + 1}/{config.num_shards} (bag index {bag_idx}):")
+
+        bag_path = download_shard(bag_idx, download_dir)
+        num_records = count_bag_records(bag_path)
+        kept = 0
+        skipped = 0
+
+        for raw in tqdm(
+            read_bag_records(bag_path),
+            total=num_records,
+            desc=f"  Processing",
+            unit=" records",
+        ):
+            fen, move, win_prob = decode_action_value(raw)
+
+            if win_prob < config.min_win_prob:
+                continue
+
+            sample = make_sample(fen, move)
+            if sample is None:
+                skipped += 1
+                continue
+
+            buffer.append(sample)
+            kept += 1
+
+            # Flush full output shards
+            if len(buffer) >= config.shard_size:
+                to_save = buffer[: config.shard_size]
+                buffer = buffer[config.shard_size :]
+                shard_path = os.path.join(config.output_dir, f"shard_{out_shard_idx:04d}.pt")
+                save_shard(to_save, shard_path)
+                total_saved += len(to_save)
+                tqdm.write(
+                    f"  Saved {shard_path} ({len(to_save):,} samples, total: {total_saved:,})"
+                )
+                out_shard_idx += 1
+
+        print(f"  Kept {kept:,} / {num_records:,} records (skipped {skipped} bad)")
+
+    # Save remaining buffer
+    if buffer:
+        shard_path = os.path.join(config.output_dir, f"shard_{out_shard_idx:04d}.pt")
+        save_shard(buffer, shard_path)
+        total_saved += len(buffer)
+        print(f"  Saved {shard_path} ({len(buffer):,} samples)")
+        out_shard_idx += 1
+
+    print(f"\nDone! {total_saved:,} samples in {out_shard_idx} shards → {config.output_dir}")
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Convert DeepMind .bag shards to .pt distillation format"
+    )
+    parser.add_argument("--config", type=str, default="distill.yaml")
+    parser.add_argument("--num_shards", type=int, help="Number of .bag shards to download")
+    parser.add_argument("--top_k", type=int, help="Keep top-k moves per position")
+    parser.add_argument("--temperature", type=float, help="Softmax temperature")
+    parser.add_argument("--min_win_prob", type=float, help="Minimum win_prob to keep a record")
+    parser.add_argument("--output_dir", type=str, help="Output directory")
+    parser.add_argument("--shard_size", type=int, help="Samples per output shard")
+    args = parser.parse_args()
+
+    data = load_yaml_file(args.config)
+    config = dict_to_dataclass(ConvertConfig, data.get("deepmind_data", {}))
+
+    for field in ["num_shards", "top_k", "temperature", "min_win_prob", "output_dir", "shard_size"]:
+        val = getattr(args, field, None)
+        if val is not None:
+            setattr(config, field, val)
+
+    convert(config)
+
+
+if __name__ == "__main__":
+    main()

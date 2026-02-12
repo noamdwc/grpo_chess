@@ -13,6 +13,14 @@ generate:
   skip_last_n_moves: 5
   sample_positions_per_game: 3
 
+deepmind_data:
+  num_shards: 50
+  top_k: 8
+  temperature: 1.0
+  min_win_prob: 0.55
+  output_dir: "data/distill"
+  shard_size: 50000
+
 distill:
   lr: 0.0001
   batch_size: 2048
