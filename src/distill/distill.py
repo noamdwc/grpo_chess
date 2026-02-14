@@ -263,7 +263,7 @@ def train(
         val_dataset,
         batch_size=distill_config.batch_size,
         shuffle=False,
-        num_workers=max(1, distill_config.num_workers // 2),
+        num_workers=distill_config.num_workers,
         collate_fn=collate_distill_batch,
         pin_memory=True,
     )

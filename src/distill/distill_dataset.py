@@ -31,22 +31,28 @@ class DistillDataset(Dataset):
 
         for sp in shard_paths:
             shard = torch.load(sp, weights_only=False)
-            n = len(shard["board_tokens"])
-            for i in range(n):
-                # Hash-based split
-                key = f"{shard['board_tokens'][i].sum().item()}-{i}-{sp.name}"
-                h = int(hashlib.md5(key.encode()).hexdigest(), 16) % 10000
-                is_eval_sample = h < (eval_fraction * 10000)
-                if is_eval_sample != is_eval:
-                    continue
+            tokens = shard["board_tokens"]  # [N, 77]
+            masks = shard["legal_mask"]  # [N, 1968]
+            n = len(tokens)
 
-                all_board_tokens.append(shard["board_tokens"][i])
-                all_legal_masks.append(shard["legal_mask"][i])
-                all_teacher_indices.append(shard["teacher_action_indices"][i])
-                all_teacher_probs.append(shard["teacher_probs"][i])
+            # Vectorized deterministic split using token sums as hash
+            sums = tokens.sum(dim=1).long()  # [N]
+            indices = torch.arange(n, dtype=torch.long)
+            # Mix shard identity in via a constant derived from filename
+            shard_hash = int(hashlib.md5(sp.name.encode()).hexdigest()[:8], 16)
+            h = (sums * 2654435761 + indices * 40503 + shard_hash) % 10000
+            is_eval_mask = h < int(eval_fraction * 10000)
+            keep_mask = is_eval_mask if is_eval else ~is_eval_mask
 
-        self.board_tokens = torch.stack(all_board_tokens) if all_board_tokens else torch.empty(0, 77, dtype=torch.long)
-        self.legal_masks = torch.stack(all_legal_masks) if all_legal_masks else torch.empty(0, 1968, dtype=torch.bool)
+            all_board_tokens.append(tokens[keep_mask])
+            all_legal_masks.append(masks[keep_mask])
+            keep_indices = keep_mask.nonzero(as_tuple=True)[0]
+            for i in keep_indices:
+                all_teacher_indices.append(shard["teacher_action_indices"][i.item()])
+                all_teacher_probs.append(shard["teacher_probs"][i.item()])
+
+        self.board_tokens = torch.cat(all_board_tokens) if all_board_tokens else torch.empty(0, 77, dtype=torch.long)
+        self.legal_masks = torch.cat(all_legal_masks) if all_legal_masks else torch.empty(0, 1968, dtype=torch.bool)
         self.teacher_indices = all_teacher_indices
         self.teacher_probs = all_teacher_probs
 
