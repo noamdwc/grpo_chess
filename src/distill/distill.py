@@ -242,12 +242,9 @@ def train(
     model = DistillChessTransformer(transformer_config, distill_config)
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    # Create datasets
-    train_dataset = DistillDataset(
-        dataset_config.data_dir, is_eval=False, eval_fraction=dataset_config.eval_fraction
-    )
-    val_dataset = DistillDataset(
-        dataset_config.data_dir, is_eval=True, eval_fraction=dataset_config.eval_fraction
+    # Create datasets (loads shards once for both splits)
+    train_dataset, val_dataset = DistillDataset.load_train_eval(
+        dataset_config.data_dir, eval_fraction=dataset_config.eval_fraction
     )
     print(f"Train: {len(train_dataset):,} samples, Eval: {len(val_dataset):,} samples")
 

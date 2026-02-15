@@ -461,7 +461,7 @@ class TestDistillDatasetAndCollate:
 
     def test_dataset_item_format(self, shard_dir):
         ds = DistillDataset(str(shard_dir), is_eval=False, eval_fraction=0.0)
-        board_tokens, legal_mask, teacher_indices, teacher_probs = ds[0]
+        board_tokens, legal_mask, teacher_indices, teacher_probs, k_mask = ds[0]
 
         assert board_tokens.shape == (77,)
         assert legal_mask.shape == (ACTION_SPACE_SIZE,)
@@ -495,8 +495,8 @@ class TestDistillDatasetAndCollate:
         batch = [ds[i] for i in range(min(3, len(ds)))]
         _, _, teacher_indices, teacher_probs, k_mask = collate_distill_batch(batch)
 
-        for i, (_, _, orig_indices, _) in enumerate(batch):
-            k = len(orig_indices)
+        for i, (_, _, orig_indices, _, orig_k_mask) in enumerate(batch):
+            k = orig_k_mask.sum().item()
             assert k_mask[i, :k].all()
             if k < k_mask.shape[1]:
                 assert not k_mask[i, k:].any()
@@ -516,7 +516,7 @@ class TestGenerateConfig:
         assert cfg.teacher_temperature == 1.0
         assert cfg.checkpoint_step == 6_400_000
         assert cfg.process_batch_size == 256
-        assert cfg.num_workers == 4
+        assert cfg.num_workers == 0
 
 
 # ---------------------------------------------------------------------------
