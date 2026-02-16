@@ -1,6 +1,8 @@
 from typing import Dict, List, Optional, Tuple
-from chess import engine
+import torch
 import torch.nn as nn
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import Callback
 
 from src.chess.policy_player import PolicyPlayer, PolicyConfig
 from src.chess.searcher import TrajectorySearcher, SearchConfig
@@ -75,6 +77,47 @@ class Evaluator:
         )
         return results, policy_or_searcher, pgns
 
+    def evaluate_and_log(self, pl_module: pl.LightningModule, model: nn.Module) -> Optional[Dict]:
+        """Run evaluation and log results to the Lightning module's logger.
+
+        Returns results dict or None if evaluation failed.
+        """
+        was_training = pl_module.training
+        pl_module.eval()
+        try:
+            with torch.no_grad():
+                results, _, pgns = self.single_evaluation(model)
+        except Exception as e:
+            print(f"Stockfish eval failed: {e}")
+            return None
+        finally:
+            if was_training:
+                pl_module.train()
+
+        pl_module.log("eval_stockfish/score", results["score"], prog_bar=True)
+        pl_module.log("eval_stockfish/elo_diff", results["elo_diff_vs_stockfish_approx"], prog_bar=True)
+        pl_module.log("eval_stockfish/games", float(results["games"]))
+        pl_module.log("eval_stockfish/wins", float(results["wins"]))
+        pl_module.log("eval_stockfish/draws", float(results["draws"]))
+        pl_module.log("eval_stockfish/losses", float(results["losses"]))
+
+        games = results["games"] or 1
+        for reason, cnt in results["termination_reasons"].items():
+            pl_module.log(f"eval_stockfish/term_{reason}", cnt / games)
+
+        if pgns and pl_module.logger and hasattr(pl_module.logger, "experiment"):
+            try:
+                import wandb
+                combined_pgn = "\n\n".join(pgns)
+                pl_module.logger.experiment.log({
+                    "eval_stockfish/pgns": wandb.Html(f"<pre>{combined_pgn}</pre>"),
+                    "eval_stockfish/pgn_text": combined_pgn,
+                })
+            except Exception:
+                pass
+
+        return results
+
     def eval_ladder(self, model: nn.Module) -> Dict[int, float]:
         """Evaluate model against Stockfish at multiple skill levels.
         
@@ -114,5 +157,16 @@ class Evaluator:
         return results
 
 
+class StockfishEvalCallback(Callback):
+    """Lightning callback that evaluates the model against Stockfish periodically."""
 
+    def __init__(self, evaluator: Evaluator, every_n_epochs: int = 1, model_attr: str = "model"):
+        self.evaluator = evaluator
+        self.every_n_epochs = every_n_epochs
+        self.model_attr = model_attr
 
+    def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule):
+        if (trainer.current_epoch + 1) % self.every_n_epochs != 0:
+            return
+        model = getattr(pl_module, self.model_attr)
+        self.evaluator.evaluate_and_log(pl_module, model)

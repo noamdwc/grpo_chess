@@ -33,6 +33,22 @@ distill:
   wandb_project: "chess-grpo-pretrain"
   num_workers: 4
   val_check_interval: 0.1
+  eval_every_n_epochs: 1
+
+eval:
+  games: 32
+  seed: 0
+  max_plies: 400
+  randomize_opening: true
+  opening_plies: 6
+
+stockfish:
+  path: "/usr/games/stockfish"
+  skill_level: 2
+  movetime_ms: 50
+
+policy:
+  greedy: true
 
 dataset:
   data_dir: "data/distill"

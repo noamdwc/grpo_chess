@@ -8,6 +8,7 @@ from src.trainer import get_trainer
 from src.chess.boards_dataset import ChessStartStatesDataset
 from src.grpo_logic.model import GRPOChessTransformer
 from src.configs.config_loader import load_experiment_config
+from src.evaluator import Evaluator, StockfishEvalCallback
 
 
 def train(
@@ -60,6 +61,16 @@ def train(
         searcher_cfg=config.searcher,
         pretrain_cfg=config.pretrain,
     )
+
+    evaluator = Evaluator(
+        eval_cfg=config.eval,
+        policy_cfg=config.policy,
+        stockfish_cfg=config.stockfish,
+        searcher_cfg=config.searcher,
+    )
+    trainer.callbacks.append(StockfishEvalCallback(
+        evaluator, every_n_epochs=config.grpo.eval_every_n_epochs, model_attr="policy_model",
+    ))
 
     print("Starting Training with WandB Tracking...")
     trainer.fit(model, dataloader)

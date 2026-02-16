@@ -33,6 +33,10 @@ from src.configs.config_loader import (
     load_yaml_file,
     dict_to_dataclass,
 )
+from src.evaluator import Evaluator, StockfishEvalCallback
+from src.eval_utils import EvalConfig
+from src.chess.policy_player import PolicyConfig
+from src.chess.stockfish import StockfishConfig
 
 
 @dataclass
@@ -67,6 +71,7 @@ class PretrainConfig:
     label_smoothing: float = 0.1
     num_workers: int = 4
     val_check_interval: float = 0.1
+    eval_every_n_epochs: int = 1
 
 
 # Register as safe for torch.load with weights_only=True (PyTorch 2.6+ compatibility)
@@ -418,7 +423,7 @@ def get_pretrain_trainer(
 def load_pretrain_config(
     path: str = "pretrain.yaml",
     overrides: dict = None,
-) -> tuple[PretrainConfig, PretrainDatasetConfig, ChessTransformerConfig]:
+) -> tuple[PretrainConfig, PretrainDatasetConfig, ChessTransformerConfig, EvalConfig, StockfishConfig, PolicyConfig]:
     """Load pretraining configuration from YAML file.
 
     Args:
@@ -426,7 +431,8 @@ def load_pretrain_config(
         overrides: Optional dict of overrides
 
     Returns:
-        Tuple of (PretrainConfig, PretrainDatasetConfig, ChessTransformerConfig)
+        Tuple of (PretrainConfig, PretrainDatasetConfig, ChessTransformerConfig,
+                  EvalConfig, StockfishConfig, PolicyConfig)
     """
     data = load_yaml_file(path)
 
@@ -440,14 +446,20 @@ def load_pretrain_config(
     pretrain = dict_to_dataclass(PretrainConfig, data.get('pretrain', {}))
     dataset = dict_to_dataclass(PretrainDatasetConfig, data.get('dataset', {}))
     transformer = dict_to_dataclass(ChessTransformerConfig, data.get('transformer', {}))
+    eval_cfg = dict_to_dataclass(EvalConfig, data.get('eval', {}))
+    stockfish_cfg = dict_to_dataclass(StockfishConfig, data.get('stockfish', {}))
+    policy_cfg = dict_to_dataclass(PolicyConfig, data.get('policy', {}))
 
-    return pretrain, dataset, transformer
+    return pretrain, dataset, transformer, eval_cfg, stockfish_cfg, policy_cfg
 
 
 def train(
     pretrain_config: PretrainConfig,
     dataset_config: PretrainDatasetConfig,
     transformer_config: ChessTransformerConfig,
+    eval_cfg: EvalConfig = EvalConfig(),
+    stockfish_cfg: StockfishConfig = StockfishConfig(),
+    policy_cfg: PolicyConfig = PolicyConfig(),
 ) -> str:
     """Main pretraining function.
 
@@ -455,6 +467,9 @@ def train(
         pretrain_config: Pretraining configuration
         dataset_config: Dataset configuration
         transformer_config: Model configuration
+        eval_cfg: Evaluation configuration
+        stockfish_cfg: Stockfish configuration
+        policy_cfg: Policy player configuration
 
     Returns:
         Path to final checkpoint
@@ -512,6 +527,11 @@ def train(
     # Create trainer
     trainer = get_pretrain_trainer(pretrain_config, run_name)
 
+    evaluator = Evaluator(eval_cfg=eval_cfg, policy_cfg=policy_cfg, stockfish_cfg=stockfish_cfg)
+    trainer.callbacks.append(StockfishEvalCallback(
+        evaluator, every_n_epochs=pretrain_config.eval_every_n_epochs,
+    ))
+
     # Resume from checkpoint if specified
     ckpt_path = pretrain_config.resume_from
 
@@ -566,13 +586,13 @@ def main():
         overrides['dataset']['max_samples'] = args.max_samples
 
     # Load config
-    pretrain_config, dataset_config, transformer_config = load_pretrain_config(
+    pretrain_config, dataset_config, transformer_config, eval_cfg, stockfish_cfg, policy_cfg = load_pretrain_config(
         args.config,
         overrides=overrides if any(v for v in overrides.values()) else None
     )
 
     # Run training
-    train(pretrain_config, dataset_config, transformer_config)
+    train(pretrain_config, dataset_config, transformer_config, eval_cfg, stockfish_cfg, policy_cfg)
 
 
 if __name__ == "__main__":

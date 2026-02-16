@@ -22,6 +22,10 @@ from torch.utils.data import DataLoader
 from src.models import ChessTransformer, ChessTransformerConfig
 from src.distill.distill_dataset import DistillDataset, collate_distill_batch
 from src.configs.config_loader import load_yaml_file, dict_to_dataclass
+from src.evaluator import Evaluator, StockfishEvalCallback
+from src.eval_utils import EvalConfig
+from src.chess.policy_player import PolicyConfig
+from src.chess.stockfish import StockfishConfig
 
 
 @dataclass
@@ -39,6 +43,7 @@ class DistillConfig:
     wandb_project: str = "chess-grpo-pretrain"
     num_workers: int = 4
     val_check_interval: float = 0.1
+    eval_every_n_epochs: int = 1
 
 
 @dataclass
@@ -212,7 +217,7 @@ class DistillChessTransformer(pl.LightningModule):
 def load_distill_config(
     path: str = "distill.yaml",
     overrides: dict = None,
-) -> tuple[DistillConfig, DistillDatasetConfig, ChessTransformerConfig]:
+) -> tuple[DistillConfig, DistillDatasetConfig, ChessTransformerConfig, EvalConfig, StockfishConfig, PolicyConfig]:
     data = load_yaml_file(path)
 
     if overrides:
@@ -225,14 +230,20 @@ def load_distill_config(
     distill = dict_to_dataclass(DistillConfig, data.get("distill", {}))
     dataset = dict_to_dataclass(DistillDatasetConfig, data.get("dataset", {}))
     transformer = dict_to_dataclass(ChessTransformerConfig, data.get("transformer", {}))
+    eval_cfg = dict_to_dataclass(EvalConfig, data.get("eval", {}))
+    stockfish_cfg = dict_to_dataclass(StockfishConfig, data.get("stockfish", {}))
+    policy_cfg = dict_to_dataclass(PolicyConfig, data.get("policy", {}))
 
-    return distill, dataset, transformer
+    return distill, dataset, transformer, eval_cfg, stockfish_cfg, policy_cfg
 
 
 def train(
     distill_config: DistillConfig,
     dataset_config: DistillDatasetConfig,
     transformer_config: ChessTransformerConfig,
+    eval_cfg: EvalConfig = EvalConfig(),
+    stockfish_cfg: StockfishConfig = StockfishConfig(),
+    policy_cfg: PolicyConfig = PolicyConfig(),
 ) -> str:
     timestamp = time.strftime("%Y%m%d-%H%M")
     random_suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
@@ -300,6 +311,11 @@ def train(
         val_check_interval=distill_config.val_check_interval,
     )
 
+    evaluator = Evaluator(eval_cfg=eval_cfg, policy_cfg=policy_cfg, stockfish_cfg=stockfish_cfg)
+    trainer.callbacks.append(StockfishEvalCallback(
+        evaluator, every_n_epochs=distill_config.eval_every_n_epochs,
+    ))
+
     trainer.fit(model, train_dataloader, val_dataloader, ckpt_path=distill_config.resume_from)
 
     # Save final checkpoint
@@ -341,11 +357,11 @@ def main():
     if args.no_wandb:
         overrides["distill"]["use_wandb"] = False
 
-    distill_config, dataset_config, transformer_config = load_distill_config(
+    distill_config, dataset_config, transformer_config, eval_cfg, stockfish_cfg, policy_cfg = load_distill_config(
         args.config, overrides=overrides if any(v for v in overrides.values()) else None
     )
 
-    train(distill_config, dataset_config, transformer_config)
+    train(distill_config, dataset_config, transformer_config, eval_cfg, stockfish_cfg, policy_cfg)
 
 
 if __name__ == "__main__":

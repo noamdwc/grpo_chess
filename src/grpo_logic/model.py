@@ -5,7 +5,6 @@ import chess
 
 from dataclasses import dataclass
 
-from src.evaluator import Evaluator
 from src.models import ChessTransformer, ChessTransformerConfig
 from src.grpo_logic.loss import grpo_ppo_loss
 from src.grpo_logic.sampling import sample_trajectories_batched
@@ -85,13 +84,6 @@ class GRPOChessTransformer(pl.LightningModule):
             self._load_pretrained_weights(pretrain_cfg)
 
         self._sync_old_policy()
-
-        # Evaluation config
-        self.eval_every_n_epochs = grpo_config.eval_every_n_epochs
-        self.evaluator = Evaluator(eval_cfg=eval_cfg or EvalConfig(),
-                                   policy_cfg=policy_cfg or PolicyConfig(),
-                                   stockfish_cfg=stockfish_cfg or StockfishConfig(),
-                                   searcher_cfg=searcher_cfg)
 
         # Safety-check state
         self._high_clip_steps: int = 0
@@ -373,82 +365,3 @@ class GRPOChessTransformer(pl.LightningModule):
         """
         return torch.optim.Adam(self.parameters(), lr=self.hparams.grpo_config.lr)
 
-    def _evaluate_against_stockfish(self) -> Optional[tuple[dict, list[str]]]:
-        """Run a single game evaluation against Stockfish with current policy model.
-
-        Returns:
-            Tuple of (results_dict, pgns) or None if evaluation failed
-            pgns is a list of PGN strings for all games played
-        """
-        was_training = self.training
-        self.eval()
-        try:
-            with torch.no_grad():
-                results, _, pgns = self.evaluator.single_evaluation(self.policy_model)
-            return results, pgns
-        except Exception as e:
-            self.logger.warning(f"Evaluation against Stockfish failed: {e}") if hasattr(self, 'logger') else print(f"Evaluation against Stockfish failed: {e}")
-            return None
-        finally:
-            if was_training:
-                self.train()
-
-    def _log_stockfish_eval(self, results: dict) -> None:
-        """Log scalar evaluation metrics from the Stockfish evaluation.
-        
-        Args:
-            results: Dictionary containing evaluation results with keys:
-                - games: Total number of games played
-                - wins: Number of wins
-                - draws: Number of draws
-                - losses: Number of losses
-                - score: Win rate (0-1)
-                - elo_diff_vs_stockfish_approx: Approximate Elo difference
-                - termination_reasons: Dict mapping termination reasons to counts
-        """
-        # Scalar stats
-        self.log("eval_stockfish/games", results["games"])
-        self.log("eval_stockfish/wins", results["wins"])
-        self.log("eval_stockfish/draws", results["draws"])
-        self.log("eval_stockfish/losses", results["losses"])
-        self.log("eval_stockfish/score", results["score"], prog_bar=True)
-        self.log("eval_stockfish/elo_diff", results["elo_diff_vs_stockfish_approx"], prog_bar=True)
-
-        # Termination reasons as fractions
-        games = results["games"] or 1
-        for reason, cnt in results["termination_reasons"].items():
-            frac = cnt / games
-            self.log(f"eval_stockfish/term_{reason}", frac)
-    
-    def _log_pgns(self, pgns: list[str]) -> None:
-        """Log PGNs to WandB as a text artifact.
-
-        Args:
-            pgns: List of PGN strings for all games played
-        """
-        if not pgns:
-            return
-
-        # Combine all PGNs into a single string
-        combined_pgn = "\n\n".join(pgns)
-
-        # Log to WandB if available
-        if self.logger and hasattr(self.logger, 'experiment'):
-            try:
-                import wandb
-                # Log as a text artifact
-                self.logger.experiment.log({
-                    "eval_stockfish/pgns": wandb.Html(f"<pre>{combined_pgn}</pre>"),
-                    "eval_stockfish/pgn_text": combined_pgn,
-                })
-            except Exception as e:
-                print(f"Failed to log PGNs to WandB: {e}")
-
-    def on_train_epoch_end(self) -> None:
-        """Called at the end of each training epoch. Runs evaluation if scheduled."""
-        if (self.current_epoch + 1) % self.eval_every_n_epochs == 0:
-            eval_result = self._evaluate_against_stockfish()
-            if eval_result is not None:
-                results, pgns = eval_result
-                self._log_stockfish_eval(results)
-                self._log_pgns(pgns)
