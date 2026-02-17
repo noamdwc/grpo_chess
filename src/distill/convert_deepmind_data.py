@@ -4,9 +4,11 @@ Downloads a subset of pre-computed action_value shards from
 storage.googleapis.com/searchless_chess/data/ and converts them
 to the .pt format consumed by DistillDataset.
 
-Each .bag record is a (fen, move, win_prob) tuple evaluated by Stockfish.
-Records are streamed and converted individually — no FEN grouping needed
-since positions are essentially unique within each shard.
+Each .bag record is a (fen, move, win_prob) tuple. A single position
+has many records (one per legal move). Records are grouped by FEN and
+win_probs are converted to a soft probability distribution via softmax,
+keeping only the top-k moves — matching the format produced by
+generate_dataset.py.
 
 Run as:
     python -m src.distill.convert_deepmind_data --num_shards 2
@@ -119,19 +121,47 @@ def decode_action_value(data: bytes) -> tuple[str, str, float]:
 
 
 # ---------------------------------------------------------------------------
-# Single-record processing
+# Grouped-record processing
 # ---------------------------------------------------------------------------
 
-def make_sample(fen: str, move_str: str) -> dict | None:
-    """Create a distillation sample from a single (fen, move) record."""
-    action_idx = MOVE_TO_ACTION.get(move_str)
-    if action_idx is None:
-        return None
+def make_grouped_sample(
+    fen: str,
+    moves_and_probs: list[tuple[str, float]],
+    top_k: int,
+    temperature: float,
+) -> dict | None:
+    """Create a distillation sample from grouped (move, win_prob) records for one FEN.
 
+    Converts win_probs to a soft distribution via softmax with temperature,
+    keeps top-k moves, and outputs the same format as generate_dataset.py.
+    """
     try:
         board = chess.Board(fen)
     except ValueError:
         return None
+
+    # Filter to moves that exist in our action space
+    valid = []
+    for move_str, win_prob in moves_and_probs:
+        action_idx = MOVE_TO_ACTION.get(move_str)
+        if action_idx is not None:
+            valid.append((action_idx, win_prob))
+
+    if not valid:
+        return None
+
+    # Sort by win_prob descending and keep top-k
+    valid.sort(key=lambda x: x[1], reverse=True)
+    valid = valid[:top_k]
+
+    action_indices = [v[0] for v in valid]
+    win_probs = np.array([v[1] for v in valid], dtype=np.float64)
+
+    # Softmax over win_probs with temperature
+    logits = win_probs / temperature
+    logits -= logits.max()  # numerical stability
+    exp_logits = np.exp(logits)
+    probs = exp_logits / exp_logits.sum()
 
     board_tokens = torch.tensor(tokenize(fen), dtype=torch.long)
 
@@ -144,8 +174,8 @@ def make_sample(fen: str, move_str: str) -> dict | None:
     return {
         "board_tokens": board_tokens,
         "legal_mask": legal_mask,
-        "teacher_action_indices": torch.tensor([action_idx], dtype=torch.long),
-        "teacher_probs": torch.tensor([1.0], dtype=torch.float32),
+        "teacher_action_indices": torch.tensor(action_indices, dtype=torch.long),
+        "teacher_probs": torch.tensor(probs, dtype=torch.float32),
     }
 
 
@@ -175,6 +205,27 @@ def download_shard(shard_idx: int, download_dir: str) -> str:
 # Main conversion loop
 # ---------------------------------------------------------------------------
 
+def _flush_grouped_positions(
+    fen_groups: dict[str, list[tuple[str, float]]],
+    buffer: list[dict],
+    config: ConvertConfig,
+) -> tuple[int, int]:
+    """Convert grouped FEN records into samples and append to buffer.
+
+    Returns (positions_kept, positions_skipped).
+    """
+    kept = 0
+    skipped = 0
+    for fen, moves_and_probs in fen_groups.items():
+        sample = make_grouped_sample(fen, moves_and_probs, config.top_k, config.temperature)
+        if sample is None:
+            skipped += 1
+        else:
+            buffer.append(sample)
+            kept += 1
+    return kept, skipped
+
+
 def convert(config: ConvertConfig):
     """Download and convert DeepMind .bag shards to .pt format."""
     os.makedirs(config.output_dir, exist_ok=True)
@@ -185,6 +236,7 @@ def convert(config: ConvertConfig):
     shard_indices = np.linspace(0, TOTAL_SHARDS - 1, config.num_shards, dtype=int).tolist()
 
     print(f"Converting {config.num_shards} shards (of {TOTAL_SHARDS})")
+    print(f"  top_k: {config.top_k}, temperature: {config.temperature}")
     print(f"  min_win_prob: {config.min_win_prob}")
     print(f"  Output: {config.output_dir}")
     print(f"  Shard size: {config.shard_size:,}")
@@ -198,8 +250,10 @@ def convert(config: ConvertConfig):
 
         bag_path = download_shard(bag_idx, download_dir)
         num_records = count_bag_records(bag_path)
-        kept = 0
-        skipped = 0
+
+        # Group all records by FEN within this .bag shard
+        fen_groups: dict[str, list[tuple[str, float]]] = {}
+        filtered_records = 0
 
         for raw in tqdm(
             read_bag_records(bag_path),
@@ -210,29 +264,30 @@ def convert(config: ConvertConfig):
             fen, move, win_prob = decode_action_value(raw)
 
             if win_prob < config.min_win_prob:
+                filtered_records += 1
                 continue
 
-            sample = make_sample(fen, move)
-            if sample is None:
-                skipped += 1
-                continue
+            if fen not in fen_groups:
+                fen_groups[fen] = []
+            fen_groups[fen].append((move, win_prob))
 
-            buffer.append(sample)
-            kept += 1
+        # Convert grouped positions to samples
+        kept, skipped = _flush_grouped_positions(fen_groups, buffer, config)
 
-            # Flush full output shards
-            if len(buffer) >= config.shard_size:
-                to_save = buffer[: config.shard_size]
-                buffer = buffer[config.shard_size :]
-                shard_path = os.path.join(config.output_dir, f"shard_{out_shard_idx:04d}.pt")
-                save_shard(to_save, shard_path)
-                total_saved += len(to_save)
-                tqdm.write(
-                    f"  Saved {shard_path} ({len(to_save):,} samples, total: {total_saved:,})"
-                )
-                out_shard_idx += 1
+        print(
+            f"  {num_records:,} records → {len(fen_groups):,} positions "
+            f"({kept:,} kept, {skipped} bad, {filtered_records:,} below min_win_prob)"
+        )
 
-        print(f"  Kept {kept:,} / {num_records:,} records (skipped {skipped} bad)")
+        # Flush full output shards
+        while len(buffer) >= config.shard_size:
+            to_save = buffer[: config.shard_size]
+            buffer = buffer[config.shard_size :]
+            shard_path = os.path.join(config.output_dir, f"shard_{out_shard_idx:04d}.pt")
+            save_shard(to_save, shard_path)
+            total_saved += len(to_save)
+            print(f"  Saved {shard_path} ({len(to_save):,} samples, total: {total_saved:,})")
+            out_shard_idx += 1
 
     # Save remaining buffer
     if buffer:
