@@ -1,0 +1,13 @@
+[mcp_servers.wandb-grpo]
+command = "/Users/noamc/miniconda3/bin/conda"
+args = ["run", "-n", "grpo_chess", "--cwd", "/Users/noamc/repos/grpo_chess", "--no-capture-output", "python", "-m", "mcp_wandb_server.server"]
+
+[mcp_servers.wandb-grpo.env]
+WANDB_PROJECT = "Chess-GRPO-Bot"
+
+[mcp_servers.wandb-pretrain]
+command = "/Users/noamc/miniconda3/bin/conda"
+args = ["run", "-n", "grpo_chess", "--cwd", "/Users/noamc/repos/grpo_chess", "--no-capture-output", "python", "-m", "mcp_wandb_server.server"]
+
+[mcp_servers.wandb-pretrain.env]
+WANDB_PROJECT = "chess-grpo-pretrain"
