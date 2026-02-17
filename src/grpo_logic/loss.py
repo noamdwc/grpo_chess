@@ -88,13 +88,15 @@ def step_group_advantage(step_rewards: torch.Tensor, pad_mask: torch.Tensor | No
     Returns:
         Normalized advantages [B, G, T] where each timestep is normalized across G
     """
-    # Normalize across G dimension for each (batch, timestep)
-    # step_rewards: [B, G, T]
-    mean_t = step_rewards.mean(dim=1, keepdim=True)  # [B, 1, T]
-    advantages = (step_rewards - mean_t) # [B, G, T]
-
-    if pad_mask is not None:
-        advantages = advantages * pad_mask.float()
+    # Normalize across G dimension for each (batch, timestep), respecting padding.
+    if pad_mask is None:
+        mean_t = step_rewards.mean(dim=1, keepdim=True)  # [B, 1, T]
+        advantages = step_rewards - mean_t  # [B, G, T]
+    else:
+        valid = pad_mask.float()
+        valid_count = valid.sum(dim=1, keepdim=True).clamp_min(1.0)  # [B, 1, T]
+        mean_t = (step_rewards * valid).sum(dim=1, keepdim=True) / valid_count  # [B, 1, T]
+        advantages = (step_rewards - mean_t) * valid  # [B, G, T]
 
     return advantages
 

@@ -49,7 +49,11 @@ def train(
                 )
             dataloader_config[key] = value
     
-    trainer = get_trainer(num_epochs=config.training.num_epochs)
+    trainer = get_trainer(
+        num_epochs=config.training.num_epochs,
+        checkpoint_every_n_epochs=config.training.checkpoint_every_n_epochs,
+        keep_n_checkpoints=config.training.keep_n_checkpoints,
+    )
     dataset = ChessStartStatesDataset(config.dataset)
     dataloader = DataLoader(dataset, **dataloader_config)
     model = GRPOChessTransformer(

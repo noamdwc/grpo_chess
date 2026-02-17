@@ -303,12 +303,14 @@ class GRPOChessTransformer(pl.LightningModule):
         step_rewards = trajectories_sample.step_rewards  # [B, G, T]
         pad_mask = trajectories_sample.pad_mask  # [B, G, T]
         trajectories_legal_masks = trajectories_sample.trajectories_legal_masks  # [B, G, T, A] or None
+        teacher_forced_mask = trajectories_sample.teacher_forced_mask  # [B, G, T], True=teacher-forced
 
         # Add starting player mask (only consider moves from the starting player's perspective)
         _, _, T = pad_mask.shape
         t = torch.arange(T, device=pad_mask.device)
         start_player_mask = (t % 2 == 0)[None, None, :]  # [1, 1, T]
-        effective_pad_mask = pad_mask & start_player_mask  # [B, G, T]
+        # Exclude teacher-forced actions from policy-gradient updates.
+        effective_pad_mask = pad_mask & start_player_mask & (~teacher_forced_mask)  # [B, G, T]
 
         ppo_steps = self.hparams.grpo_config.ppo_steps
 
@@ -331,6 +333,7 @@ class GRPOChessTransformer(pl.LightningModule):
 
         # Standard logging (log final ppo_step metrics)
         self.log("train/loss", loss, prog_bar=True)
+        self.log("train_total_loss", loss)
         self.log("train/ppo_loss", loss_info.ppo_loss)
         self.log("train/kl_divergence", loss_info.kl_div)
         self.log("train/ratio", loss_info.mean_ratio)
@@ -340,6 +343,13 @@ class GRPOChessTransformer(pl.LightningModule):
         self.log("train/advantage_std", loss_info.advantage_std)
         self.log("train/pad_fraction", 1.0 - pad_mask.float().mean())
         self.log("train/trajectory_length", pad_mask.float().sum(dim=-1).mean())
+        # Fraction of rollout steps that were teacher-forced.
+        valid_rollout_steps = pad_mask.sum()
+        if valid_rollout_steps.item() > 0:
+            teacher_forced_fraction = teacher_forced_mask[pad_mask].float().mean()
+        else:
+            teacher_forced_fraction = torch.tensor(0.0, device=pad_mask.device)
+        self.log("train/teacher_forced_fraction", teacher_forced_fraction)
         self._log_rewards_metrics(batch_group_rewards, prefix="train/")
 
         # Log step rewards statistics (only for valid steps)
@@ -364,4 +374,3 @@ class GRPOChessTransformer(pl.LightningModule):
             Adam optimizer with learning rate from GRPO config
         """
         return torch.optim.Adam(self.parameters(), lr=self.hparams.grpo_config.lr)
-

@@ -48,6 +48,7 @@ class TrajectoriesSample:
         pad_mask: Mask indicating valid steps, True=valid, False=padding [B, G, T]
         trajectories_legal_masks: Legal moves masks [B, G, T, A]
         raw_step_cp: Raw centipawn step rewards [B, G, T] (for logging, not normalized)
+        teacher_forced_mask: Mask indicating teacher-forced actions, True=forced [B, G, T]
     """
     trajectories_log_probs: torch.Tensor  # [B, G, T]
     trajectories_actions: torch.Tensor    # [B, G, T]
@@ -57,6 +58,7 @@ class TrajectoriesSample:
     pad_mask: torch.Tensor                # [B, G, T]
     trajectories_legal_masks: torch.Tensor  # [B, G, T, A]
     raw_step_cp: torch.Tensor             # [B, G, T] - raw centipawn differences
+    teacher_forced_mask: torch.Tensor     # [B, G, T] - True where action was teacher-forced
 
 
 def batched_policy_step(model: ChessTransformer, boards: List[chess.Board], temperature: float = 1.0) -> Optional[tuple]:
@@ -147,6 +149,7 @@ def sample_trajectories_batched(model: ChessTransformer,
     traj_legal_masks = [[[] for _ in range(G)] for _ in range(B)]
     traj_step_rewards = [[[] for _ in range(G)] for _ in range(B)]
     traj_raw_step_cp = [[[] for _ in range(G)] for _ in range(B)]  # Raw centipawn differences for logging
+    traj_teacher_forced = [[[] for _ in range(G)] for _ in range(B)]  # True for teacher-forced actions
 
     # Track POV and previous raw eval for each trajectory (we normalize step rewards later)
     pov_is_white = [(boards[b].turn == chess.WHITE) for b in range(B) for _ in range(G)]
@@ -179,6 +182,7 @@ def sample_trajectories_batched(model: ChessTransformer,
             b_idx = env_idx_j // G
             g_idx = env_idx_j % G
             state_j = states_batch[j]
+            was_teacher_forced = False
 
             # Teacher forcing: override rival's move with Stockfish
             if use_teacher_forcing:
@@ -187,11 +191,13 @@ def sample_trajectories_batched(model: ChessTransformer,
                     move_j = sf_move
                     # Update action index to match the Stockfish move
                     action_indices[j] = MOVE_TO_ACTION[move_j.uci()]
+                    was_teacher_forced = True
 
             traj_log_probs[b_idx][g_idx].append(log_probs[j])
             traj_actions[b_idx][g_idx].append(int(action_indices[j].item()))
             traj_states[b_idx][g_idx].append(state_j)
             traj_legal_masks[b_idx][g_idx].append(legal_mask[j])
+            traj_teacher_forced[b_idx][g_idx].append(was_teacher_forced)
             envs[env_idx_j].push(move_j)
 
             # Compute step reward: eval(new_state) - eval(prev_state)
@@ -219,6 +225,7 @@ def sample_trajectories_batched(model: ChessTransformer,
     step_rewards = torch.zeros(B, G, T, dtype=torch.float32, device=device)
     raw_step_cp = torch.zeros(B, G, T, dtype=torch.float32, device=device)
     pad_mask = torch.zeros(B, G, T, dtype=torch.bool, device=device)
+    teacher_forced_mask = torch.zeros(B, G, T, dtype=torch.bool, device=device)
     for b in range(B):
         for g in range(G):
             L = len(traj_log_probs[b][g])
@@ -227,6 +234,10 @@ def sample_trajectories_batched(model: ChessTransformer,
             trajectories_log_probs[b, g, :L] = torch.stack(traj_log_probs[b][g], dim=0)
             trajectories_actions[b, g, :L] = torch.tensor(traj_actions[b][g], dtype=torch.long, device=device)
             trajectories_states[b, g, :L] = torch.stack(traj_states[b][g], dim=0)
+            if L > 0:
+                teacher_forced_mask[b, g, :L] = torch.tensor(
+                    traj_teacher_forced[b][g], dtype=torch.bool, device=device
+                )
             if L > 0:
                 trajectories_legal_masks[b, g, :L] = torch.stack(traj_legal_masks[b][g], dim=0)
                 step_rewards[b, g, :L] = torch.tensor(traj_step_rewards[b][g], dtype=torch.float32, device=device)
@@ -239,5 +250,6 @@ def sample_trajectories_batched(model: ChessTransformer,
                               step_rewards,
                               pad_mask,
                               trajectories_legal_masks,
-                              raw_step_cp)
+                              raw_step_cp,
+                              teacher_forced_mask)
                             

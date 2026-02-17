@@ -64,12 +64,12 @@ def evaluate_position_quality(board: chess.Board, depth: int = 2) -> Optional[fl
         depth: Stockfish search depth (shallow for speed)
         
     Returns:
-        Centipawn evaluation from White's perspective, or None if evaluation fails
+        Raw centipawn evaluation from White's perspective, or None if evaluation fails
     """
     try:
         fen = board.fen()
         pov_is_white = board.turn == chess.WHITE
-        eval_cp = evaluate_fen(fen, pov_is_white, movetime_ms=0, depth=depth)
+        eval_cp = evaluate_fen(fen, pov_is_white, movetime_ms=0, depth=depth, normalize=False)
         return eval_cp
     except Exception:
         return None
