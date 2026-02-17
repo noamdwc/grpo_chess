@@ -164,7 +164,7 @@ def sample_trajectories_batched(model: ChessTransformer,
 
         # Determine if this is the rival's turn (odd timesteps)
         is_rival_turn = (t % 2 == 1)
-        use_teacher_forcing = is_rival_turn and teacher_forcing_prob > 0 and random.random() < teacher_forcing_prob
+        can_teacher_force = is_rival_turn and teacher_forcing_prob > 0
 
         active_boards = [envs[i] for i in active_env_idx]
         roll_out_step = batched_policy_step(model, active_boards, temperature=temperature)
@@ -184,8 +184,8 @@ def sample_trajectories_batched(model: ChessTransformer,
             state_j = states_batch[j]
             was_teacher_forced = False
 
-            # Teacher forcing: override rival's move with Stockfish
-            if use_teacher_forcing:
+            # Teacher forcing: override rival's move with Stockfish (per-trajectory coin flip)
+            if can_teacher_force and random.random() < teacher_forcing_prob:
                 sf_move = get_stockfish_move(envs[env_idx_j], depth=teacher_forcing_depth)
                 if sf_move is not None and sf_move in envs[env_idx_j].legal_moves:
                     move_j = sf_move

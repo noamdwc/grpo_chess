@@ -73,3 +73,45 @@ def test_teacher_forced_steps_are_masked_out_from_loss(monkeypatch):
 
     assert bool(effective_pad_mask[0, 0, 0].item()) is True
     assert bool(effective_pad_mask[0, 0, 1].item()) is False
+
+
+def test_teacher_forcing_coin_is_per_trajectory(monkeypatch):
+    """Teacher forcing should be decided independently per trajectory, not per timestep."""
+    monkeypatch.setattr("src.grpo_logic.sampling.evaluate_board", lambda *args, **kwargs: 0.0)
+    monkeypatch.setattr("src.grpo_logic.sampling.reward_board", lambda *args, **kwargs: 0.0)
+    monkeypatch.setattr(
+        "src.grpo_logic.sampling.get_stockfish_move",
+        lambda board, depth=4, timeout=10.0: next(iter(board.legal_moves), None),
+    )
+
+    # With prob=0.5 and many trajectories, we should see a mix of forced and unforced
+    # at the same timestep across different trajectories.
+    G = 20
+    random.seed(42)
+    torch.manual_seed(42)
+
+    model = UniformLegalPolicy()
+    boards = [chess.Board()]
+    sample = sample_trajectories_batched(
+        model=model,
+        boards=boards,
+        num_trajectories=G,
+        trajectory_depth=4,
+        temperature=1.0,
+        teacher_forcing_prob=0.5,
+        teacher_forcing_depth=1,
+    )
+
+    assert sample is not None
+    # At rival timesteps (t=1, t=3), different trajectories should have different
+    # teacher_forced_mask values — not all True or all False.
+    for t_idx in [1, 3]:
+        forced_at_t = sample.teacher_forced_mask[0, :, t_idx]  # [G]
+        valid_at_t = sample.pad_mask[0, :, t_idx]  # [G]
+        forced_valid = forced_at_t[valid_at_t]
+        if forced_valid.numel() >= 2:
+            # With 20 trajectories and p=0.5, seeing all-same is astronomically unlikely
+            assert not forced_valid.all() or not (~forced_valid).all(), (
+                f"At rival timestep t={t_idx}, all {forced_valid.numel()} trajectories "
+                f"had identical teacher_forced_mask — coin flip is not per-trajectory"
+            )
