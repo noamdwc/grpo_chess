@@ -5,6 +5,7 @@ Mean ELO ~2355, moves already in UCI format - no parsing needed.
 """
 
 import os
+import hashlib
 import chess
 import torch
 import random
@@ -255,7 +256,7 @@ class ChessPretrainDataset(Dataset):
                     continue
                 # Hash-based train/eval split
                 game_id = f"{batch['date'][i]}-{white_elo}-{black_elo}"
-                hash_val = hash(game_id) % 10000
+                hash_val = int(hashlib.md5(game_id.encode("utf-8")).hexdigest(), 16) % 10000
                 is_eval_game = hash_val < (eval_frac * 10000)
                 if is_eval_game != is_eval:
                     keep.append(False)
