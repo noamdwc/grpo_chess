@@ -1,4 +1,6 @@
 from typing import Dict, List, Optional, Tuple
+import os
+import traceback
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
@@ -56,7 +58,8 @@ class Evaluator:
         Returns:
             Stockfish player instance
         """
-        return StockfishPlayer(self.default_stockfish_cfg)
+        # Keep eval engine separate from reward/teacher-forcing engines.
+        return StockfishPlayer(self.default_stockfish_cfg, engine_name=f"eval_engine_{os.getpid()}")
 
     def single_evaluation(self, model: nn.Module) -> Tuple[Dict, PolicyPlayer | TrajectorySearcher, List[str]]:
         """Evaluate the model by playing games against Stockfish.
@@ -84,12 +87,22 @@ class Evaluator:
         """
         was_training = pl_module.training
         pl_module.eval()
+        results = None
+        pgns: List[str] = []
+        max_attempts = 3
         try:
-            with torch.no_grad():
-                results, _, pgns = self.single_evaluation(model)
-        except Exception as e:
-            print(f"Stockfish eval failed: {e}")
-            return None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    with torch.no_grad():
+                        results, _, pgns = self.single_evaluation(model)
+                    break
+                except Exception as e:
+                    print(f"Stockfish eval attempt {attempt}/{max_attempts} failed: {e}")
+                    print(traceback.format_exc())
+                    # Reset eval engine and retry on transient engine failures.
+                    StockfishManager.close(f"eval_engine_{os.getpid()}")
+            if results is None:
+                return None
         finally:
             if was_training:
                 pl_module.train()
@@ -161,12 +174,31 @@ class StockfishEvalCallback(Callback):
     """Lightning callback that evaluates the model against Stockfish periodically."""
 
     def __init__(self, evaluator: Evaluator, every_n_epochs: int = 1, model_attr: str = "model"):
+        if every_n_epochs < 1:
+            raise ValueError(f"every_n_epochs must be >= 1, got {every_n_epochs}")
         self.evaluator = evaluator
         self.every_n_epochs = every_n_epochs
         self.model_attr = model_attr
+        self._attempts = 0
+        self._successes = 0
+        self._failures = 0
 
     def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule):
         if (trainer.current_epoch + 1) % self.every_n_epochs != 0:
             return
+        self._attempts += 1
+        print(
+            f"[StockfishEvalCallback] Running evaluation at epoch {trainer.current_epoch + 1}",
+            flush=True,
+        )
         model = getattr(pl_module, self.model_attr)
-        self.evaluator.evaluate_and_log(pl_module, model)
+        results = self.evaluator.evaluate_and_log(pl_module, model)
+        if results is None:
+            self._failures += 1
+        else:
+            self._successes += 1
+
+        # Always log callback health so we can distinguish "not called" vs "called but failed".
+        pl_module.log("eval_stockfish/callback_attempts", float(self._attempts), on_step=False, on_epoch=True)
+        pl_module.log("eval_stockfish/callback_successes", float(self._successes), on_step=False, on_epoch=True)
+        pl_module.log("eval_stockfish/callback_failures", float(self._failures), on_step=False, on_epoch=True)

@@ -1,10 +1,11 @@
 import os
+import shutil
 import threading
 import chess
 import chess.engine
 import torch
 from typing import Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from src.chess.chess_logic import ChessPlayer
 from src.logging_utils import get_logger
@@ -94,6 +95,17 @@ class StockfishManager:
           return cls._locks[name]
 
   @classmethod
+  def _resolve_engine_cfg(cls, cfg: StockfishConfig) -> StockfishConfig:
+      """Resolve a valid Stockfish binary path from config and common fallbacks."""
+      resolved_path = resolve_stockfish_path(cfg.path)
+      if resolved_path != cfg.path:
+          logger.warning(
+              f"Configured Stockfish path '{cfg.path}' not found; using '{resolved_path}' instead"
+          )
+          return replace(cfg, path=resolved_path)
+      return cfg
+
+  @classmethod
   def get_engine(cls, name: str, cfg: StockfishConfig | None = None) -> chess.engine.SimpleEngine:
       """
       Get (or create) a named engine instance.
@@ -105,10 +117,11 @@ class StockfishManager:
           if not cls.is_name_registered(name):
               if cfg is None:
                   cfg = StockfishConfig()
-              engine = chess.engine.SimpleEngine.popen_uci(cfg.path)
-              cls._configure_engine(engine, cfg)
+              resolved_cfg = cls._resolve_engine_cfg(cfg)
+              engine = chess.engine.SimpleEngine.popen_uci(resolved_cfg.path)
+              cls._configure_engine(engine, resolved_cfg)
               cls._engines[name] = engine
-              cls._cfgs[name] = cfg
+              cls._cfgs[name] = resolved_cfg
               if name not in cls._locks:
                   cls._locks[name] = threading.Lock()
           return cls._engines[name]
@@ -137,6 +150,52 @@ class StockfishManager:
 
 # Default timeout for Stockfish operations (seconds)
 DEFAULT_STOCKFISH_TIMEOUT = 10.0
+
+
+def resolve_stockfish_path(configured_path: str | None = None) -> str:
+    """Find an executable Stockfish binary path.
+
+    Resolution order:
+    1. Configured path (absolute or command name)
+    2. STOCKFISH_PATH env var
+    3. stockfish on PATH
+    4. Common install paths for macOS/Linux
+    """
+    candidates: list[str] = []
+    if configured_path:
+        candidates.append(configured_path)
+    env_path = os.environ.get("STOCKFISH_PATH")
+    if env_path:
+        candidates.append(env_path)
+    path_lookup = shutil.which("stockfish")
+    if path_lookup:
+        candidates.append(path_lookup)
+    candidates.extend([
+        "/opt/homebrew/bin/stockfish",
+        "/usr/local/bin/stockfish",
+        "/usr/games/stockfish",
+        "/usr/bin/stockfish",
+    ])
+
+    tried: list[str] = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if os.path.sep not in candidate:
+            resolved = shutil.which(candidate)
+            if resolved:
+                return resolved
+            tried.append(candidate)
+            continue
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+        tried.append(candidate)
+
+    raise FileNotFoundError(
+        "Stockfish binary not found. "
+        f"Tried: {', '.join(dict.fromkeys(tried))}. "
+        "Set stockfish.path in config or STOCKFISH_PATH env var."
+    )
 
 
 def run_with_timeout(func, timeout: float, *args, **kwargs):
