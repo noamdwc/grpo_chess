@@ -93,25 +93,57 @@ Based on: [base config file]
 
 Wait for user feedback before writing any files.
 
-### Step 4: Write the Config
+### Step 4: Save the Plan Document
 
 After user approval:
-1. Read the base config file
-2. Create a new YAML in `src/configs/` with all changes applied
-3. Set `training.use_wandb: true` and a meaningful `training.wandb_project`
-4. Double-check `stockfish.path` is appropriate for Lightning (`/usr/games/stockfish` for Linux)
-5. Show a diff-style summary of what changed
+1. Save a plan document to `research_docs/experiments/YYYY-MM-DD_<slug>.md` using this exact template:
+
+```markdown
+## Experiment Plan: [Short Name]
+
+**Goal:** [What are we trying to achieve? One sentence.]
+
+**Proposed Changes:**
+- [Specific architectural / parameter / config modifications, each as a bullet]
+
+**Mechanism:** [How/why these changes achieve the goal — 2–4 sentences]
+
+**Expected Result:** [Concrete outcome: which metric, which direction, rough magnitude]
+
+---
+### Config File: `src/configs/<name>.yaml`
+Based on: [base config path]
+
+### Config Diff
+| Parameter | Old | New | Rationale |
+|-----------|-----|-----|-----------|
+| ...       | ... | ... | ...       |
+
+### Success Criteria
+- [e.g., eval_stockfish/score improves by ≥ 0.05 vs baseline run XYZ]
+
+### Estimated Credits
+~$[N] (basis: [reasoning])
+```
+
+2. Read the base config file
+3. Create a new YAML in `src/configs/` with all changes applied
+4. Set `training.use_wandb: true` and a meaningful `training.wandb_project`
+5. Double-check `stockfish.path` is appropriate for Lightning (`/usr/games/stockfish` for Linux)
+6. Show a diff-style summary of what changed
 
 ### Step 5: Handoff
 
 End with:
+
 ```
-## Ready to Run
+## → Next Step
 
+Plan saved: `research_docs/experiments/YYYY-MM-DD_<slug>.md`
 Config: `src/configs/<name>.yaml`
-Command: `python -m src.train_self_play --config <name>.yaml`
 
-Use /run-experiment to submit this to Lightning.ai.
+[If code changes needed]: Use `/code-implementation` with the plan doc above.
+[If config-only]: Use `/run-experiment` with `src/configs/<name>.yaml`.
 ```
 
 ## Boundaries
@@ -124,6 +156,8 @@ Use /run-experiment to submit this to Lightning.ai.
 
 ### DO NOT
 - Write config files without user approval
+- Write a config without first saving the plan document to `research_docs/experiments/`
+- Skip any of the four required fields: Goal, Proposed Changes, Mechanism, Expected Result
 - Suggest MCTS or tree search approaches
 - Create new Python files — only YAML config changes
 - Propose changes to `default.yaml` itself — always create a new named config

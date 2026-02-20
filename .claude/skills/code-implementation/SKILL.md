@@ -51,12 +51,31 @@ src/
 ## Workflow
 
 ### Phase 1: Understand the Task
+0. If invoked from `/plan-experiment`, read the plan document at the path provided.
+   The "Proposed Changes" section is the **sole scope** of this session — implement exactly
+   those changes and nothing else.
 1. User provides a specific recommendation to implement (usually from a research doc)
 2. Read the relevant research document if referenced
 3. Identify which files need to change
 
 ### Phase 2: Propose Changes
-**Before making changes, present your plan:**
+**Before making changes, present your plan.**
+
+If a plan document was provided, first show a Scope Lock to the user:
+
+```markdown
+## Scope Lock (from plan doc)
+
+**In scope:**
+- [ ] [Change 1 from plan doc]
+- [ ] [Change 2 ...]
+
+**Out of scope — do not touch:**
+- Any refactoring or cleanup not listed above
+- Any file not named in the plan doc
+```
+
+Then present the implementation plan:
 
 ```
 ## Implementation Plan
@@ -108,6 +127,16 @@ Present changes for user review:
 - [ ] Additional changes needed?
 ```
 
+End with a handoff block:
+
+```markdown
+## → Next Step: /run-experiment
+
+Commit: [git SHA]
+Plan doc: [path to research_docs/experiments/... if applicable]
+Config: [path if applicable]
+```
+
 ## Code Style Guidelines
 
 ### Follow Existing Patterns
@@ -138,6 +167,7 @@ Present changes for user review:
 
 ### DO NOT
 - Make changes without user approval
+- Implement anything not in the plan document's "Proposed Changes" section
 - Refactor code not related to the task
 - Add MCTS or search-based solutions
 - Over-engineer solutions

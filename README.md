@@ -40,6 +40,24 @@ pip install torch pytorch-lightning wandb python-chess jaxtyping datasets huggin
 # macOS: brew install stockfish
 ```
 
+### Automatic File Metadata Normalization
+
+Use this when you want files moved into the project folder to get fresh `mtime` and `atime`.
+
+```bash
+# Install dependencies (includes watchdog)
+pip install -r requirements.txt
+
+# Watch project folder recursively and normalize incoming files
+~/miniconda3/envs/grpo_chess/bin/python scripts/watch_and_touch_metadata.py --root /Users/noamc/repos/grpo_chess
+
+# Preview actions without modifying files
+~/miniconda3/envs/grpo_chess/bin/python scripts/watch_and_touch_metadata.py --root /Users/noamc/repos/grpo_chess --dry-run
+
+# One-shot mode for a single file (no watcher loop)
+~/miniconda3/envs/grpo_chess/bin/python scripts/watch_and_touch_metadata.py --root /Users/noamc/repos/grpo_chess --once path/to/file.txt
+```
+
 ## Project Structure
 
 ```
@@ -58,10 +76,14 @@ grpo_chess/
 │   │   ├── rewards.py           # Stockfish reward computation
 │   │   ├── boards_dataset.py    # Position generation
 │   │   └── stockfish.py         # Engine integration
-│   ├── configs/                 # YAML configuration files
-│   └── pretrain/                # Supervised pretraining pipeline
+│   ├── distill/                 # Knowledge distillation pipeline
+│   ├── pretrain/                # Supervised pretraining pipeline
+│   └── configs/                 # YAML configuration files
 ├── searchless_chess/            # DeepMind submodule (tokenizer, move tables)
-├── research_docs/               # Agent research documentation
+├── research_docs/               # Research documentation
+│   ├── experiments/             # Experiment plan docs (per /plan-experiment)
+│   ├── runs/                    # Run reports (per /run-experiment)
+│   └── TEMPLATE.md              # Research doc template
 └── tests/                       # Test suite
 ```
 
@@ -136,12 +158,30 @@ Training runs are tracked with [Weights & Biases](https://wandb.ai). Key metrics
 - `train/clip_fraction`: PPO clipping statistics
 - `train/kl_divergence`: Policy divergence
 
+## Experiment Workflow
+
+The project uses a structured four-step experiment loop, driven by Claude Code skills:
+
+```
+/research-insights  →  /plan-experiment  →  /code-implementation  →  /run-experiment
+        ↑                                                                      |
+        └──────────────────────── /experiment-cycle ────────────────────────────┘
+```
+
+Each step produces a structured artifact:
+- **Research**: `research_docs/YYYY-MM-DD_*.md`
+- **Plan**: `research_docs/experiments/YYYY-MM-DD_<slug>.md` + `src/configs/<name>.yaml`
+- **Run report**: `research_docs/runs/YYYY-MM-DD_<job>.md`
+
+Use `/experiment-cycle` to orchestrate all steps automatically, or invoke each skill standalone.
+
 ## Contributing
 
 1. Check existing [research_docs/](research_docs/) for context on current issues
-2. Use the template at `research_docs/TEMPLATE.md` for documenting findings
-3. Reference specific code with file paths and line numbers
-4. Include WandB run IDs for metric references
+2. Use `/research-insights` to analyze a question and produce a findings document
+3. Use `/plan-experiment` to design an experiment and save a plan doc before writing any config
+4. Reference specific code with file paths and line numbers
+5. Include WandB run IDs for metric references
 
 ## Acknowledgments
 

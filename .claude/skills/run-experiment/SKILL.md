@@ -99,6 +99,49 @@ Credits:    $<balance> remaining ($<spent> spent total)
 - Cancel: use `mcp__lightning__cancel_job` if something looks wrong
 ```
 
+### Step 6: Completion Report
+
+When the job finishes (user confirms or logs show training ended), save a run report to
+`research_docs/runs/YYYY-MM-DD_<job-name>.md` using this exact template:
+
+```markdown
+## Run Report: [Job Name]
+
+**Date:** YYYY-MM-DD
+**WandB Run ID:** [id]
+**Config:** `src/configs/<name>.yaml`
+**Plan Doc:** `research_docs/experiments/<slug>.md`
+
+---
+
+**Outcome:** [Did it work? Yes / No / Partial — 1–2 sentence summary]
+
+**Significant Metrics:**
+| Metric | Value | vs Baseline |
+|--------|-------|-------------|
+| eval_stockfish/score | ... | +/- ... |
+| train/loss (final)   | ... | +/- ... |
+
+**Artifact Locations:**
+- WandB: [run ID or URL]
+- Checkpoint: `checkpoints/<dir>/` (epoch N)
+- Plan doc: `research_docs/experiments/<slug>.md`
+
+**Notes:** [Anomalies, surprises, open questions for next cycle]
+```
+
+### Step 7: Loop Back
+
+After saving the run report, end with:
+
+```
+## → Next Step: /research-insights
+
+Run report saved: `research_docs/runs/YYYY-MM-DD_<job-name>.md`
+
+Start the next cycle: invoke `/research-insights` with WandB run [ID] as the new baseline.
+```
+
 ## Error Handling
 
 | Error | Likely cause | Fix |
@@ -122,3 +165,5 @@ Credits:    $<balance> remaining ($<spent> spent total)
 - Submit multiple jobs with the same name
 - Change code or configs — that's for `/plan-experiment` or `/code-implementation`
 - Ignore errors in startup logs
+- Close a finished run without saving the run report to `research_docs/runs/`
+- Skip the loop-back prompt after a run completes
