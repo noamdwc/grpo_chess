@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import sys
 import argparse
 import json
 from dataclasses import replace
@@ -16,6 +17,9 @@ from src.configs.config_loader import load_experiment_config
 from src.evaluator import Evaluator
 from src.models import ChessTransformer
 
+# a patch to work with old checkpoits saved before code rearrangement
+import src
+sys.modules.setdefault('src.grpo_self_play', src)
 
 def _extract_model_state_dict(ckpt: Any) -> dict[str, torch.Tensor]:
     """Extract policy model weights from supported checkpoint formats."""
