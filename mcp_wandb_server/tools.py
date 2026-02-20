@@ -234,6 +234,54 @@ async def get_plots(
         return [TextContent(type="text", text=format_json_response({"error": str(e)}))]
 
 
+async def sample_metrics(
+    run_id: str,
+    metric_keys: Optional[List[str]] = None,
+    n_points: int = 20,
+) -> str:
+    """
+    Retrieve metrics for a run, sampled down to ~n_points per metric.
+
+    Args:
+        run_id: WandB run ID or name
+        metric_keys: Specific metrics to retrieve (if None, returns all metrics)
+        n_points: Approximate number of evenly-spaced samples per metric (default: 20)
+
+    Returns:
+        JSON string with sampled metric time-series data
+    """
+    try:
+        api = get_wandb_api()
+        run = find_run(api, run_id)
+
+        if not run:
+            return format_json_response({"error": f"Run '{run_id}' not found"})
+
+        history = run.history()
+        metrics = format_metric_history(history)
+
+        if metric_keys:
+            metrics = {k: v for k, v in metrics.items() if k in metric_keys}
+
+        sampled: Dict[str, List[Dict[str, Any]]] = {}
+        for key, points in metrics.items():
+            if not points:
+                sampled[key] = []
+                continue
+            step = max(1, len(points) // n_points)
+            sampled[key] = points[::step]
+
+        result = {
+            "run_id": run.id,
+            "run_name": run.name,
+            "n_points": n_points,
+            "metrics": sampled,
+        }
+        return format_json_response(result)
+    except Exception as e:
+        return format_json_response({"error": str(e)})
+
+
 async def compare_runs(
     run_ids: List[str],
     metric_keys: List[str]

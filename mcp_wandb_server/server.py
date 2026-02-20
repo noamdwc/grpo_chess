@@ -11,7 +11,8 @@ from .tools import (
     get_run_metrics,
     get_run_summary,
     get_plots,
-    compare_runs
+    compare_runs,
+    sample_metrics,
 )
 from .resources import list_resources, read_resource
 
@@ -107,6 +108,30 @@ async def handle_list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="sample_metrics",
+            description="Retrieve metrics for a run sampled down to ~N evenly-spaced points per metric — much cheaper than get_run_metrics for long runs",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "run_id": {
+                        "type": "string",
+                        "description": "WandB run ID or name"
+                    },
+                    "metric_keys": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Specific metrics to retrieve. If not provided, returns all metrics."
+                    },
+                    "n_points": {
+                        "type": "integer",
+                        "description": "Approximate number of evenly-spaced samples per metric (default: 20)",
+                        "default": 20
+                    }
+                },
+                "required": ["run_id"]
+            }
+        ),
+        Tool(
             name="compare_runs",
             description="Compare metrics across multiple runs",
             inputSchema={
@@ -155,6 +180,12 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent | Ima
         elif name == "get_run_summary":
             result = await get_run_summary(
                 run_id=arguments["run_id"]
+            )
+        elif name == "sample_metrics":
+            result = await sample_metrics(
+                run_id=arguments["run_id"],
+                metric_keys=arguments.get("metric_keys"),
+                n_points=arguments.get("n_points", 20),
             )
         elif name == "compare_runs":
             result = await compare_runs(
