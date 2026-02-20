@@ -9,8 +9,11 @@ training:
   num_epochs: 400
   batch_size: 32
   steps_per_epoch: 512
+  checkpoint_dir: "checkpoints"
   checkpoint_every_n_epochs: 5  # Save periodic checkpoint every N epochs for crash recovery
   keep_n_checkpoints: 3         # Keep last N periodic checkpoints per run
+  use_wandb: true
+  wandb_project: "Chess-GRPO-Bot"
 
 # =============================================================================
 # GRPO (Group Relative Policy Optimization) Config

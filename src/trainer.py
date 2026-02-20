@@ -3,7 +3,7 @@ import random
 import string
 import pytorch_lightning as pl
 
-from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.loggers import WandbLogger, CSVLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 def generate_run_name(project: str = "chess-grpo") -> str:
@@ -21,9 +21,11 @@ def generate_run_name(project: str = "chess-grpo") -> str:
 
 
 def get_trainer(num_epochs: int = 5000,
-                checkpoint_dir: str = "/content/drive/MyDrive/data/grpo-chess/checkpoints/",
+                checkpoint_dir: str = "checkpoints",
                 checkpoint_every_n_epochs: int = 5,
-                keep_n_checkpoints: int = 3) -> pl.Trainer:
+                keep_n_checkpoints: int = 3,
+                use_wandb: bool = True,
+                wandb_project: str = "Chess-GRPO-Bot") -> pl.Trainer:
     """Create a PyTorch Lightning trainer with WandB logging and checkpointing.
 
     Args:
@@ -38,7 +40,11 @@ def get_trainer(num_epochs: int = 5000,
     run_name = generate_run_name()
     print(f"Generated run name: {run_name}")
 
-    wandb_logger = WandbLogger(project="Chess-GRPO-Bot", log_model=True, name=run_name)
+    logger = (
+        WandbLogger(project=wandb_project, log_model=True, name=run_name)
+        if use_wandb
+        else CSVLogger(save_dir=checkpoint_dir, name=run_name)
+    )
 
     # Best checkpoint - saves top 2 based on loss
     best_checkpoint_cb = ModelCheckpoint(
@@ -66,9 +72,8 @@ def get_trainer(num_epochs: int = 5000,
         # Gradient clipping handled manually in GRPOChessTransformer.training_step
         accelerator="auto",
         devices=1,
-        logger=wandb_logger,
+        logger=logger,
         callbacks=[best_checkpoint_cb, periodic_checkpoint_cb],
         log_every_n_steps=1  # Log every step for GRPO debug
     )
                       
-

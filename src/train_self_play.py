@@ -51,8 +51,11 @@ def train(
     
     trainer = get_trainer(
         num_epochs=config.training.num_epochs,
+        checkpoint_dir=config.training.checkpoint_dir,
         checkpoint_every_n_epochs=config.training.checkpoint_every_n_epochs,
         keep_n_checkpoints=config.training.keep_n_checkpoints,
+        use_wandb=config.training.use_wandb,
+        wandb_project=config.training.wandb_project,
     )
     dataset = ChessStartStatesDataset(config.dataset)
     dataloader = DataLoader(dataset, **dataloader_config)
@@ -76,7 +79,10 @@ def train(
         evaluator, every_n_epochs=config.grpo.eval_every_n_epochs, model_attr="policy_model",
     ))
 
-    print("Starting Training with WandB Tracking...")
+    if config.training.use_wandb:
+        print("Starting training with WandB tracking...")
+    else:
+        print("Starting training with local CSV logging...")
     trainer.fit(model, dataloader)
 
 
