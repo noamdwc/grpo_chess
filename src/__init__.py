@@ -8,7 +8,12 @@ chess policies through self-play. It includes:
 - Evaluation against Stockfish
 """
 
+import sys
+
 __version__ = "0.1.0"
+
+# Backward-compat alias for checkpoints saved before package rearrangement.
+sys.modules.setdefault("src.grpo_self_play", sys.modules[__name__])
 
 # Main exports
 from src.models import ChessTransformer, ChessTransformerConfig

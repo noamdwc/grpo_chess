@@ -41,6 +41,23 @@ def _pad_teacher_data(raw_indices, raw_probs, keep_mask):
     return padded_indices, padded_probs, k_mask
 
 
+def _align_teacher_width(tensors: list[torch.Tensor], pad_value) -> list[torch.Tensor]:
+    """Pad [N, K] tensors to a common K so they can be concatenated across shards."""
+    if not tensors:
+        return tensors
+
+    max_k = max(t.shape[1] for t in tensors)
+    aligned = []
+    for t in tensors:
+        if t.shape[1] == max_k:
+            aligned.append(t)
+            continue
+        pad_cols = max_k - t.shape[1]
+        pad = torch.full((t.shape[0], pad_cols), pad_value, dtype=t.dtype)
+        aligned.append(torch.cat([t, pad], dim=1))
+    return aligned
+
+
 class DistillDataset(Dataset):
     """Dataset loading .pt shard files with teacher soft labels.
 
@@ -51,9 +68,19 @@ class DistillDataset(Dataset):
         teacher_probs: list of Tensor[k_i]
     """
 
-    def __init__(self, data_dir: str, is_eval: bool = False, eval_fraction: float = 0.05):
+    def __init__(
+        self,
+        data_dir: str,
+        is_eval: bool = False,
+        eval_fraction: float = 0.05,
+        max_shards: int | None = None,
+    ):
         self.data_dir = Path(data_dir)
         shard_paths = sorted(self.data_dir.glob("shard_*.pt"))
+        if max_shards is not None:
+            if max_shards <= 0:
+                raise ValueError(f"max_shards must be positive, got {max_shards}")
+            shard_paths = shard_paths[:max_shards]
         if not shard_paths:
             raise FileNotFoundError(f"No shard files found in {data_dir}")
 
@@ -85,6 +112,10 @@ class DistillDataset(Dataset):
             total += n_keep
             print(f"Loading shard {si}/{n_shards}: {sp.name} ... {n_keep} samples ({total} total)")
 
+        all_teacher_indices = _align_teacher_width(all_teacher_indices, pad_value=0)
+        all_teacher_probs = _align_teacher_width(all_teacher_probs, pad_value=0.0)
+        all_k_masks = _align_teacher_width(all_k_masks, pad_value=False)
+
         self.board_tokens = torch.cat(all_board_tokens) if all_board_tokens else torch.empty(0, 77, dtype=torch.long)
         self.legal_masks = torch.cat(all_legal_masks) if all_legal_masks else torch.empty(0, 1968, dtype=torch.bool)
         self.teacher_indices = torch.cat(all_teacher_indices) if all_teacher_indices else torch.empty(0, 1, dtype=torch.long)
@@ -96,11 +127,18 @@ class DistillDataset(Dataset):
 
     @classmethod
     def load_train_eval(
-        cls, data_dir: str, eval_fraction: float = 0.05
+        cls,
+        data_dir: str,
+        eval_fraction: float = 0.05,
+        max_shards: int | None = None,
     ) -> tuple["DistillDataset", "DistillDataset"]:
         """Load shards once and return (train_dataset, eval_dataset)."""
         data_dir = Path(data_dir)
         shard_paths = sorted(data_dir.glob("shard_*.pt"))
+        if max_shards is not None:
+            if max_shards <= 0:
+                raise ValueError(f"max_shards must be positive, got {max_shards}")
+            shard_paths = shard_paths[:max_shards]
         if not shard_paths:
             raise FileNotFoundError(f"No shard files found in {data_dir}")
 
@@ -145,6 +183,13 @@ class DistillDataset(Dataset):
             eval_total += n_eval
 
             print(f"Loading shard {si}/{n_shards}: {sp.name} ... {n_train} train, {n_eval} eval ({train_total + eval_total} total)")
+
+        train_ti = _align_teacher_width(train_ti, pad_value=0)
+        train_tp = _align_teacher_width(train_tp, pad_value=0.0)
+        train_km = _align_teacher_width(train_km, pad_value=False)
+        eval_ti = _align_teacher_width(eval_ti, pad_value=0)
+        eval_tp = _align_teacher_width(eval_tp, pad_value=0.0)
+        eval_km = _align_teacher_width(eval_km, pad_value=False)
 
         train_ds.board_tokens = torch.cat(train_tokens) if train_tokens else torch.empty(0, 77, dtype=torch.long)
         train_ds.legal_masks = torch.cat(train_masks) if train_masks else torch.empty(0, 1968, dtype=torch.bool)

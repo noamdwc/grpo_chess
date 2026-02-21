@@ -19,6 +19,7 @@ import os
 import struct
 import urllib.request
 from dataclasses import dataclass
+from typing import Optional
 
 import chess
 import numpy as np
@@ -45,6 +46,7 @@ class ConvertConfig:
     min_win_prob: float = 0.55
     output_dir: str = "data/distill"
     shard_size: int = 50_000
+    max_samples: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -140,9 +142,13 @@ def make_grouped_sample(
     except ValueError:
         return None
 
-    # Filter to moves that exist in our action space
+    legal_uci = {m.uci() for m in board.legal_moves}
+
+    # Filter to legal moves that also exist in our action space.
     valid = []
     for move_str, win_prob in moves_and_probs:
+        if move_str not in legal_uci:
+            continue
         action_idx = MOVE_TO_ACTION.get(move_str)
         if action_idx is not None:
             valid.append((action_idx, win_prob))
@@ -240,6 +246,8 @@ def convert(config: ConvertConfig):
     print(f"  min_win_prob: {config.min_win_prob}")
     print(f"  Output: {config.output_dir}")
     print(f"  Shard size: {config.shard_size:,}")
+    if config.max_samples is not None:
+        print(f"  Max samples: {config.max_samples:,}")
 
     buffer: list[dict] = []
     out_shard_idx = 0
@@ -281,21 +289,40 @@ def convert(config: ConvertConfig):
 
         # Flush full output shards
         while len(buffer) >= config.shard_size:
-            to_save = buffer[: config.shard_size]
-            buffer = buffer[config.shard_size :]
+            if config.max_samples is not None and total_saved >= config.max_samples:
+                break
+            remaining = (
+                config.shard_size
+                if config.max_samples is None
+                else min(config.shard_size, config.max_samples - total_saved)
+            )
+            if remaining <= 0:
+                break
+            to_save = buffer[:remaining]
+            buffer = buffer[remaining:]
             shard_path = os.path.join(config.output_dir, f"shard_{out_shard_idx:04d}.pt")
             save_shard(to_save, shard_path)
             total_saved += len(to_save)
             print(f"  Saved {shard_path} ({len(to_save):,} samples, total: {total_saved:,})")
             out_shard_idx += 1
 
+        if config.max_samples is not None and total_saved >= config.max_samples:
+            print("Reached max_samples limit; stopping conversion early.")
+            break
+
     # Save remaining buffer
-    if buffer:
-        shard_path = os.path.join(config.output_dir, f"shard_{out_shard_idx:04d}.pt")
-        save_shard(buffer, shard_path)
-        total_saved += len(buffer)
-        print(f"  Saved {shard_path} ({len(buffer):,} samples)")
-        out_shard_idx += 1
+    if buffer and (config.max_samples is None or total_saved < config.max_samples):
+        if config.max_samples is None:
+            to_save = buffer
+        else:
+            remaining = config.max_samples - total_saved
+            to_save = buffer[:remaining]
+        if to_save:
+            shard_path = os.path.join(config.output_dir, f"shard_{out_shard_idx:04d}.pt")
+            save_shard(to_save, shard_path)
+            total_saved += len(to_save)
+            print(f"  Saved {shard_path} ({len(to_save):,} samples)")
+            out_shard_idx += 1
 
     print(f"\nDone! {total_saved:,} samples in {out_shard_idx} shards → {config.output_dir}")
 
@@ -315,12 +342,21 @@ def main():
     parser.add_argument("--min_win_prob", type=float, help="Minimum win_prob to keep a record")
     parser.add_argument("--output_dir", type=str, help="Output directory")
     parser.add_argument("--shard_size", type=int, help="Samples per output shard")
+    parser.add_argument("--max_samples", type=int, help="Maximum number of samples to save")
     args = parser.parse_args()
 
     data = load_yaml_file(args.config)
     config = dict_to_dataclass(ConvertConfig, data.get("deepmind_data", {}))
 
-    for field in ["num_shards", "top_k", "temperature", "min_win_prob", "output_dir", "shard_size"]:
+    for field in [
+        "num_shards",
+        "top_k",
+        "temperature",
+        "min_win_prob",
+        "output_dir",
+        "shard_size",
+        "max_samples",
+    ]:
         val = getattr(args, field, None)
         if val is not None:
             setattr(config, field, val)

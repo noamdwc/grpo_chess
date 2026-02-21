@@ -5,6 +5,7 @@ Usage:
 """
 
 import argparse
+import os
 import time
 import random
 import string
@@ -20,6 +21,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from torch.utils.data import DataLoader
 
 from src.models import ChessTransformer, ChessTransformerConfig
+from src.checkpoint_compat import register_legacy_checkpoint_aliases
 from src.distill.distill_dataset import DistillDataset, collate_distill_batch
 from src.configs.config_loader import load_yaml_file, dict_to_dataclass
 from src.evaluator import Evaluator, StockfishEvalCallback
@@ -51,6 +53,23 @@ class DistillDatasetConfig:
     data_dir: str = "data/distill"
     top_k: int = 8
     eval_fraction: float = 0.05
+    max_shards: Optional[int] = None
+
+
+def ensure_distill_dataset(config_path: str, dataset_config: "DistillDatasetConfig") -> None:
+    """Generate distillation shards from DeepMind data if dataset dir is empty."""
+    data_dir = Path(dataset_config.data_dir)
+    shard_files = sorted(data_dir.glob("shard_*.pt")) if data_dir.exists() else []
+    if shard_files:
+        return
+
+    print(f"No distill shards found in {dataset_config.data_dir}; generating from deepmind_data config.")
+    from src.distill.convert_deepmind_data import ConvertConfig, convert
+
+    data = load_yaml_file(config_path)
+    convert_cfg = dict_to_dataclass(ConvertConfig, data.get("deepmind_data", {}))
+    convert_cfg.output_dir = dataset_config.data_dir
+    convert(convert_cfg)
 
 
 class DistillChessTransformer(pl.LightningModule):
@@ -75,6 +94,7 @@ class DistillChessTransformer(pl.LightningModule):
 
     def _load_pretrained_weights(self, checkpoint_path: str) -> None:
         print(f"Loading pretrained weights from: {checkpoint_path}")
+        register_legacy_checkpoint_aliases()
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
         if "model_state_dict" in checkpoint:
@@ -123,20 +143,47 @@ class DistillChessTransformer(pl.LightningModule):
         # Gather student log-probs at teacher action indices
         student_at_teacher = student_log_probs.gather(1, teacher_indices)  # [B, max_k]
 
-        # Cross-entropy with teacher soft labels (masked by k_mask)
-        loss = -(teacher_probs * student_at_teacher * k_mask.float()).sum(dim=1).mean()
+        # Keep only teacher targets that are legal under this board's legal mask.
+        teacher_is_legal = k_mask & legal_masks.gather(1, teacher_indices)
+        teacher_probs_filtered = teacher_probs * teacher_is_legal.float()
+        teacher_mass = teacher_probs_filtered.sum(dim=1)  # [B]
+        valid_sample_mask = teacher_mass > 1e-8
+
+        if not bool(valid_sample_mask.any()):
+            raise ValueError(
+                "No valid teacher targets in batch. "
+                "Check distillation data generation/conversion legality filtering."
+            )
+
+        teacher_probs_norm = teacher_probs_filtered / teacher_mass.clamp_min(1e-8).unsqueeze(1)
+        student_at_teacher = torch.where(
+            teacher_is_legal, student_at_teacher, torch.zeros_like(student_at_teacher)
+        )
+
+        # Cross-entropy with legality-filtered, renormalized teacher soft labels
+        loss_per_sample = -(teacher_probs_norm * student_at_teacher).sum(dim=1)
+        loss = loss_per_sample[valid_sample_mask].mean()
 
         # Metrics
         with torch.no_grad():
             # Student's top-1 prediction
             student_top1 = masked_logits.argmax(dim=-1)  # [B]
-            # Teacher's top-1 (first entry in teacher_indices)
-            teacher_top1 = teacher_indices[:, 0]  # [B]
-            top1_match = (student_top1 == teacher_top1).float().mean()
+            # Teacher's top-1 legal entry
+            first_legal_idx = teacher_is_legal.float().argmax(dim=1, keepdim=True)
+            teacher_top1 = teacher_indices.gather(1, first_legal_idx).squeeze(1)  # [B]
+
+            if bool(valid_sample_mask.any()):
+                top1_match = (student_top1[valid_sample_mask] == teacher_top1[valid_sample_mask]).float().mean()
+            else:
+                top1_match = torch.tensor(0.0, device=logits.device)
 
             # Top-5 match: does teacher's top-1 appear in student's top-5?
             _, student_top5 = masked_logits.topk(5, dim=-1)  # [B, 5]
-            top5_match = (student_top5 == teacher_top1.unsqueeze(-1)).any(dim=-1).float().mean()
+            top5_hit = (student_top5 == teacher_top1.unsqueeze(-1)).any(dim=-1).float()
+            if bool(valid_sample_mask.any()):
+                top5_match = top5_hit[valid_sample_mask].mean()
+            else:
+                top5_match = torch.tensor(0.0, device=logits.device)
 
             # Student entropy
             probs = F.softmax(masked_logits, dim=-1)
@@ -151,17 +198,21 @@ class DistillChessTransformer(pl.LightningModule):
 
             # KL divergence: D_KL(teacher || student) over teacher's top-k
             # = sum_k teacher_prob * (log(teacher_prob) - student_log_prob)
-            teacher_log_probs = torch.log(teacher_probs.clamp(min=1e-10))
-            kl_per_sample = (
-                teacher_probs * (teacher_log_probs - student_at_teacher) * k_mask.float()
-            ).sum(dim=1)
-            kl_divergence = kl_per_sample.mean()
+            teacher_log_probs = torch.log(teacher_probs_norm.clamp(min=1e-10))
+            kl_per_sample = (teacher_probs_norm * (teacher_log_probs - student_at_teacher)).sum(dim=1)
+            kl_divergence = kl_per_sample[valid_sample_mask].mean()
+
+            teacher_entries_total = k_mask.float().sum().clamp_min(1.0)
+            teacher_legal_fraction = teacher_is_legal.float().sum() / teacher_entries_total
+            teacher_valid_sample_fraction = valid_sample_mask.float().mean()
 
         metrics = {
             "top1_match": top1_match,
             "top5_match": top5_match,
             "entropy": entropy,
             "kl_divergence": kl_divergence,
+            "teacher_legal_fraction": teacher_legal_fraction,
+            "teacher_valid_sample_fraction": teacher_valid_sample_fraction,
         }
         return loss, metrics
 
@@ -175,6 +226,8 @@ class DistillChessTransformer(pl.LightningModule):
         self.log("train/top5_match", metrics["top5_match"])
         self.log("train/entropy", metrics["entropy"])
         self.log("train/kl_divergence", metrics["kl_divergence"])
+        self.log("train/teacher_legal_fraction", metrics["teacher_legal_fraction"])
+        self.log("train/teacher_valid_sample_fraction", metrics["teacher_valid_sample_fraction"])
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -187,6 +240,8 @@ class DistillChessTransformer(pl.LightningModule):
         self.log("val/top5_match", metrics["top5_match"], sync_dist=True)
         self.log("val/entropy", metrics["entropy"], sync_dist=True)
         self.log("val/kl_divergence", metrics["kl_divergence"], sync_dist=True)
+        self.log("val/teacher_legal_fraction", metrics["teacher_legal_fraction"], sync_dist=True)
+        self.log("val/teacher_valid_sample_fraction", metrics["teacher_valid_sample_fraction"], sync_dist=True)
         return loss
 
     def configure_optimizers(self):
@@ -255,7 +310,9 @@ def train(
 
     # Create datasets (loads shards once for both splits)
     train_dataset, val_dataset = DistillDataset.load_train_eval(
-        dataset_config.data_dir, eval_fraction=dataset_config.eval_fraction
+        dataset_config.data_dir,
+        eval_fraction=dataset_config.eval_fraction,
+        max_shards=dataset_config.max_shards,
     )
     print(f"Train: {len(train_dataset):,} samples, Eval: {len(val_dataset):,} samples")
 
@@ -294,6 +351,8 @@ def train(
 
     logger = None
     if distill_config.use_wandb:
+        if "WANDB_API_KEY" not in os.environ and "WANDB_KEY" in os.environ:
+            os.environ["WANDB_API_KEY"] = os.environ["WANDB_KEY"]
         logger = WandbLogger(
             project=distill_config.wandb_project,
             name=run_name,
@@ -361,6 +420,7 @@ def main():
         args.config, overrides=overrides if any(v for v in overrides.values()) else None
     )
 
+    ensure_distill_dataset(args.config, dataset_config)
     train(distill_config, dataset_config, transformer_config, eval_cfg, stockfish_cfg, policy_cfg)
 
 
