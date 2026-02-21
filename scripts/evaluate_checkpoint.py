@@ -1,5 +1,36 @@
 #!/usr/bin/env python3
-"""Load a checkpoint and evaluate it against Stockfish."""
+"""Evaluate a model checkpoint against Stockfish.
+
+Loads a ChessTransformer from a checkpoint file and runs a full Stockfish
+evaluation, printing win/draw/loss statistics and optional ELO estimate.
+
+Usage
+-----
+    python scripts/evaluate_checkpoint.py \\
+        --checkpoint checkpoints/epoch5.ckpt \\
+        --config default.yaml \\
+        --games 50 \\
+        --stockfish-skill-level 5 \\
+        --save-json results/epoch5.json \\
+        --save-pgn results/epoch5.pgn
+
+Supported checkpoint formats
+-----------------------------
+- Raw ``state_dict`` dicts (from ``torch.save(model.state_dict(), ...)``)
+- Dicts with a top-level ``"model_state_dict"`` key
+- Lightning ``.ckpt`` files whose ``"state_dict"`` contains either
+  ``policy_model.*`` or ``model.*`` key prefixes (prefixes are stripped)
+
+Notes
+-----
+- Stockfish must be installed (``brew install stockfish`` on macOS).
+- Config overrides are applied on top of the YAML; only provided flags are
+  applied (unset flags leave the config value unchanged).
+- ``LIGHTNING_API_KEY`` / ``WANDB_*`` env vars are not required for this
+  script; results are only printed / saved locally.
+- Use ``--skip-if-no-stockfish`` to return success when Stockfish is not
+  available in the runtime (useful for cloud smoke checks).
+"""
 
 from __future__ import annotations
 
@@ -17,12 +48,21 @@ from src.configs.config_loader import load_experiment_config
 from src.evaluator import Evaluator
 from src.models import ChessTransformer
 
-# a patch to work with old checkpoits saved before code rearrangement
+# Backwards-compatibility shim: checkpoints saved before the
+# src/grpo_self_play → src refactor reference the old module path.
 import src
 sys.modules.setdefault('src.grpo_self_play', src)
 
+
 def _extract_model_state_dict(ckpt: Any) -> dict[str, torch.Tensor]:
-    """Extract policy model weights from supported checkpoint formats."""
+    """Extract policy model weights from a checkpoint object.
+
+    Handles three layouts:
+    1. ``{"model_state_dict": {...}}`` — simple custom format
+    2. ``{"state_dict": {...}}`` — Lightning checkpoint; strips ``policy_model.``
+       or ``model.`` key prefixes if present
+    3. Plain ``dict`` — assumed to be a raw state dict already
+    """
     if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
         return ckpt["model_state_dict"]
 
@@ -51,7 +91,10 @@ def _extract_model_state_dict(ckpt: Any) -> dict[str, torch.Tensor]:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Evaluate a ChessTransformer checkpoint against Stockfish.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to checkpoint file")
     parser.add_argument("--config", type=str, default="default.yaml", help="Config YAML (under src/configs)")
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"], help="Inference device")
@@ -66,12 +109,18 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--stockfish-skill-level", type=int, default=None, help="Override stockfish.skill_level")
     parser.add_argument("--stockfish-movetime-ms", type=int, default=None, help="Override stockfish.movetime_ms")
     parser.add_argument("--disable-search", action="store_true", help="Ignore searcher config even if present")
+    parser.add_argument(
+        "--skip-if-no-stockfish",
+        action="store_true",
+        help="Exit successfully if Stockfish binary is unavailable",
+    )
     parser.add_argument("--save-pgn", type=str, default=None, help="Optional path to save PGNs")
     parser.add_argument("--save-json", type=str, default=None, help="Optional path to save results JSON")
     return parser.parse_args()
 
 
 def main() -> None:
+    """Entry point: parse args, load checkpoint, run evaluation, print/save results."""
     args = _parse_args()
     checkpoint_path = Path(args.checkpoint)
     if not checkpoint_path.exists():
@@ -80,6 +129,7 @@ def main() -> None:
     config = load_experiment_config(args.config)
     eval_cfg = config.eval
     stockfish_cfg = config.stockfish
+    # searcher_cfg drives optional MCTS-style beam search; --disable-search forces greedy play.
     searcher_cfg = None if args.disable_search else config.searcher
 
     if args.games is not None:
@@ -136,7 +186,14 @@ def main() -> None:
     )
 
     try:
-        results, _, pgns = evaluator.single_evaluation(model)
+        try:
+            results, _, pgns = evaluator.single_evaluation(model)
+        except FileNotFoundError as exc:
+            if not args.skip_if_no_stockfish:
+                raise
+            print(f"Warning: {exc}")
+            print("Skipping evaluation because Stockfish is unavailable (--skip-if-no-stockfish).")
+            return
     finally:
         # Ensure no dangling engines on interrupted runs.
         StockfishManager.close_all()

@@ -12,7 +12,7 @@ Usage:
 """
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 
@@ -36,7 +36,7 @@ from src.configs.config_loader import (
 from src.evaluator import Evaluator, StockfishEvalCallback
 from src.eval_utils import EvalConfig
 from src.chess.policy_player import PolicyConfig
-from src.chess.stockfish import StockfishConfig
+from src.chess.stockfish import StockfishConfig, resolve_stockfish_path
 
 
 @dataclass
@@ -527,10 +527,16 @@ def train(
     # Create trainer
     trainer = get_pretrain_trainer(pretrain_config, run_name)
 
-    evaluator = Evaluator(eval_cfg=eval_cfg, policy_cfg=policy_cfg, stockfish_cfg=stockfish_cfg)
-    trainer.callbacks.append(StockfishEvalCallback(
-        evaluator, every_n_epochs=pretrain_config.eval_every_n_epochs,
-    ))
+    try:
+        resolved_stockfish = resolve_stockfish_path(stockfish_cfg.path)
+        stockfish_cfg = replace(stockfish_cfg, path=resolved_stockfish)
+        evaluator = Evaluator(eval_cfg=eval_cfg, policy_cfg=policy_cfg, stockfish_cfg=stockfish_cfg)
+        trainer.callbacks.append(StockfishEvalCallback(
+            evaluator, every_n_epochs=pretrain_config.eval_every_n_epochs,
+        ))
+    except FileNotFoundError as exc:
+        print(f"Warning: {exc}")
+        print("Warning: Stockfish evaluation callback disabled for this run.")
 
     # Resume from checkpoint if specified
     ckpt_path = pretrain_config.resume_from

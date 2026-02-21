@@ -9,7 +9,7 @@ import os
 import time
 import random
 import string
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 
@@ -27,7 +27,7 @@ from src.configs.config_loader import load_yaml_file, dict_to_dataclass
 from src.evaluator import Evaluator, StockfishEvalCallback
 from src.eval_utils import EvalConfig
 from src.chess.policy_player import PolicyConfig
-from src.chess.stockfish import StockfishConfig
+from src.chess.stockfish import StockfishConfig, resolve_stockfish_path
 
 
 @dataclass
@@ -370,10 +370,16 @@ def train(
         val_check_interval=distill_config.val_check_interval,
     )
 
-    evaluator = Evaluator(eval_cfg=eval_cfg, policy_cfg=policy_cfg, stockfish_cfg=stockfish_cfg)
-    trainer.callbacks.append(StockfishEvalCallback(
-        evaluator, every_n_epochs=distill_config.eval_every_n_epochs,
-    ))
+    try:
+        resolved_stockfish = resolve_stockfish_path(stockfish_cfg.path)
+        stockfish_cfg = replace(stockfish_cfg, path=resolved_stockfish)
+        evaluator = Evaluator(eval_cfg=eval_cfg, policy_cfg=policy_cfg, stockfish_cfg=stockfish_cfg)
+        trainer.callbacks.append(StockfishEvalCallback(
+            evaluator, every_n_epochs=distill_config.eval_every_n_epochs,
+        ))
+    except FileNotFoundError as exc:
+        print(f"Warning: {exc}")
+        print("Warning: Stockfish evaluation callback disabled for this run.")
 
     trainer.fit(model, train_dataloader, val_dataloader, ckpt_path=distill_config.resume_from)
 
