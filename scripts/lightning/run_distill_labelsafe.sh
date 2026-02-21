@@ -6,7 +6,11 @@ set -euo pipefail
 
 if [[ -n "${PINNED_COMMIT:-}" ]]; then
   CURRENT_COMMIT="$(git rev-parse HEAD)"
-  if [[ "${CURRENT_COMMIT}" != "${PINNED_COMMIT}" ]]; then
+  if ! PINNED_FULL_COMMIT="$(git rev-parse --verify "${PINNED_COMMIT}^{commit}" 2>/dev/null)"; then
+    echo "ERROR: PINNED_COMMIT=${PINNED_COMMIT} does not resolve to a commit in this checkout." >&2
+    exit 1
+  fi
+  if [[ "${CURRENT_COMMIT}" != "${PINNED_FULL_COMMIT}" ]]; then
     echo "ERROR: checked-out commit ${CURRENT_COMMIT} does not match PINNED_COMMIT=${PINNED_COMMIT}" >&2
     exit 1
   fi
