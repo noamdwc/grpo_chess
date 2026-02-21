@@ -33,6 +33,10 @@ distill:
   pretrain_checkpoint: "/content/drive/MyDrive/data/grpo-chess/pretrain_checkpoints/pretrain-20260128-1215-16es-epoch=12-train/loss=2.3285.ckpt"
   use_wandb: true
   wandb_project: "chess-grpo-pretrain"
+  log_model_artifacts: false
+  auto_disable_wandb_if_missing_key: true
+  fail_on_nonfinite: false
+  max_nonfinite_batches: 50
   num_workers: 0
   val_check_interval: 0.1
   eval_every_n_epochs: 1

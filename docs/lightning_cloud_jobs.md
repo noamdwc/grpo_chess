@@ -64,6 +64,17 @@ Submit with:
 - `machine="L4"`
 - `WANDB_KEY` secret present in Teamspace
 
+Recommended cloud entrypoint:
+
+```bash
+bash scripts/lightning/run_distill_labelsafe.sh
+```
+
+Useful env vars for that script:
+- `PINNED_COMMIT=<sha>` to enforce commit pinning.
+- `PRETRAIN_CKPT_DRIVE_URL=<drive_url>` for first-time checkpoint bootstrap.
+- `DISTILL_MAX_SHARDS=6` (default) to bound memory.
+
 Important config-path rule:
 - For loaders using `load_yaml_file`, pass config as filename relative to `src/configs`, for example `distill_labelsafe.yaml`.
 - Do not pass `src/configs/distill_labelsafe.yaml` or it can become `src/configs/src/configs/...`.
@@ -121,10 +132,14 @@ For distill runs in this repo, use these safeguards:
   - Add/check legacy checkpoint alias before `torch.load`.
 - `No API key configured` (wandb)
   - Ensure Teamspace secret `WANDB_KEY` exists and is exported to `WANDB_API_KEY`.
+  - Distill now supports `auto_disable_wandb_if_missing_key: true`.
 - `No shard files found in data/distill`
   - Generate or copy distill shards into configured `dataset.data_dir`.
 - OOM / process killed during distill dataset load
   - Reduce shard count / sample count; use bounded loading strategy.
+- Distill run ends with `ValueError: Out of range float values are not JSON compliant: inf`
+  - Caused by non-finite metrics reaching W&B artifact metadata.
+  - Distill now guards non-finite batches and disables model artifact uploads by default (`log_model_artifacts: false`).
 - Config file not found with doubled path
   - Pass config filename relative to `src/configs` (not prefixed path).
 - `FileNotFoundError: Stockfish binary not found`

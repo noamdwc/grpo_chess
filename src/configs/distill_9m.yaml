@@ -33,6 +33,10 @@ distill:
   checkpoint_dir: "checkpoints/distill_9m"
   use_wandb: false
   wandb_project: "chess-grpo-pretrain"
+  log_model_artifacts: false
+  auto_disable_wandb_if_missing_key: true
+  fail_on_nonfinite: false
+  max_nonfinite_batches: 50
   num_workers: 2
   val_check_interval: 0.5
   eval_every_n_epochs: 1

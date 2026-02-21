@@ -5,6 +5,7 @@ Usage:
 """
 
 import argparse
+import math
 import os
 import time
 import random
@@ -46,6 +47,10 @@ class DistillConfig:
     num_workers: int = 4
     val_check_interval: float = 0.1
     eval_every_n_epochs: int = 1
+    log_model_artifacts: bool = False
+    auto_disable_wandb_if_missing_key: bool = True
+    fail_on_nonfinite: bool = False
+    max_nonfinite_batches: int = 50
 
 
 @dataclass
@@ -81,16 +86,63 @@ class DistillChessTransformer(pl.LightningModule):
         distill_config: DistillConfig,
     ):
         super().__init__()
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["distill_config"])
         self.model = ChessTransformer(transformer_config)
         self.distill_config = distill_config
         self.transformer_config = transformer_config
+        self._train_nonfinite_batches = 0
+        self._val_nonfinite_batches = 0
 
         if distill_config.pretrain_checkpoint:
             self._load_pretrained_weights(distill_config.pretrain_checkpoint)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
+
+    def _module_device(self) -> torch.device:
+        return next(self.model.parameters()).device
+
+    def _finite_scalar(self, value: torch.Tensor | float, *, default: float = 0.0) -> torch.Tensor:
+        """Convert any scalar-like value into a finite tensor for logging."""
+        device = self._module_device()
+        if isinstance(value, torch.Tensor):
+            scalar = value.mean() if value.numel() > 1 else value
+            if torch.isfinite(scalar):
+                return scalar
+            return torch.tensor(default, dtype=torch.float32, device=device)
+
+        as_float = float(value)
+        if math.isfinite(as_float):
+            return torch.tensor(as_float, dtype=torch.float32, device=device)
+        return torch.tensor(default, dtype=torch.float32, device=device)
+
+    def _sanitize_metrics(self, metrics: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        return {name: self._finite_scalar(value, default=0.0) for name, value in metrics.items()}
+
+    def _handle_nonfinite_training(self, reason: str) -> torch.Tensor:
+        self._train_nonfinite_batches += 1
+        count = float(self._train_nonfinite_batches)
+        self.log("train/nonfinite_batches", count, prog_bar=True, on_step=True, on_epoch=True)
+        self.log("train/loss", self._finite_scalar(float("nan"), default=1_000_000.0), prog_bar=True)
+        print(f"Warning: skipping non-finite training batch ({reason}); count={self._train_nonfinite_batches}")
+
+        if self.distill_config.fail_on_nonfinite:
+            raise RuntimeError(f"Encountered non-finite training batch and fail_on_nonfinite=true ({reason})")
+        if self._train_nonfinite_batches > self.distill_config.max_nonfinite_batches:
+            raise RuntimeError(
+                "Exceeded max_nonfinite_batches "
+                f"({self._train_nonfinite_batches}>{self.distill_config.max_nonfinite_batches})"
+            )
+        # Return connected zero loss so optimizer step is a no-op without crashing autograd.
+        return next(self.model.parameters()).sum() * 0.0
+
+    def _handle_nonfinite_validation(self, reason: str) -> torch.Tensor:
+        self._val_nonfinite_batches += 1
+        count = float(self._val_nonfinite_batches)
+        self.log("val/nonfinite_batches", count, prog_bar=False, sync_dist=True)
+        self.log("val/loss", self._finite_scalar(float("nan"), default=1_000_000.0), prog_bar=True, sync_dist=True)
+        print(f"Warning: non-finite validation batch ({reason}); count={self._val_nonfinite_batches}")
+        return self._finite_scalar(1_000_000.0, default=1_000_000.0)
 
     def _load_pretrained_weights(self, checkpoint_path: str) -> None:
         print(f"Loading pretrained weights from: {checkpoint_path}")
@@ -219,9 +271,17 @@ class DistillChessTransformer(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         board_tokens, legal_masks, teacher_indices, teacher_probs, k_mask = batch
         logits = self(board_tokens)
-        loss, metrics = self._compute_loss(logits, legal_masks, teacher_indices, teacher_probs, k_mask)
+        if not torch.isfinite(logits).all():
+            return self._handle_nonfinite_training("non-finite logits")
+        try:
+            loss, metrics = self._compute_loss(logits, legal_masks, teacher_indices, teacher_probs, k_mask)
+        except ValueError as exc:
+            return self._handle_nonfinite_training(str(exc))
+        if not torch.isfinite(loss):
+            return self._handle_nonfinite_training("non-finite loss")
+        metrics = self._sanitize_metrics(metrics)
 
-        self.log("train/loss", loss, prog_bar=True)
+        self.log("train/loss", self._finite_scalar(loss, default=1_000_000.0), prog_bar=True)
         self.log("train/top1_match", metrics["top1_match"], prog_bar=True)
         self.log("train/top5_match", metrics["top5_match"])
         self.log("train/entropy", metrics["entropy"])
@@ -233,9 +293,17 @@ class DistillChessTransformer(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         board_tokens, legal_masks, teacher_indices, teacher_probs, k_mask = batch
         logits = self(board_tokens)
-        loss, metrics = self._compute_loss(logits, legal_masks, teacher_indices, teacher_probs, k_mask)
+        if not torch.isfinite(logits).all():
+            return self._handle_nonfinite_validation("non-finite logits")
+        try:
+            loss, metrics = self._compute_loss(logits, legal_masks, teacher_indices, teacher_probs, k_mask)
+        except ValueError as exc:
+            return self._handle_nonfinite_validation(str(exc))
+        if not torch.isfinite(loss):
+            return self._handle_nonfinite_validation("non-finite loss")
+        metrics = self._sanitize_metrics(metrics)
 
-        self.log("val/loss", loss, prog_bar=True, sync_dist=True)
+        self.log("val/loss", self._finite_scalar(loss, default=1_000_000.0), prog_bar=True, sync_dist=True)
         self.log("val/top1_match", metrics["top1_match"], prog_bar=True, sync_dist=True)
         self.log("val/top5_match", metrics["top5_match"], sync_dist=True)
         self.log("val/entropy", metrics["entropy"], sync_dist=True)
@@ -292,6 +360,27 @@ def load_distill_config(
     return distill, dataset, transformer, eval_cfg, stockfish_cfg, policy_cfg
 
 
+def prepare_wandb_config(distill_config: DistillConfig) -> DistillConfig:
+    """Normalize W&B env/key behavior and optionally disable logging when key is missing."""
+    if not distill_config.use_wandb:
+        return distill_config
+
+    if "WANDB_API_KEY" not in os.environ and "WANDB_KEY" in os.environ:
+        os.environ["WANDB_API_KEY"] = os.environ["WANDB_KEY"]
+
+    if "WANDB_API_KEY" in os.environ:
+        return distill_config
+
+    if distill_config.auto_disable_wandb_if_missing_key:
+        print("Warning: WANDB_API_KEY not found. Disabling wandb for this run.")
+        return replace(distill_config, use_wandb=False)
+
+    raise RuntimeError(
+        "WANDB_API_KEY not found and auto_disable_wandb_if_missing_key=false. "
+        "Set WANDB_API_KEY (or WANDB_KEY) or disable wandb."
+    )
+
+
 def train(
     distill_config: DistillConfig,
     dataset_config: DistillDatasetConfig,
@@ -304,6 +393,7 @@ def train(
     random_suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
     run_name = f"distill-{timestamp}-{random_suffix}"
     print(f"Run name: {run_name}")
+    distill_config = prepare_wandb_config(distill_config)
 
     model = DistillChessTransformer(transformer_config, distill_config)
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -351,12 +441,10 @@ def train(
 
     logger = None
     if distill_config.use_wandb:
-        if "WANDB_API_KEY" not in os.environ and "WANDB_KEY" in os.environ:
-            os.environ["WANDB_API_KEY"] = os.environ["WANDB_KEY"]
         logger = WandbLogger(
             project=distill_config.wandb_project,
             name=run_name,
-            log_model=True,
+            log_model=distill_config.log_model_artifacts,
         )
 
     trainer = pl.Trainer(
