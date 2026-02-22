@@ -143,11 +143,10 @@ For distill runs in this repo, use these safeguards:
 - Config file not found with doubled path
   - Pass config filename relative to `src/configs` (not prefixed path).
 - `FileNotFoundError: Stockfish binary not found`
-  - Lightning base images may not include Stockfish, and `apt-get install` can fail due permissions.
-  - Distill/Pretrain now continue without Stockfish eval callback when binary is missing.
-  - For explicit checkpoint eval in cloud, use:
-    - `python scripts/evaluate_checkpoint.py ... --skip-if-no-stockfish`
-  - If you need real Stockfish evaluation, provide a binary path via `STOCKFISH_PATH` or `stockfish.path`.
+  - Lightning base images may not include Stockfish.
+  - Distill cloud runner (`scripts/lightning/run_distill_labelsafe.sh`) now installs Stockfish automatically when missing (apt-based images).
+  - Distill runner sets `require_stockfish_eval: true` and fails fast if Stockfish eval cannot be enabled.
+  - To override binary location manually, set `STOCKFISH_PATH` or `stockfish.path`.
 
 ## 9) Suggested Run Naming
 
@@ -158,3 +157,86 @@ Use predictable names:
 - `pretrain-<config-stem>-<YYYYMMDD>-<hhmm>`
 
 This makes `list_jobs`, log pulls, and run reports much easier.
+
+## 10) New Session + `$experiment-cycle` (Lightning Quickstart)
+
+Use this when you open a fresh chat/session and want the full cycle to run in Lightning without losing critical context.
+
+### What persists vs what does not
+
+- Persists across sessions:
+  - repo files and commits
+  - this runbook and `scripts/lightning/run_distill_labelsafe.sh`
+  - Teamspace secrets (for example `WANDB_KEY`)
+- Does not persist:
+  - previous chat context (why the last run failed, chosen entry point, preferred job naming)
+
+### Minimum context to provide at session start
+
+Give the assistant these items up front:
+
+- Skill + intent:
+  - “Use `$experiment-cycle` and run on Lightning.”
+- Branch/commit target:
+  - branch name and optional pinned commit SHA
+- Entry point:
+  - `research` / `plan` / `implement` / `run`
+- Artifacts if resuming:
+  - plan doc path, config path, prior run report, WandB run ID
+- Runtime constraints:
+  - machine (`L4` recommended), budget/credit constraints, shard limits
+
+### Copy-paste kickoff prompt (new session)
+
+```text
+Use $experiment-cycle. Run on Lightning only.
+Start from: run
+Branch: feature/lightning_training
+Config: src/configs/distill_labelsafe.yaml
+Use machine: L4
+Use script: scripts/lightning/run_distill_labelsafe.sh
+Pin commit: <optional_sha>
+Use WANDB_KEY from Teamspace secret.
+If resuming, use:
+- plan doc: <path>
+- prior run report: <path>
+- baseline wandb run: <run_id>
+```
+
+### Lightning-specific expectations for distill runs
+
+- Preferred cloud entrypoint:
+  - `scripts/lightning/run_distill_labelsafe.sh`
+- The script now:
+  - auto-installs Stockfish if missing (apt-based environments)
+  - exports `STOCKFISH_PATH` from discovered binary
+  - sets `require_stockfish_eval: true` in generated config
+  - fails fast if Stockfish eval cannot be enabled
+- Result:
+  - Stockfish metrics are expected on successful runs (`eval_stockfish/*` in logs/W&B)
+
+### Resume protocol after interruption/failure
+
+In a new session, ask to:
+
+- pull latest branch
+- list recent Lightning jobs
+- fetch logs for latest failed job
+- continue from the correct cycle step with artifact paths
+
+Example:
+
+```text
+Use $experiment-cycle.
+Pull latest, inspect latest failed Lightning job logs, fix, push, and resubmit.
+Resume from cycle step: run.
+Plan doc: research_docs/experiments/<file>.md
+```
+
+### Verification checklist (before submitting)
+
+- `feature/lightning_training` (or target branch) is pushed
+- config path is correct (filename relative to `src/configs` when required)
+- Teamspace secret `WANDB_KEY` exists
+- job command pins expected commit when reproducibility matters
+- persistent artifact paths are used (`/teamspace/studios/this_studio/artifacts/...`)
