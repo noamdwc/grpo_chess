@@ -1,6 +1,9 @@
+numpy==1.26.4
 pytorch_lightning
 mcp>=0.9.0
 wandb>=0.16.0
 python-chess 
 jaxtyping
 datasets
+watchdog
+lightning-sdk
