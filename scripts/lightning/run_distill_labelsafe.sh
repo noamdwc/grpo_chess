@@ -25,11 +25,18 @@ else
   USE_WANDB=false
 fi
 
+DISTILL_MODE="${DISTILL_MODE:-fast}"
+if [[ "${DISTILL_MODE}" != "fast" && "${DISTILL_MODE}" != "quality" ]]; then
+  echo "ERROR: DISTILL_MODE must be 'fast' or 'quality' (got '${DISTILL_MODE}')." >&2
+  exit 1
+fi
+
 PERSIST_NAMESPACE="${PERSIST_NAMESPACE:-distill_labelsafe_v2}"
 CONFIG_PATH="${CONFIG_PATH:-/tmp/distill_labelsafe.lightning.yaml}"
 PRETRAIN_CKPT_DRIVE_URL="${PRETRAIN_CKPT_DRIVE_URL:-}"
 DEEPMIND_NUM_SHARDS="${DEEPMIND_NUM_SHARDS:-8}"
 DEEPMIND_MIN_WIN_PROB="${DEEPMIND_MIN_WIN_PROB:-0.55}"
+DEEPMIND_MAX_SAMPLES="${DEEPMIND_MAX_SAMPLES:-300000}"
 DISTILL_MAX_SHARDS="${DISTILL_MAX_SHARDS:-8}"
 STOCKFISH_INSTALL_ON_MISSING="${STOCKFISH_INSTALL_ON_MISSING:-1}"
 PERSIST_BACKEND="${PERSIST_BACKEND:-lightning}"
@@ -41,14 +48,78 @@ GDRIVE_UPLOAD_MAX_SHARDS="${GDRIVE_UPLOAD_MAX_SHARDS:-${DISTILL_MAX_SHARDS}}"
 GDRIVE_SYNC_SCRIPT="${GDRIVE_SYNC_SCRIPT:-scripts/lightning/gdrive_sync.py}"
 DISTILL_OUTPUT_DIR="${DISTILL_OUTPUT_DIR:-checkpoints/distill_labelsafe}"
 DISTILL_FORCE_REBUILD_DATA="${DISTILL_FORCE_REBUILD_DATA:-0}"
-DISTILL_QUALITY_GATE_MIN_VAL_TOP1="${DISTILL_QUALITY_GATE_MIN_VAL_TOP1:-0.0}"
+DISTILL_QUALITY_GATE_MIN_VAL_TOP1="${DISTILL_QUALITY_GATE_MIN_VAL_TOP1:-}"
 DISTILL_QUALITY_GATE_EPOCH="${DISTILL_QUALITY_GATE_EPOCH:-3}"
-DEEPMIND_MAX_SAMPLES="${DEEPMIND_MAX_SAMPLES:-300000}"
 AUTO_USE_S3_CONNECTION_CACHE="${AUTO_USE_S3_CONNECTION_CACHE:-1}"
 REQUIRE_PERSISTENT_CACHE="${REQUIRE_PERSISTENT_CACHE:-0}"
-DISTILL_DATASET_TAG_DEFAULT="deepmind_data.v1:num_shards=${DEEPMIND_NUM_SHARDS},min_win_prob=${DEEPMIND_MIN_WIN_PROB},top_k=8,temperature=1.0,shard_size=50000,max_samples=${DEEPMIND_MAX_SAMPLES}"
+
+TEACHER_MODEL="${TEACHER_MODEL:-136M}"
+TEACHER_CHECKPOINT_DIR="${TEACHER_CHECKPOINT_DIR:-searchless_chess/checkpoints}"
+TEACHER_CHECKPOINT_STEP="${TEACHER_CHECKPOINT_STEP:-6400000}"
+TEACHER_BATCH_SIZE="${TEACHER_BATCH_SIZE:-512}"
+TEACHER_TOP_K="${TEACHER_TOP_K:-8}"
+TEACHER_TEMPERATURE="${TEACHER_TEMPERATURE:-1.0}"
+TEACHER_HF_CACHE_DIR="${TEACHER_HF_CACHE_DIR:-}"
+TEACHER_SHARD_SIZE="${TEACHER_SHARD_SIZE:-50000}"
+TEACHER_MIN_ELO="${TEACHER_MIN_ELO:-1800}"
+TEACHER_MAX_SAMPLES="${TEACHER_MAX_SAMPLES:-300000}"
+TEACHER_SKIP_FIRST_N_MOVES="${TEACHER_SKIP_FIRST_N_MOVES:-5}"
+TEACHER_SKIP_LAST_N_MOVES="${TEACHER_SKIP_LAST_N_MOVES:-5}"
+TEACHER_SAMPLE_POSITIONS_PER_GAME="${TEACHER_SAMPLE_POSITIONS_PER_GAME:-3}"
+TEACHER_PROCESS_BATCH_SIZE="${TEACHER_PROCESS_BATCH_SIZE:-256}"
+TEACHER_NUM_WORKERS="${TEACHER_NUM_WORKERS:-4}"
+
+DISTILL_PREFLIGHT_MIN_K_MEAN="${DISTILL_PREFLIGHT_MIN_K_MEAN:-}"
+DISTILL_PREFLIGHT_MAX_K1_FRAC="${DISTILL_PREFLIGHT_MAX_K1_FRAC:-}"
+DISTILL_PREFLIGHT_MIN_ENTROPY="${DISTILL_PREFLIGHT_MIN_ENTROPY:-}"
+DISTILL_PREFLIGHT_MAX_SHARDS="${DISTILL_PREFLIGHT_MAX_SHARDS:-${DISTILL_MAX_SHARDS}}"
+DISTILL_PREFLIGHT_MAX_SAMPLES="${DISTILL_PREFLIGHT_MAX_SAMPLES:-200000}"
+
+if [[ -z "${DISTILL_QUALITY_GATE_MIN_VAL_TOP1}" ]]; then
+  if [[ "${DISTILL_MODE}" == "quality" ]]; then
+    DISTILL_QUALITY_GATE_MIN_VAL_TOP1="0.08"
+  else
+    DISTILL_QUALITY_GATE_MIN_VAL_TOP1="0.0"
+  fi
+fi
+
+if [[ -z "${DISTILL_PREFLIGHT_MIN_K_MEAN}" ]]; then
+  if [[ "${DISTILL_MODE}" == "quality" ]]; then
+    DISTILL_PREFLIGHT_MIN_K_MEAN="3.0"
+  else
+    DISTILL_PREFLIGHT_MIN_K_MEAN="0.0"
+  fi
+fi
+if [[ -z "${DISTILL_PREFLIGHT_MAX_K1_FRAC}" ]]; then
+  if [[ "${DISTILL_MODE}" == "quality" ]]; then
+    DISTILL_PREFLIGHT_MAX_K1_FRAC="0.80"
+  else
+    DISTILL_PREFLIGHT_MAX_K1_FRAC="1.0"
+  fi
+fi
+if [[ -z "${DISTILL_PREFLIGHT_MIN_ENTROPY}" ]]; then
+  if [[ "${DISTILL_MODE}" == "quality" ]]; then
+    DISTILL_PREFLIGHT_MIN_ENTROPY="0.70"
+  else
+    DISTILL_PREFLIGHT_MIN_ENTROPY="0.0"
+  fi
+fi
+
+if [[ "${DISTILL_MODE}" == "quality" ]]; then
+  DISTILL_DATASET_TAG_DEFAULT="teacher_data.v1:model=${TEACHER_MODEL},step=${TEACHER_CHECKPOINT_STEP},top_k=${TEACHER_TOP_K},temperature=${TEACHER_TEMPERATURE},min_elo=${TEACHER_MIN_ELO},max_samples=${TEACHER_MAX_SAMPLES},shard_size=${TEACHER_SHARD_SIZE},sample_positions_per_game=${TEACHER_SAMPLE_POSITIONS_PER_GAME}"
+  DISTILL_REMOTE_DATA_DIR_DEFAULT="distill_data_quality"
+else
+  DISTILL_DATASET_TAG_DEFAULT="deepmind_data.v1:num_shards=${DEEPMIND_NUM_SHARDS},min_win_prob=${DEEPMIND_MIN_WIN_PROB},top_k=8,temperature=1.0,shard_size=50000,max_samples=${DEEPMIND_MAX_SAMPLES}"
+  DISTILL_REMOTE_DATA_DIR_DEFAULT="distill_data"
+fi
+
+PERSIST_DATA_REMOTE_DIR="${PERSIST_DATA_REMOTE_DIR:-${DISTILL_REMOTE_DATA_DIR_DEFAULT}}"
 DISTILL_DATASET_TAG="${DISTILL_DATASET_TAG:-${DISTILL_DATASET_TAG_DEFAULT}}"
-export DISTILL_DATASET_TAG DEEPMIND_NUM_SHARDS DEEPMIND_MIN_WIN_PROB DEEPMIND_MAX_SAMPLES
+export DISTILL_MODE DISTILL_DATASET_TAG DEEPMIND_NUM_SHARDS DEEPMIND_MIN_WIN_PROB DEEPMIND_MAX_SAMPLES
+export TEACHER_MODEL TEACHER_CHECKPOINT_DIR TEACHER_CHECKPOINT_STEP TEACHER_BATCH_SIZE TEACHER_TOP_K TEACHER_TEMPERATURE
+export TEACHER_HF_CACHE_DIR TEACHER_SHARD_SIZE TEACHER_MIN_ELO TEACHER_MAX_SAMPLES
+export TEACHER_SKIP_FIRST_N_MOVES TEACHER_SKIP_LAST_N_MOVES TEACHER_SAMPLE_POSITIONS_PER_GAME
+export TEACHER_PROCESS_BATCH_SIZE TEACHER_NUM_WORKERS
 
 choose_artifact_root() {
   if [[ -n "${ARTIFACT_ROOT:-}" ]]; then
@@ -72,10 +143,11 @@ choose_artifact_root() {
 
 ARTIFACT_ROOT="$(choose_artifact_root)"
 PERSIST_ROOT="${PERSIST_ROOT:-${ARTIFACT_ROOT}/${PERSIST_NAMESPACE}}"
-DATA_DIR="${DATA_DIR:-${PERSIST_ROOT}/distill_data}"
+DATA_DIR="${DATA_DIR:-${PERSIST_ROOT}/${PERSIST_DATA_REMOTE_DIR}}"
 CKPT_PATH="${CKPT_PATH:-${PERSIST_ROOT}/pretrain.ckpt}"
 DATASET_META_PATH="${DATA_DIR}/_build_meta.json"
 CONVERSION_STATS_PATH="${DATA_DIR}/conversion_stats.json"
+DATASET_QUALITY_STATS_PATH="${DATA_DIR}/dataset_quality_stats.json"
 export DATA_DIR
 
 if [[ "${PERSIST_BACKEND}" == "lightning" ]] && [[ "${ARTIFACT_ROOT}" == /teamspace/studios/this_studio/* ]]; then
@@ -89,6 +161,9 @@ if [[ "${PERSIST_BACKEND}" == "lightning" ]] && [[ "${ARTIFACT_ROOT}" == /teamsp
 fi
 
 mkdir -p "${PERSIST_ROOT}" "${DATA_DIR}"
+echo "Distill mode: ${DISTILL_MODE}"
+echo "Dataset tag: ${DISTILL_DATASET_TAG}"
+echo "Dataset dir: ${DATA_DIR}"
 
 run_optional_sync() {
   if "$@"; then
@@ -129,7 +204,7 @@ if is_drive_enabled; then
   if [[ "${GDRIVE_SYNC_SHARDS}" == "1" ]]; then
     run_optional_sync python "${GDRIVE_SYNC_SCRIPT}" download-glob \
       --folder-id "${GDRIVE_FOLDER_ID}" \
-      --remote-dir "${PERSIST_NAMESPACE}/distill_data" \
+      --remote-dir "${PERSIST_NAMESPACE}/${PERSIST_DATA_REMOTE_DIR}" \
       --local-dir "${DATA_DIR}" \
       --glob "shard_*.pt" \
       --max-files "${GDRIVE_DOWNLOAD_MAX_SHARDS}" \
@@ -137,13 +212,18 @@ if is_drive_enabled; then
   fi
   run_optional_sync python "${GDRIVE_SYNC_SCRIPT}" download-file \
     --folder-id "${GDRIVE_FOLDER_ID}" \
-    --remote-path "${PERSIST_NAMESPACE}/distill_data/_build_meta.json" \
+    --remote-path "${PERSIST_NAMESPACE}/${PERSIST_DATA_REMOTE_DIR}/_build_meta.json" \
     --local-path "${DATASET_META_PATH}" \
     --optional
   run_optional_sync python "${GDRIVE_SYNC_SCRIPT}" download-file \
     --folder-id "${GDRIVE_FOLDER_ID}" \
-    --remote-path "${PERSIST_NAMESPACE}/distill_data/conversion_stats.json" \
+    --remote-path "${PERSIST_NAMESPACE}/${PERSIST_DATA_REMOTE_DIR}/conversion_stats.json" \
     --local-path "${CONVERSION_STATS_PATH}" \
+    --optional
+  run_optional_sync python "${GDRIVE_SYNC_SCRIPT}" download-file \
+    --folder-id "${GDRIVE_FOLDER_ID}" \
+    --remote-path "${PERSIST_NAMESPACE}/${PERSIST_DATA_REMOTE_DIR}/dataset_quality_stats.json" \
+    --local-path "${DATASET_QUALITY_STATS_PATH}" \
     --optional
 fi
 
@@ -183,18 +263,164 @@ path.parent.mkdir(parents=True, exist_ok=True)
 
 payload = {
     "dataset_tag": os.environ["DISTILL_DATASET_TAG"],
-    "num_shards": int(os.environ["DEEPMIND_NUM_SHARDS"]),
-    "min_win_prob": float(os.environ["DEEPMIND_MIN_WIN_PROB"]),
-    "max_samples": int(os.environ["DEEPMIND_MAX_SAMPLES"]),
-    "top_k": 8,
-    "temperature": 1.0,
-    "shard_size": 50000,
+    "distill_mode": os.environ["DISTILL_MODE"],
     "data_dir": os.environ["DATA_DIR"],
     "generated_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
 }
+if os.environ["DISTILL_MODE"] == "fast":
+    payload.update(
+        {
+            "num_shards": int(os.environ["DEEPMIND_NUM_SHARDS"]),
+            "min_win_prob": float(os.environ["DEEPMIND_MIN_WIN_PROB"]),
+            "max_samples": int(os.environ["DEEPMIND_MAX_SAMPLES"]),
+            "top_k": 8,
+            "temperature": 1.0,
+            "shard_size": 50000,
+        }
+    )
+else:
+    payload.update(
+        {
+            "teacher_model": os.environ["TEACHER_MODEL"],
+            "teacher_checkpoint_dir": os.environ["TEACHER_CHECKPOINT_DIR"],
+            "teacher_checkpoint_step": int(os.environ["TEACHER_CHECKPOINT_STEP"]),
+            "teacher_batch_size": int(os.environ["TEACHER_BATCH_SIZE"]),
+            "top_k": int(os.environ["TEACHER_TOP_K"]),
+            "teacher_temperature": float(os.environ["TEACHER_TEMPERATURE"]),
+            "teacher_shard_size": int(os.environ["TEACHER_SHARD_SIZE"]),
+            "teacher_min_elo": int(os.environ["TEACHER_MIN_ELO"]),
+            "teacher_max_samples": int(os.environ["TEACHER_MAX_SAMPLES"]),
+            "teacher_skip_first_n_moves": int(os.environ["TEACHER_SKIP_FIRST_N_MOVES"]),
+            "teacher_skip_last_n_moves": int(os.environ["TEACHER_SKIP_LAST_N_MOVES"]),
+            "teacher_sample_positions_per_game": int(os.environ["TEACHER_SAMPLE_POSITIONS_PER_GAME"]),
+            "teacher_process_batch_size": int(os.environ["TEACHER_PROCESS_BATCH_SIZE"]),
+            "teacher_num_workers": int(os.environ["TEACHER_NUM_WORKERS"]),
+        }
+    )
 
 path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 print(f"Wrote dataset metadata: {path}")
+PY
+}
+
+run_dataset_preflight() {
+  local data_dir="$1"
+  local stats_path="$2"
+  python - "${data_dir}" "${stats_path}" "${DISTILL_MODE}" "${DISTILL_PREFLIGHT_MAX_SHARDS}" "${DISTILL_PREFLIGHT_MAX_SAMPLES}" "${DISTILL_PREFLIGHT_MIN_K_MEAN}" "${DISTILL_PREFLIGHT_MAX_K1_FRAC}" "${DISTILL_PREFLIGHT_MIN_ENTROPY}" <<'PY'
+import collections
+import json
+import math
+import pathlib
+import sys
+
+import torch
+
+data_dir = pathlib.Path(sys.argv[1])
+stats_path = pathlib.Path(sys.argv[2])
+mode = sys.argv[3]
+max_shards = int(float(sys.argv[4]))
+max_samples = int(float(sys.argv[5]))
+min_k_mean = float(sys.argv[6])
+max_k1_frac = float(sys.argv[7])
+min_entropy = float(sys.argv[8])
+
+shard_paths = sorted(data_dir.glob("shard_*.pt"))
+if max_shards > 0:
+    shard_paths = shard_paths[:max_shards]
+if not shard_paths:
+    raise SystemExit(f"ERROR: no shard_*.pt files found in {data_dir} for dataset preflight.")
+
+total_samples = 0
+total_k = 0.0
+k1_count = 0
+total_entropy = 0.0
+total_top1_prob = 0.0
+k_hist = collections.Counter()
+
+for shard_path in shard_paths:
+    shard = torch.load(shard_path, weights_only=False)
+    teacher_probs = shard.get("teacher_probs")
+    if teacher_probs is None:
+        continue
+
+    for raw_probs in teacher_probs:
+        if max_samples > 0 and total_samples >= max_samples:
+            break
+
+        if isinstance(raw_probs, torch.Tensor):
+            probs = raw_probs.detach().cpu().float().flatten()
+        else:
+            probs = torch.tensor(raw_probs, dtype=torch.float32).flatten()
+
+        k = int(probs.numel())
+        if k <= 0:
+            continue
+
+        total_samples += 1
+        total_k += k
+        k_hist[str(k)] += 1
+        if k == 1:
+            k1_count += 1
+
+        denom = float(probs.sum().item())
+        if not math.isfinite(denom) or denom <= 0:
+            probs = torch.full((k,), 1.0 / k, dtype=torch.float32)
+        else:
+            probs = probs / denom
+
+        probs = probs.clamp_min(1e-12)
+        probs = probs / probs.sum()
+
+        total_entropy += float(-(probs * probs.log()).sum().item())
+        total_top1_prob += float(probs.max().item())
+
+    if max_samples > 0 and total_samples >= max_samples:
+        break
+
+if total_samples == 0:
+    raise SystemExit(f"ERROR: dataset preflight found 0 valid samples in {data_dir}.")
+
+k_mean = total_k / total_samples
+k1_frac = k1_count / total_samples
+entropy_mean = total_entropy / total_samples
+top1_prob_mean = total_top1_prob / total_samples
+
+stats = {
+    "distill_mode": mode,
+    "data_dir": str(data_dir),
+    "shards_scanned": len(shard_paths),
+    "samples_scanned": total_samples,
+    "sample_cap": max_samples,
+    "k_mean": k_mean,
+    "k1_frac": k1_frac,
+    "teacher_entropy_mean": entropy_mean,
+    "teacher_top1_prob_mean": top1_prob_mean,
+    "k_histogram": dict(sorted(k_hist.items(), key=lambda kv: int(kv[0]))),
+    "thresholds": {
+        "min_k_mean": min_k_mean,
+        "max_k1_frac": max_k1_frac,
+        "min_teacher_entropy": min_entropy,
+    },
+}
+
+stats_path.parent.mkdir(parents=True, exist_ok=True)
+stats_path.write_text(json.dumps(stats, indent=2, sort_keys=True), encoding="utf-8")
+print(f"Wrote dataset preflight stats: {stats_path}")
+print(json.dumps(stats, indent=2, sort_keys=True))
+
+if mode == "quality":
+    failures = []
+    if k_mean < min_k_mean:
+        failures.append(f"k_mean={k_mean:.4f} < required {min_k_mean:.4f}")
+    if k1_frac > max_k1_frac:
+        failures.append(f"k1_frac={k1_frac:.4f} > allowed {max_k1_frac:.4f}")
+    if entropy_mean < min_entropy:
+        failures.append(f"teacher_entropy_mean={entropy_mean:.4f} < required {min_entropy:.4f}")
+
+    if failures:
+        for failure in failures:
+            print(f"ERROR: Distill dataset preflight failed: {failure}", file=sys.stderr)
+        raise SystemExit(2)
 PY
 }
 
@@ -275,19 +501,22 @@ fi
 
 cat > "${CONFIG_PATH}" <<YAML
 generate:
-  teacher_model: "136M"
-  checkpoint_dir: "searchless_chess/checkpoints"
-  checkpoint_step: 6400000
-  teacher_batch_size: 512
-  top_k: 8
-  teacher_temperature: 1.0
+  teacher_model: "${TEACHER_MODEL}"
+  checkpoint_dir: "${TEACHER_CHECKPOINT_DIR}"
+  checkpoint_step: ${TEACHER_CHECKPOINT_STEP}
+  teacher_batch_size: ${TEACHER_BATCH_SIZE}
+  process_batch_size: ${TEACHER_PROCESS_BATCH_SIZE}
+  num_workers: ${TEACHER_NUM_WORKERS}
+  top_k: ${TEACHER_TOP_K}
+  teacher_temperature: ${TEACHER_TEMPERATURE}
+  hf_cache_dir: "${TEACHER_HF_CACHE_DIR}"
   output_dir: "${DATA_DIR}"
-  shard_size: 50000
-  min_elo: 1800
-  max_samples: 2000000
-  skip_first_n_moves: 5
-  skip_last_n_moves: 5
-  sample_positions_per_game: 3
+  shard_size: ${TEACHER_SHARD_SIZE}
+  min_elo: ${TEACHER_MIN_ELO}
+  max_samples: ${TEACHER_MAX_SAMPLES}
+  skip_first_n_moves: ${TEACHER_SKIP_FIRST_N_MOVES}
+  skip_last_n_moves: ${TEACHER_SKIP_LAST_N_MOVES}
+  sample_positions_per_game: ${TEACHER_SAMPLE_POSITIONS_PER_GAME}
 
 deepmind_data:
   num_shards: ${DEEPMIND_NUM_SHARDS}
@@ -371,16 +600,36 @@ fi
 
 if [[ "${NEEDS_DATASET_REBUILD}" == "1" ]]; then
   echo "Rebuilding distill dataset (${DATASET_REBUILD_REASON})"
-  rm -f "${DATA_DIR}"/shard_*.pt "${DATASET_META_PATH}" "${CONVERSION_STATS_PATH}"
-  python -m src.distill.convert_deepmind_data \
-    --config "${CONFIG_PATH}" \
-    --num_shards "${DEEPMIND_NUM_SHARDS}" \
-    --min_win_prob "${DEEPMIND_MIN_WIN_PROB}" \
-    --max_samples "${DEEPMIND_MAX_SAMPLES}"
+  rm -f "${DATA_DIR}"/shard_*.pt "${DATASET_META_PATH}" "${CONVERSION_STATS_PATH}" "${DATASET_QUALITY_STATS_PATH}"
+  if [[ "${DISTILL_MODE}" == "fast" ]]; then
+    python -m src.distill.convert_deepmind_data \
+      --config "${CONFIG_PATH}" \
+      --num_shards "${DEEPMIND_NUM_SHARDS}" \
+      --min_win_prob "${DEEPMIND_MIN_WIN_PROB}" \
+      --max_samples "${DEEPMIND_MAX_SAMPLES}"
+  else
+    bash scripts/setup_distill_deps.sh --checkpoint "${TEACHER_MODEL}"
+    generate_args=(
+      -m src.distill.generate_dataset
+      --config "${CONFIG_PATH}"
+      --max_samples "${TEACHER_MAX_SAMPLES}"
+      --teacher_model "${TEACHER_MODEL}"
+      --teacher_batch_size "${TEACHER_BATCH_SIZE}"
+      --batch_size "${TEACHER_PROCESS_BATCH_SIZE}"
+      --num_workers "${TEACHER_NUM_WORKERS}"
+      --output_dir "${DATA_DIR}"
+    )
+    if [[ -n "${TEACHER_HF_CACHE_DIR}" ]]; then
+      generate_args+=(--hf_cache_dir "${TEACHER_HF_CACHE_DIR}")
+    fi
+    python "${generate_args[@]}"
+  fi
   write_dataset_meta "${DATASET_META_PATH}"
 else
   echo "Reusing existing distill shards in ${DATA_DIR} (dataset tag matches)"
 fi
+
+run_dataset_preflight "${DATA_DIR}" "${DATASET_QUALITY_STATS_PATH}"
 
 if is_drive_enabled; then
   run_optional_sync python "${GDRIVE_SYNC_SCRIPT}" upload-file \
@@ -392,19 +641,25 @@ if is_drive_enabled; then
     run_optional_sync python "${GDRIVE_SYNC_SCRIPT}" upload-glob \
       --folder-id "${GDRIVE_FOLDER_ID}" \
       --local-dir "${DATA_DIR}" \
-      --remote-dir "${PERSIST_NAMESPACE}/distill_data" \
+      --remote-dir "${PERSIST_NAMESPACE}/${PERSIST_DATA_REMOTE_DIR}" \
       --glob "shard_*.pt" \
       --max-files "${GDRIVE_UPLOAD_MAX_SHARDS}"
   fi
   run_optional_sync python "${GDRIVE_SYNC_SCRIPT}" upload-file \
     --folder-id "${GDRIVE_FOLDER_ID}" \
     --local-path "${DATASET_META_PATH}" \
-    --remote-path "${PERSIST_NAMESPACE}/distill_data/_build_meta.json"
+    --remote-path "${PERSIST_NAMESPACE}/${PERSIST_DATA_REMOTE_DIR}/_build_meta.json"
   if [[ -f "${CONVERSION_STATS_PATH}" ]]; then
     run_optional_sync python "${GDRIVE_SYNC_SCRIPT}" upload-file \
       --folder-id "${GDRIVE_FOLDER_ID}" \
       --local-path "${CONVERSION_STATS_PATH}" \
-      --remote-path "${PERSIST_NAMESPACE}/distill_data/conversion_stats.json"
+      --remote-path "${PERSIST_NAMESPACE}/${PERSIST_DATA_REMOTE_DIR}/conversion_stats.json"
+  fi
+  if [[ -f "${DATASET_QUALITY_STATS_PATH}" ]]; then
+    run_optional_sync python "${GDRIVE_SYNC_SCRIPT}" upload-file \
+      --folder-id "${GDRIVE_FOLDER_ID}" \
+      --local-path "${DATASET_QUALITY_STATS_PATH}" \
+      --remote-path "${PERSIST_NAMESPACE}/${PERSIST_DATA_REMOTE_DIR}/dataset_quality_stats.json"
   fi
 fi
 
