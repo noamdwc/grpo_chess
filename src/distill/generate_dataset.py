@@ -237,7 +237,7 @@ def generate(config: GenerateConfig):
 
     t_prev = time.time()
 
-    for batch in tqdm(loader, desc="Processing positions"):
+    for batch_idx, batch in enumerate(tqdm(loader, desc="Processing batches"), start=1):
         t_data = time.time()
         if total_processed >= config.max_samples:
             break
@@ -259,11 +259,16 @@ def generate(config: GenerateConfig):
         t_post = time.time()
 
         n_seqs = seqs.shape[0]
-        if total_processed % (config.process_batch_size * 5) < config.process_batch_size:
+        batch_compute = max(t_post - t_data, 1e-6)
+        infer_time = max(t_infer - t_to_numpy, 1e-6)
+        if batch_idx % 5 == 0:
+            pos_per_s = len(samples) / batch_compute
+            seq_per_s = n_seqs / infer_time
             print(f"  [timing] data_wait={t_data - t_prev:.1f}s  "
                   f"to_numpy={t_to_numpy - t_data:.2f}s  "
-                  f"inference={t_infer - t_to_numpy:.1f}s ({n_seqs} seqs)  "
-                  f"postprocess={t_post - t_infer:.2f}s")
+                  f"inference={t_infer - t_to_numpy:.1f}s ({n_seqs} seqs, {seq_per_s:.1f} seq/s)  "
+                  f"postprocess={t_post - t_infer:.2f}s  "
+                  f"batch={batch_compute:.1f}s ({pos_per_s:.2f} pos/s)")
 
         current_shard.extend(samples)
         total_processed += len(samples)

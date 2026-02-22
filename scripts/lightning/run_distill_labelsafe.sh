@@ -72,6 +72,8 @@ DISTILL_TORCH_RUNTIME_NUMPY="${DISTILL_TORCH_RUNTIME_NUMPY:-1.26.4}"
 DISABLE_LIGHTNING_SITECUSTOMIZE="${DISABLE_LIGHTNING_SITECUSTOMIZE:-1}"
 RUNTIME_SITECUSTOMIZE_DIR="${RUNTIME_SITECUSTOMIZE_DIR:-/tmp/grpo_chess_sitecustomize}"
 QUALITY_REPAIR_PANDAS_ABI="${QUALITY_REPAIR_PANDAS_ABI:-1}"
+JAX_USE_CUDA="${JAX_USE_CUDA:-auto}"
+JAX_CUDA_REQUIRED="${JAX_CUDA_REQUIRED:-auto}"
 
 DISTILL_PREFLIGHT_MIN_K_MEAN="${DISTILL_PREFLIGHT_MIN_K_MEAN:-}"
 DISTILL_PREFLIGHT_MAX_K1_FRAC="${DISTILL_PREFLIGHT_MAX_K1_FRAC:-}"
@@ -124,6 +126,22 @@ export TEACHER_MODEL TEACHER_CHECKPOINT_DIR TEACHER_CHECKPOINT_STEP TEACHER_BATC
 export TEACHER_HF_CACHE_DIR TEACHER_SHARD_SIZE TEACHER_MIN_ELO TEACHER_MAX_SAMPLES
 export TEACHER_SKIP_FIRST_N_MOVES TEACHER_SKIP_LAST_N_MOVES TEACHER_SAMPLE_POSITIONS_PER_GAME
 export TEACHER_PROCESS_BATCH_SIZE TEACHER_NUM_WORKERS
+
+has_nvidia_gpu() {
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    return 1
+  fi
+  nvidia-smi -L >/dev/null 2>&1
+}
+
+if [[ "${JAX_CUDA_REQUIRED}" == "auto" ]]; then
+  if has_nvidia_gpu; then
+    JAX_CUDA_REQUIRED="1"
+  else
+    JAX_CUDA_REQUIRED="0"
+  fi
+fi
+export JAX_USE_CUDA JAX_CUDA_REQUIRED
 
 # Lightning images may ship a global sitecustomize that eagerly imports
 # Lightning/PyTorch modules on every python startup. That can break unrelated
@@ -179,6 +197,7 @@ mkdir -p "${PERSIST_ROOT}" "${DATA_DIR}"
 echo "Distill mode: ${DISTILL_MODE}"
 echo "Dataset tag: ${DISTILL_DATASET_TAG}"
 echo "Dataset dir: ${DATA_DIR}"
+echo "Teacher JAX: JAX_USE_CUDA=${JAX_USE_CUDA} JAX_CUDA_REQUIRED=${JAX_CUDA_REQUIRED}"
 
 run_optional_sync() {
   if "$@"; then

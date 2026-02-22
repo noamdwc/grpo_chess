@@ -11,6 +11,8 @@
 # Environment variables:
 #   COLAB=1  — set this in Colab notebooks before running
 #   PYTHON   — path to python binary (default: auto-detect)
+#   JAX_USE_CUDA=auto|1|0 (default: auto)
+#   JAX_CUDA_REQUIRED=1|0   (default: 0)
 
 set -euo pipefail
 
@@ -31,6 +33,8 @@ fi
 PIP="$PYTHON -m pip"
 PY_VERSION=$($PYTHON -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 PY_MINOR=$($PYTHON -c "import sys; print(sys.version_info.minor)")
+JAX_USE_CUDA="${JAX_USE_CUDA:-auto}"
+JAX_CUDA_REQUIRED="${JAX_CUDA_REQUIRED:-0}"
 
 # ── Parse arguments ───────────────────────────────────────────────────────────
 
@@ -56,6 +60,7 @@ echo "  Distillation dependency setup"
 echo "  Environment: $( [ "$IS_COLAB" = "1" ] && echo 'Colab' || echo 'Local' )"
 echo "  Python:      $PYTHON ($PY_VERSION)"
 echo "  Model:       $MODEL"
+echo "  JAX CUDA:    use=${JAX_USE_CUDA} required=${JAX_CUDA_REQUIRED}"
 echo "  Repo:        $REPO_DIR"
 echo "============================================"
 echo
@@ -63,6 +68,13 @@ echo
 # ── Step 1: Install Python packages ──────────────────────────────────────────
 
 echo ">>> [1/4] Installing JAX ecosystem packages..."
+
+has_nvidia_gpu() {
+    if ! command -v nvidia-smi >/dev/null 2>&1; then
+        return 1
+    fi
+    nvidia-smi -L >/dev/null 2>&1
+}
 
 if [ "$IS_COLAB" = "1" ]; then
     # Colab: JAX/jaxlib are pre-installed with CUDA — don't touch them.
@@ -77,17 +89,57 @@ if [ "$IS_COLAB" = "1" ]; then
         "jaxtyping" \
         apache-beam
 else
-    # Local: pin versions tested on macOS / Python 3.14 (2026-02-10).
-    # apache_beam skipped — can't build pyarrow<19 on 3.14, uses stub instead.
-    $PIP install --quiet \
-        "jax==0.8.2" \
-        "jaxlib==0.8.2" \
-        "dm-haiku==0.0.16" \
-        "chex==0.1.91" \
-        "optax==0.2.7" \
-        "orbax-checkpoint==0.11.32" \
-        "grain==0.2.15" \
+    # Local/Lightning: pin versions tested in this project.
+    # apache_beam skipped — uses stub in inference-only paths.
+    COMMON_PKGS=(
+        "dm-haiku==0.0.16"
+        "chex==0.1.91"
+        "optax==0.2.7"
+        "orbax-checkpoint==0.11.32"
+        "grain==0.2.15"
         "jaxtyping==0.3.4"
+    )
+
+    WANT_CUDA=0
+    case "$JAX_USE_CUDA" in
+        auto)
+            if has_nvidia_gpu; then
+                WANT_CUDA=1
+            fi
+            ;;
+        1|true|TRUE|yes|YES)
+            WANT_CUDA=1
+            ;;
+        0|false|FALSE|no|NO)
+            WANT_CUDA=0
+            ;;
+        *)
+            echo "ERROR: JAX_USE_CUDA must be one of auto|1|0 (got '$JAX_USE_CUDA')." >&2
+            exit 1
+            ;;
+    esac
+
+    if [ "$WANT_CUDA" = "1" ]; then
+        echo "    Detected NVIDIA GPU, installing CUDA-enabled JAX..."
+        if ! $PIP install --quiet \
+            "jax[cuda12]==0.8.2" \
+            "${COMMON_PKGS[@]}"; then
+            if [ "$JAX_CUDA_REQUIRED" = "1" ]; then
+                echo "ERROR: CUDA JAX install failed and JAX_CUDA_REQUIRED=1." >&2
+                exit 1
+            fi
+            echo "Warning: CUDA JAX install failed, falling back to CPU JAX." >&2
+            $PIP install --quiet \
+                "jax==0.8.2" \
+                "jaxlib==0.8.2" \
+                "${COMMON_PKGS[@]}"
+        fi
+    else
+        $PIP install --quiet \
+            "jax==0.8.2" \
+            "jaxlib==0.8.2" \
+            "${COMMON_PKGS[@]}"
+    fi
 fi
 
 echo "    Done."
@@ -97,13 +149,16 @@ echo "    Done."
 echo ">>> [2/4] Verifying imports..."
 
 $PYTHON -c "
-import sys, jax, haiku, chex, optax, orbax.checkpoint
+import os, sys, jax, haiku, chex, optax, orbax.checkpoint
 print(f'  jax={jax.__version__}  haiku={haiku.__version__}  optax={optax.__version__}')
+print(f'  backend={jax.default_backend()}  devices={jax.devices()}')
 try:
     from apache_beam import coders
     print('  apache_beam: installed')
 except ImportError:
     print(f'  apache_beam: stub (Python {sys.version_info.major}.{sys.version_info.minor})')
+if os.environ.get('JAX_CUDA_REQUIRED', '0') == '1' and jax.default_backend() != 'gpu':
+    raise SystemExit('ERROR: JAX backend is not GPU while JAX_CUDA_REQUIRED=1')
 "
 
 echo "    Imports OK."
