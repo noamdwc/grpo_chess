@@ -74,6 +74,9 @@ Useful env vars for that script:
 - `PINNED_COMMIT=<sha>` to enforce commit pinning.
 - `PRETRAIN_CKPT_DRIVE_URL=<drive_url>` for first-time checkpoint bootstrap.
 - `DISTILL_MAX_SHARDS=6` (default) to bound memory.
+- `PERSIST_BACKEND=lightning` (default).
+- `ARTIFACT_ROOT=/teamspace/studios/this_studio/artifacts` (default persistent cache path in Lightning).
+- Optional Google Drive mode: `PERSIST_BACKEND=gdrive`, `GDRIVE_FOLDER_ID=<drive_folder_id>`.
 
 Important config-path rule:
 - For loaders using `load_yaml_file`, pass config as filename relative to `src/configs`, for example `distill_labelsafe.yaml`.
@@ -90,17 +93,20 @@ python -m src.pretrain.pretrain --config pretrain.yaml
 Submit with:
 - `machine="L4"` or larger
 
-## 5) Persistent Artifacts Pattern (Recommended)
+## 5) Persistence Pattern (Lightning Recommended)
 
-Use Teamspace artifacts path to avoid repeated downloads/conversion on retries:
+Use Lightning persistent storage by default.
 
-- Root: `/teamspace/studios/this_studio/artifacts`
+- Default cache root:
+  - `/teamspace/studios/this_studio/artifacts`
 - Suggested distill cache:
   - `/teamspace/studios/this_studio/artifacts/distill_labelsafe_v2/distill_data`
 - Suggested pretrain checkpoint cache:
-  - `/teamspace/studios/this_studio/artifacts/pretrain.ckpt`
+  - `/teamspace/studios/this_studio/artifacts/distill_labelsafe_v2/pretrain.ckpt`
 
 Before downloading/converting, check if files already exist and reuse them.
+
+Optional Google Drive backend is supported but currently parked for agent-driven jobs due to credential-boundary risk. See Section 11.
 
 ## 6) W&B in Teamspace
 
@@ -147,6 +153,10 @@ For distill runs in this repo, use these safeguards:
   - Distill cloud runner (`scripts/lightning/run_distill_labelsafe.sh`) now installs Stockfish automatically when missing (apt-based images).
   - Distill runner sets `require_stockfish_eval: true` and fails fast if Stockfish eval cannot be enabled.
   - To override binary location manually, set `STOCKFISH_PATH` or `stockfish.path`.
+- Google Drive sync unavailable (only when `PERSIST_BACKEND=gdrive`)
+  - Ensure `GDRIVE_FOLDER_ID` is set.
+  - Ensure Drive auth credentials are provided (`GDRIVE_OAUTH_*` or `GDRIVE_SERVICE_ACCOUNT_*`).
+  - If sync must be mandatory, set `GDRIVE_PERSIST_REQUIRED=1`.
 
 ## 9) Suggested Run Naming
 
@@ -239,4 +249,29 @@ Plan doc: research_docs/experiments/<file>.md
 - config path is correct (filename relative to `src/configs` when required)
 - Teamspace secret `WANDB_KEY` exists
 - job command pins expected commit when reproducibility matters
-- persistent artifact paths are used (`/teamspace/studios/this_studio/artifacts/...`)
+- Lightning persistent artifact path is configured (`ARTIFACT_ROOT`, default is Teamspace artifacts).
+
+## 11) Google Drive Persistence (Lightning.ai + Agents) — Security Note
+
+Using Google Drive as persistence for Lightning.ai training jobs is possible, but do not expose Google Drive OAuth/service-account credentials directly to agent-executed code. If an agent can run arbitrary code in the same environment as the secrets, it can use those credentials beyond your intended wrapper logic.
+
+Key constraints:
+- Service accounts can authenticate to Drive, but for personal Google One / My Drive uploads they may fail with `403 storageQuotaExceeded` (service accounts do not have personal storage quota).
+- OAuth user credentials work for personal Google One uploads, but Google Drive OAuth scopes cannot be restricted to a single folder.
+- `drive.file` is narrower than full `drive`, but it still is not a folder-level restriction.
+
+Recommended approach:
+- Use a small artifact gateway service (proxy) that:
+  - stores Google credentials securely
+  - enforces a single allowed folder ID
+  - exposes only limited operations (for example upload/list/download)
+  - keeps Google credentials out of the agent runtime
+- This creates a real security boundary. Application-level checks inside the same agent runtime are not a sufficient security control.
+
+If a proxy is not possible:
+- use a dedicated Google account that contains only artifact folders (damage containment)
+- use a storage backend with scoped credentials (S3/R2/GCS, signed URLs, prefix-limited access)
+
+Practical recommendation:
+- For agent-driven training jobs, treat credential separation as mandatory:
+  - `agent runtime ↔ artifact gateway ↔ Google Drive`

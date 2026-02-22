@@ -26,17 +26,73 @@ else
 fi
 
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-/teamspace/studios/this_studio/artifacts}"
-PERSIST_ROOT="${PERSIST_ROOT:-${ARTIFACT_ROOT}/distill_labelsafe_v2}"
+PERSIST_NAMESPACE="${PERSIST_NAMESPACE:-distill_labelsafe_v2}"
+PERSIST_ROOT="${PERSIST_ROOT:-${ARTIFACT_ROOT}/${PERSIST_NAMESPACE}}"
 DATA_DIR="${DATA_DIR:-${PERSIST_ROOT}/distill_data}"
-CKPT_PATH="${CKPT_PATH:-${ARTIFACT_ROOT}/pretrain.ckpt}"
+CKPT_PATH="${CKPT_PATH:-${PERSIST_ROOT}/pretrain.ckpt}"
 CONFIG_PATH="${CONFIG_PATH:-/tmp/distill_labelsafe.lightning.yaml}"
 PRETRAIN_CKPT_DRIVE_URL="${PRETRAIN_CKPT_DRIVE_URL:-}"
 DEEPMIND_NUM_SHARDS="${DEEPMIND_NUM_SHARDS:-1}"
 DEEPMIND_MIN_WIN_PROB="${DEEPMIND_MIN_WIN_PROB:-0.95}"
 DISTILL_MAX_SHARDS="${DISTILL_MAX_SHARDS:-6}"
 STOCKFISH_INSTALL_ON_MISSING="${STOCKFISH_INSTALL_ON_MISSING:-1}"
+PERSIST_BACKEND="${PERSIST_BACKEND:-lightning}"
+GDRIVE_FOLDER_ID="${GDRIVE_FOLDER_ID:-}"
+GDRIVE_PERSIST_REQUIRED="${GDRIVE_PERSIST_REQUIRED:-0}"
+GDRIVE_SYNC_SHARDS="${GDRIVE_SYNC_SHARDS:-1}"
+GDRIVE_DOWNLOAD_MAX_SHARDS="${GDRIVE_DOWNLOAD_MAX_SHARDS:-${DISTILL_MAX_SHARDS}}"
+GDRIVE_UPLOAD_MAX_SHARDS="${GDRIVE_UPLOAD_MAX_SHARDS:-${DISTILL_MAX_SHARDS}}"
+GDRIVE_SYNC_SCRIPT="${GDRIVE_SYNC_SCRIPT:-scripts/lightning/gdrive_sync.py}"
+DISTILL_OUTPUT_DIR="${DISTILL_OUTPUT_DIR:-checkpoints/distill_labelsafe}"
 
 mkdir -p "${PERSIST_ROOT}" "${DATA_DIR}"
+
+run_optional_sync() {
+  if "$@"; then
+    return 0
+  fi
+  if [[ "${GDRIVE_PERSIST_REQUIRED}" == "1" ]]; then
+    echo "ERROR: required Google Drive sync command failed: $*" >&2
+    exit 1
+  fi
+  echo "Warning: Google Drive sync command failed (continuing): $*" >&2
+  return 0
+}
+
+ensure_drive_sync_deps() {
+  python -m pip install --quiet "google-api-python-client>=2.0.0" "google-auth>=2.0.0" gdown
+}
+
+is_drive_enabled() {
+  [[ "${PERSIST_BACKEND}" == "gdrive" ]] && [[ -n "${GDRIVE_FOLDER_ID}" ]]
+}
+
+if [[ "${PERSIST_BACKEND}" == "gdrive" ]] && [[ -z "${GDRIVE_FOLDER_ID}" ]]; then
+  if [[ "${GDRIVE_PERSIST_REQUIRED}" == "1" ]]; then
+    echo "ERROR: PERSIST_BACKEND=gdrive but GDRIVE_FOLDER_ID is not set." >&2
+    exit 1
+  fi
+  echo "Warning: PERSIST_BACKEND=gdrive but GDRIVE_FOLDER_ID is empty; falling back to local-only persistence."
+fi
+
+if is_drive_enabled; then
+  ensure_drive_sync_deps
+  run_optional_sync python "${GDRIVE_SYNC_SCRIPT}" download-file \
+    --folder-id "${GDRIVE_FOLDER_ID}" \
+    --remote-path "${PERSIST_NAMESPACE}/pretrain.ckpt" \
+    --local-path "${CKPT_PATH}" \
+    --optional
+
+  if [[ "${GDRIVE_SYNC_SHARDS}" == "1" ]]; then
+    run_optional_sync python "${GDRIVE_SYNC_SCRIPT}" download-glob \
+      --folder-id "${GDRIVE_FOLDER_ID}" \
+      --remote-dir "${PERSIST_NAMESPACE}/distill_data" \
+      --local-dir "${DATA_DIR}" \
+      --glob "shard_*.pt" \
+      --max-files "${GDRIVE_DOWNLOAD_MAX_SHARDS}" \
+      --optional
+  fi
+fi
 
 find_stockfish_binary() {
   local candidate=""
@@ -101,10 +157,17 @@ if [[ ! -f "${CKPT_PATH}" ]]; then
     echo "ERROR: checkpoint missing at ${CKPT_PATH} and PRETRAIN_CKPT_DRIVE_URL is empty." >&2
     exit 1
   fi
-  python -m pip install gdown
+  python -m pip install --quiet gdown
   gdown --fuzzy "${PRETRAIN_CKPT_DRIVE_URL}" -O "${CKPT_PATH}"
 fi
 ls -lh "${CKPT_PATH}"
+
+if is_drive_enabled; then
+  run_optional_sync python "${GDRIVE_SYNC_SCRIPT}" upload-file \
+    --folder-id "${GDRIVE_FOLDER_ID}" \
+    --local-path "${CKPT_PATH}" \
+    --remote-path "${PERSIST_NAMESPACE}/pretrain.ckpt"
+fi
 
 cat > "${CONFIG_PATH}" <<YAML
 generate:
@@ -185,4 +248,28 @@ else
   python -m src.distill.convert_deepmind_data --config "${CONFIG_PATH}" --num_shards "${DEEPMIND_NUM_SHARDS}" --min_win_prob "${DEEPMIND_MIN_WIN_PROB}"
 fi
 
+if is_drive_enabled; then
+  run_optional_sync python "${GDRIVE_SYNC_SCRIPT}" upload-file \
+    --folder-id "${GDRIVE_FOLDER_ID}" \
+    --local-path "${CONFIG_PATH}" \
+    --remote-path "${PERSIST_NAMESPACE}/configs/distill_labelsafe.lightning.yaml"
+
+  if [[ "${GDRIVE_SYNC_SHARDS}" == "1" ]]; then
+    run_optional_sync python "${GDRIVE_SYNC_SCRIPT}" upload-glob \
+      --folder-id "${GDRIVE_FOLDER_ID}" \
+      --local-dir "${DATA_DIR}" \
+      --remote-dir "${PERSIST_NAMESPACE}/distill_data" \
+      --glob "shard_*.pt" \
+      --max-files "${GDRIVE_UPLOAD_MAX_SHARDS}"
+  fi
+fi
+
 python -m src.distill.distill --config "${CONFIG_PATH}"
+
+FINAL_CKPT_PATH="${DISTILL_OUTPUT_DIR}/distill_final.pt"
+if [[ -f "${FINAL_CKPT_PATH}" ]] && is_drive_enabled; then
+  run_optional_sync python "${GDRIVE_SYNC_SCRIPT}" upload-file \
+    --folder-id "${GDRIVE_FOLDER_ID}" \
+    --local-path "${FINAL_CKPT_PATH}" \
+    --remote-path "${PERSIST_NAMESPACE}/checkpoints/distill_final.pt"
+fi
