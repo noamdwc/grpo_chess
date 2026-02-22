@@ -34,8 +34,67 @@ PRETRAIN_CKPT_DRIVE_URL="${PRETRAIN_CKPT_DRIVE_URL:-}"
 DEEPMIND_NUM_SHARDS="${DEEPMIND_NUM_SHARDS:-1}"
 DEEPMIND_MIN_WIN_PROB="${DEEPMIND_MIN_WIN_PROB:-0.95}"
 DISTILL_MAX_SHARDS="${DISTILL_MAX_SHARDS:-6}"
+STOCKFISH_INSTALL_ON_MISSING="${STOCKFISH_INSTALL_ON_MISSING:-1}"
 
 mkdir -p "${PERSIST_ROOT}" "${DATA_DIR}"
+
+find_stockfish_binary() {
+  local candidate=""
+  local candidates=()
+  if [[ -n "${STOCKFISH_PATH:-}" ]]; then
+    candidates+=("${STOCKFISH_PATH}")
+  fi
+  if command -v stockfish >/dev/null 2>&1; then
+    candidates+=("$(command -v stockfish)")
+  fi
+  candidates+=("/usr/games/stockfish" "/usr/bin/stockfish" "/usr/local/bin/stockfish" "/opt/homebrew/bin/stockfish")
+
+  for candidate in "${candidates[@]}"; do
+    [[ -n "${candidate}" ]] || continue
+    if [[ -x "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+install_stockfish_with_apt() {
+  local -a apt_prefix=()
+  if ! command -v apt-get >/dev/null 2>&1; then
+    echo "ERROR: Stockfish not found and apt-get is unavailable on this machine." >&2
+    return 1
+  fi
+  if [[ "$(id -u)" -ne 0 ]]; then
+    if command -v sudo >/dev/null 2>&1; then
+      apt_prefix=(sudo)
+    else
+      echo "ERROR: Stockfish not found and sudo is unavailable for apt-get install." >&2
+      return 1
+    fi
+  fi
+
+  echo "Stockfish binary not found. Installing via apt-get..."
+  "${apt_prefix[@]}" apt-get update
+  "${apt_prefix[@]}" apt-get install -y --no-install-recommends stockfish
+}
+
+if STOCKFISH_BIN="$(find_stockfish_binary)"; then
+  echo "Using Stockfish binary: ${STOCKFISH_BIN}"
+else
+  if [[ "${STOCKFISH_INSTALL_ON_MISSING}" == "1" ]]; then
+    install_stockfish_with_apt
+    STOCKFISH_BIN="$(find_stockfish_binary)" || {
+      echo "ERROR: Stockfish install completed but binary is still not discoverable." >&2
+      exit 1
+    }
+    echo "Installed Stockfish binary: ${STOCKFISH_BIN}"
+  else
+    echo "ERROR: Stockfish binary not found and STOCKFISH_INSTALL_ON_MISSING=0." >&2
+    exit 1
+  fi
+fi
+export STOCKFISH_PATH="${STOCKFISH_BIN}"
 
 if [[ ! -f "${CKPT_PATH}" ]]; then
   if [[ -z "${PRETRAIN_CKPT_DRIVE_URL}" ]]; then
@@ -86,6 +145,7 @@ distill:
   auto_disable_wandb_if_missing_key: true
   fail_on_nonfinite: false
   max_nonfinite_batches: 50
+  require_stockfish_eval: true
   num_workers: 0
   val_check_interval: 0.1
   eval_every_n_epochs: 1
@@ -98,7 +158,7 @@ eval:
   opening_plies: 6
 
 stockfish:
-  path: "/usr/games/stockfish"
+  path: "${STOCKFISH_BIN}"
   skill_level: 2
   movetime_ms: 50
 

@@ -51,6 +51,7 @@ class DistillConfig:
     auto_disable_wandb_if_missing_key: bool = True
     fail_on_nonfinite: bool = False
     max_nonfinite_batches: int = 50
+    require_stockfish_eval: bool = False
 
 
 @dataclass
@@ -381,6 +382,31 @@ def prepare_wandb_config(distill_config: DistillConfig) -> DistillConfig:
     )
 
 
+def build_stockfish_eval_callback(
+    distill_config: DistillConfig,
+    eval_cfg: EvalConfig,
+    stockfish_cfg: StockfishConfig,
+    policy_cfg: PolicyConfig,
+) -> Optional[StockfishEvalCallback]:
+    """Create Stockfish eval callback, optionally hard-failing when binary is missing."""
+    try:
+        resolved_stockfish = resolve_stockfish_path(stockfish_cfg.path)
+    except FileNotFoundError as exc:
+        if distill_config.require_stockfish_eval:
+            raise RuntimeError(
+                "Stockfish evaluation is required but no Stockfish binary was found. "
+                "Set stockfish.path/STOCKFISH_PATH or install stockfish."
+            ) from exc
+        print(f"Warning: {exc}")
+        print("Warning: Stockfish evaluation callback disabled for this run.")
+        return None
+
+    stockfish_cfg = replace(stockfish_cfg, path=resolved_stockfish)
+    print(f"Stockfish evaluation enabled with binary: {resolved_stockfish}")
+    evaluator = Evaluator(eval_cfg=eval_cfg, policy_cfg=policy_cfg, stockfish_cfg=stockfish_cfg)
+    return StockfishEvalCallback(evaluator, every_n_epochs=distill_config.eval_every_n_epochs)
+
+
 def train(
     distill_config: DistillConfig,
     dataset_config: DistillDatasetConfig,
@@ -447,6 +473,15 @@ def train(
             log_model=distill_config.log_model_artifacts,
         )
 
+    stockfish_eval_callback = build_stockfish_eval_callback(
+        distill_config=distill_config,
+        eval_cfg=eval_cfg,
+        stockfish_cfg=stockfish_cfg,
+        policy_cfg=policy_cfg,
+    )
+    if stockfish_eval_callback is not None:
+        callbacks.append(stockfish_eval_callback)
+
     trainer = pl.Trainer(
         max_epochs=distill_config.num_epochs,
         accelerator="auto",
@@ -457,17 +492,6 @@ def train(
         log_every_n_steps=50,
         val_check_interval=distill_config.val_check_interval,
     )
-
-    try:
-        resolved_stockfish = resolve_stockfish_path(stockfish_cfg.path)
-        stockfish_cfg = replace(stockfish_cfg, path=resolved_stockfish)
-        evaluator = Evaluator(eval_cfg=eval_cfg, policy_cfg=policy_cfg, stockfish_cfg=stockfish_cfg)
-        trainer.callbacks.append(StockfishEvalCallback(
-            evaluator, every_n_epochs=distill_config.eval_every_n_epochs,
-        ))
-    except FileNotFoundError as exc:
-        print(f"Warning: {exc}")
-        print("Warning: Stockfish evaluation callback disabled for this run.")
 
     trainer.fit(model, train_dataloader, val_dataloader, ckpt_path=distill_config.resume_from)
 

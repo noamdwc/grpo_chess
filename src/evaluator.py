@@ -107,14 +107,26 @@ class Evaluator:
             if was_training:
                 pl_module.train()
 
+        games = max(int(results["games"]), 1)
+        wins = float(results["wins"])
+        draws = float(results["draws"])
+        losses = float(results["losses"])
+
         pl_module.log("eval_stockfish/score", results["score"], prog_bar=True)
         pl_module.log("eval_stockfish/elo_diff", results["elo_diff_vs_stockfish_approx"], prog_bar=True)
         pl_module.log("eval_stockfish/games", float(results["games"]))
-        pl_module.log("eval_stockfish/wins", float(results["wins"]))
-        pl_module.log("eval_stockfish/draws", float(results["draws"]))
-        pl_module.log("eval_stockfish/losses", float(results["losses"]))
+        pl_module.log("eval_stockfish/wins", wins)
+        pl_module.log("eval_stockfish/draws", draws)
+        pl_module.log("eval_stockfish/losses", losses)
+        pl_module.log("eval_stockfish/win_rate", wins / games)
+        pl_module.log("eval_stockfish/draw_rate", draws / games)
+        pl_module.log("eval_stockfish/loss_rate", losses / games)
+        print(
+            "[StockfishEvalCallback] Results: "
+            f"score={results['score']:.4f}, elo_diff={results['elo_diff_vs_stockfish_approx']:.1f}, "
+            f"W/D/L={int(wins)}/{int(draws)}/{int(losses)} ({results['games']} games)"
+        )
 
-        games = results["games"] or 1
         for reason, cnt in results["termination_reasons"].items():
             pl_module.log(f"eval_stockfish/term_{reason}", cnt / games)
 

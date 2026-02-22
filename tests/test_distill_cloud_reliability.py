@@ -3,7 +3,15 @@ import os
 import pytest
 import torch
 
-from src.distill.distill import DistillChessTransformer, DistillConfig, prepare_wandb_config
+from src.chess.policy_player import PolicyConfig
+from src.chess.stockfish import StockfishConfig
+from src.distill.distill import (
+    DistillChessTransformer,
+    DistillConfig,
+    build_stockfish_eval_callback,
+    prepare_wandb_config,
+)
+from src.eval_utils import EvalConfig
 from src.models import ChessTransformerConfig
 
 
@@ -99,3 +107,34 @@ def test_training_step_raises_on_nonfinite_when_configured():
 
     with pytest.raises(RuntimeError, match="fail_on_nonfinite=true"):
         model.training_step(_make_tiny_batch(), batch_idx=0)
+
+
+def test_build_stockfish_eval_callback_skips_when_missing_and_optional(monkeypatch):
+    monkeypatch.setattr(
+        "src.distill.distill.resolve_stockfish_path",
+        lambda _path: (_ for _ in ()).throw(FileNotFoundError("missing stockfish")),
+    )
+
+    callback = build_stockfish_eval_callback(
+        distill_config=DistillConfig(require_stockfish_eval=False),
+        eval_cfg=EvalConfig(),
+        stockfish_cfg=StockfishConfig(),
+        policy_cfg=PolicyConfig(),
+    )
+
+    assert callback is None
+
+
+def test_build_stockfish_eval_callback_raises_when_missing_and_required(monkeypatch):
+    monkeypatch.setattr(
+        "src.distill.distill.resolve_stockfish_path",
+        lambda _path: (_ for _ in ()).throw(FileNotFoundError("missing stockfish")),
+    )
+
+    with pytest.raises(RuntimeError, match="Stockfish evaluation is required"):
+        build_stockfish_eval_callback(
+            distill_config=DistillConfig(require_stockfish_eval=True),
+            eval_cfg=EvalConfig(),
+            stockfish_cfg=StockfishConfig(),
+            policy_cfg=PolicyConfig(),
+        )
