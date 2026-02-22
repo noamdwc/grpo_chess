@@ -30,6 +30,7 @@ def test_runner_includes_dataset_metadata_and_rebuild_controls():
     assert 'dataset tag mismatch' in text
     assert 'DISABLE_LIGHTNING_SITECUSTOMIZE="${DISABLE_LIGHTNING_SITECUSTOMIZE:-1}"' in text
     assert 'sitecustomize.py' in text
+    assert 'QUALITY_REPAIR_PANDAS_ABI="${QUALITY_REPAIR_PANDAS_ABI:-1}"' in text
 
 
 def test_runner_writes_quality_gate_to_generated_config():
@@ -43,6 +44,7 @@ def test_runner_supports_quality_mode_dataset_generation():
     assert 'if [[ "${DISTILL_MODE}" == "fast" ]]; then' in text
     assert "python -m src.distill.convert_deepmind_data" in text
     assert 'bash scripts/setup_distill_deps.sh --checkpoint "${TEACHER_MODEL}"' in text
+    assert 'ensure_quality_generation_stack "${QUALITY_REPAIR_PANDAS_ABI}"' in text
     assert "-m src.distill.generate_dataset" in text
     assert 'restore_distill_runtime_numpy()' in text
     assert 'restore_distill_runtime_numpy "${DISTILL_TORCH_RUNTIME_NUMPY}"' in text

@@ -71,6 +71,7 @@ TEACHER_NUM_WORKERS="${TEACHER_NUM_WORKERS:-4}"
 DISTILL_TORCH_RUNTIME_NUMPY="${DISTILL_TORCH_RUNTIME_NUMPY:-1.26.4}"
 DISABLE_LIGHTNING_SITECUSTOMIZE="${DISABLE_LIGHTNING_SITECUSTOMIZE:-1}"
 RUNTIME_SITECUSTOMIZE_DIR="${RUNTIME_SITECUSTOMIZE_DIR:-/tmp/grpo_chess_sitecustomize}"
+QUALITY_REPAIR_PANDAS_ABI="${QUALITY_REPAIR_PANDAS_ABI:-1}"
 
 DISTILL_PREFLIGHT_MIN_K_MEAN="${DISTILL_PREFLIGHT_MIN_K_MEAN:-}"
 DISTILL_PREFLIGHT_MAX_K1_FRAC="${DISTILL_PREFLIGHT_MAX_K1_FRAC:-}"
@@ -448,6 +449,33 @@ print(f"Runtime NumPy version: {np.__version__}")
 PY
 }
 
+ensure_quality_generation_stack() {
+  local repair_requested="$1"
+  if python - <<'PY'
+import numpy as np
+import pandas as pd
+import pyarrow as pa
+print(f"Quality generation stack OK: numpy={np.__version__}, pandas={pd.__version__}, pyarrow={pa.__version__}")
+PY
+  then
+    return 0
+  fi
+
+  if [[ "${repair_requested}" != "1" ]]; then
+    echo "ERROR: quality generation stack check failed and QUALITY_REPAIR_PANDAS_ABI=0." >&2
+    return 1
+  fi
+
+  echo "Repairing quality-generation pandas/pyarrow binary compatibility..."
+  python -m pip install --quiet --upgrade --force-reinstall pandas pyarrow
+  python - <<'PY'
+import numpy as np
+import pandas as pd
+import pyarrow as pa
+print(f"Quality generation stack repaired: numpy={np.__version__}, pandas={pd.__version__}, pyarrow={pa.__version__}")
+PY
+}
+
 find_stockfish_binary() {
   local candidate=""
   local candidates=()
@@ -633,6 +661,7 @@ if [[ "${NEEDS_DATASET_REBUILD}" == "1" ]]; then
       --max_samples "${DEEPMIND_MAX_SAMPLES}"
   else
     bash scripts/setup_distill_deps.sh --checkpoint "${TEACHER_MODEL}"
+    ensure_quality_generation_stack "${QUALITY_REPAIR_PANDAS_ABI}"
     generate_args=(
       -m src.distill.generate_dataset
       --config "${CONFIG_PATH}"
