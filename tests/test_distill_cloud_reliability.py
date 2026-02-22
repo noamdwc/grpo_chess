@@ -1,4 +1,5 @@
 import os
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -8,6 +9,7 @@ from src.chess.stockfish import StockfishConfig
 from src.distill.distill import (
     DistillChessTransformer,
     DistillConfig,
+    DistillQualityGateCallback,
     build_stockfish_eval_callback,
     prepare_wandb_config,
 )
@@ -138,3 +140,34 @@ def test_build_stockfish_eval_callback_raises_when_missing_and_required(monkeypa
             stockfish_cfg=StockfishConfig(),
             policy_cfg=PolicyConfig(),
         )
+
+
+def test_distill_quality_gate_skips_before_gate_epoch():
+    callback = DistillQualityGateCallback(min_val_top1=0.08, gate_epoch=3)
+    trainer = SimpleNamespace(
+        current_epoch=1,  # Completed epoch 2
+        callback_metrics={"val/top1_match": torch.tensor(0.01)},
+    )
+
+    callback.on_validation_epoch_end(trainer, pl_module=object())
+
+
+def test_distill_quality_gate_raises_when_metric_below_threshold():
+    callback = DistillQualityGateCallback(min_val_top1=0.08, gate_epoch=3)
+    trainer = SimpleNamespace(
+        current_epoch=2,  # Completed epoch 3
+        callback_metrics={"val/top1_match": torch.tensor(0.03)},
+    )
+
+    with pytest.raises(RuntimeError, match="Distill quality gate failed"):
+        callback.on_validation_epoch_end(trainer, pl_module=object())
+
+
+def test_distill_quality_gate_passes_when_metric_meets_threshold():
+    callback = DistillQualityGateCallback(min_val_top1=0.08, gate_epoch=3)
+    trainer = SimpleNamespace(
+        current_epoch=2,  # Completed epoch 3
+        callback_metrics={"val/top1_match": torch.tensor(0.08)},
+    )
+
+    callback.on_validation_epoch_end(trainer, pl_module=object())

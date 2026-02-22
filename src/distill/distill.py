@@ -18,7 +18,7 @@ import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+from pytorch_lightning.callbacks import Callback, ModelCheckpoint, LearningRateMonitor
 from torch.utils.data import DataLoader
 
 from src.models import ChessTransformer, ChessTransformerConfig
@@ -52,6 +52,8 @@ class DistillConfig:
     fail_on_nonfinite: bool = False
     max_nonfinite_batches: int = 50
     require_stockfish_eval: bool = False
+    quality_gate_min_val_top1: float = 0.0
+    quality_gate_epoch: int = 0
 
 
 @dataclass
@@ -407,6 +409,42 @@ def build_stockfish_eval_callback(
     return StockfishEvalCallback(evaluator, every_n_epochs=distill_config.eval_every_n_epochs)
 
 
+class DistillQualityGateCallback(Callback):
+    """Fail fast when val/top1_match stays below a configured threshold."""
+
+    def __init__(self, min_val_top1: float, gate_epoch: int):
+        super().__init__()
+        self.min_val_top1 = float(min_val_top1)
+        self.gate_epoch = int(gate_epoch)
+
+    def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        if self.min_val_top1 <= 0.0 or self.gate_epoch <= 0:
+            return
+
+        completed_epoch = trainer.current_epoch + 1  # current_epoch is 0-based.
+        if completed_epoch < self.gate_epoch:
+            return
+
+        metric = trainer.callback_metrics.get("val/top1_match")
+        if metric is None:
+            raise RuntimeError(
+                "Distill quality gate expected metric 'val/top1_match' but it was not logged."
+            )
+
+        metric_value = float(metric.detach().cpu() if isinstance(metric, torch.Tensor) else metric)
+        if not math.isfinite(metric_value):
+            raise RuntimeError(
+                f"Distill quality gate metric val/top1_match is non-finite at epoch {completed_epoch}."
+            )
+
+        if metric_value + 1e-8 < self.min_val_top1:
+            raise RuntimeError(
+                "Distill quality gate failed: "
+                f"val/top1_match={metric_value:.4f} < required {self.min_val_top1:.4f} "
+                f"at epoch {completed_epoch}."
+            )
+
+
 def train(
     distill_config: DistillConfig,
     dataset_config: DistillDatasetConfig,
@@ -481,6 +519,13 @@ def train(
     )
     if stockfish_eval_callback is not None:
         callbacks.append(stockfish_eval_callback)
+    if distill_config.quality_gate_min_val_top1 > 0.0 and distill_config.quality_gate_epoch > 0:
+        callbacks.append(
+            DistillQualityGateCallback(
+                min_val_top1=distill_config.quality_gate_min_val_top1,
+                gate_epoch=distill_config.quality_gate_epoch,
+            )
+        )
 
     trainer = pl.Trainer(
         max_epochs=distill_config.num_epochs,

@@ -32,9 +32,9 @@ DATA_DIR="${DATA_DIR:-${PERSIST_ROOT}/distill_data}"
 CKPT_PATH="${CKPT_PATH:-${PERSIST_ROOT}/pretrain.ckpt}"
 CONFIG_PATH="${CONFIG_PATH:-/tmp/distill_labelsafe.lightning.yaml}"
 PRETRAIN_CKPT_DRIVE_URL="${PRETRAIN_CKPT_DRIVE_URL:-}"
-DEEPMIND_NUM_SHARDS="${DEEPMIND_NUM_SHARDS:-1}"
-DEEPMIND_MIN_WIN_PROB="${DEEPMIND_MIN_WIN_PROB:-0.95}"
-DISTILL_MAX_SHARDS="${DISTILL_MAX_SHARDS:-6}"
+DEEPMIND_NUM_SHARDS="${DEEPMIND_NUM_SHARDS:-8}"
+DEEPMIND_MIN_WIN_PROB="${DEEPMIND_MIN_WIN_PROB:-0.55}"
+DISTILL_MAX_SHARDS="${DISTILL_MAX_SHARDS:-8}"
 STOCKFISH_INSTALL_ON_MISSING="${STOCKFISH_INSTALL_ON_MISSING:-1}"
 PERSIST_BACKEND="${PERSIST_BACKEND:-lightning}"
 GDRIVE_FOLDER_ID="${GDRIVE_FOLDER_ID:-}"
@@ -44,6 +44,14 @@ GDRIVE_DOWNLOAD_MAX_SHARDS="${GDRIVE_DOWNLOAD_MAX_SHARDS:-${DISTILL_MAX_SHARDS}}
 GDRIVE_UPLOAD_MAX_SHARDS="${GDRIVE_UPLOAD_MAX_SHARDS:-${DISTILL_MAX_SHARDS}}"
 GDRIVE_SYNC_SCRIPT="${GDRIVE_SYNC_SCRIPT:-scripts/lightning/gdrive_sync.py}"
 DISTILL_OUTPUT_DIR="${DISTILL_OUTPUT_DIR:-checkpoints/distill_labelsafe}"
+DISTILL_FORCE_REBUILD_DATA="${DISTILL_FORCE_REBUILD_DATA:-0}"
+DISTILL_QUALITY_GATE_MIN_VAL_TOP1="${DISTILL_QUALITY_GATE_MIN_VAL_TOP1:-0.08}"
+DISTILL_QUALITY_GATE_EPOCH="${DISTILL_QUALITY_GATE_EPOCH:-3}"
+DISTILL_DATASET_TAG_DEFAULT="deepmind_data.v1:num_shards=${DEEPMIND_NUM_SHARDS},min_win_prob=${DEEPMIND_MIN_WIN_PROB},top_k=8,temperature=1.0,shard_size=50000"
+DISTILL_DATASET_TAG="${DISTILL_DATASET_TAG:-${DISTILL_DATASET_TAG_DEFAULT}}"
+DATASET_META_PATH="${DATA_DIR}/_build_meta.json"
+CONVERSION_STATS_PATH="${DATA_DIR}/conversion_stats.json"
+export DISTILL_DATASET_TAG DEEPMIND_NUM_SHARDS DEEPMIND_MIN_WIN_PROB DATA_DIR
 
 mkdir -p "${PERSIST_ROOT}" "${DATA_DIR}"
 
@@ -92,7 +100,67 @@ if is_drive_enabled; then
       --max-files "${GDRIVE_DOWNLOAD_MAX_SHARDS}" \
       --optional
   fi
+  run_optional_sync python "${GDRIVE_SYNC_SCRIPT}" download-file \
+    --folder-id "${GDRIVE_FOLDER_ID}" \
+    --remote-path "${PERSIST_NAMESPACE}/distill_data/_build_meta.json" \
+    --local-path "${DATASET_META_PATH}" \
+    --optional
+  run_optional_sync python "${GDRIVE_SYNC_SCRIPT}" download-file \
+    --folder-id "${GDRIVE_FOLDER_ID}" \
+    --remote-path "${PERSIST_NAMESPACE}/distill_data/conversion_stats.json" \
+    --local-path "${CONVERSION_STATS_PATH}" \
+    --optional
 fi
+
+read_dataset_meta_tag() {
+  local metadata_path="$1"
+  python - "${metadata_path}" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+if not path.exists():
+    raise SystemExit(0)
+
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+
+tag = payload.get("dataset_tag", "")
+if isinstance(tag, str):
+    print(tag)
+PY
+}
+
+write_dataset_meta() {
+  local metadata_path="$1"
+  python - "${metadata_path}" <<'PY'
+import datetime
+import json
+import os
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+path.parent.mkdir(parents=True, exist_ok=True)
+
+payload = {
+    "dataset_tag": os.environ["DISTILL_DATASET_TAG"],
+    "num_shards": int(os.environ["DEEPMIND_NUM_SHARDS"]),
+    "min_win_prob": float(os.environ["DEEPMIND_MIN_WIN_PROB"]),
+    "top_k": 8,
+    "temperature": 1.0,
+    "shard_size": 50000,
+    "data_dir": os.environ["DATA_DIR"],
+    "generated_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+}
+
+path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+print(f"Wrote dataset metadata: {path}")
+PY
+}
 
 find_stockfish_binary() {
   local candidate=""
@@ -194,10 +262,10 @@ deepmind_data:
   shard_size: 50000
 
 distill:
-  lr: 0.00003
+  lr: 0.00006
   batch_size: 1024
-  num_epochs: 8
-  warmup_steps: 2000
+  num_epochs: 10
+  warmup_steps: 1000
   weight_decay: 0.01
   max_grad_norm: 0.5
   checkpoint_dir: "checkpoints/distill_labelsafe"
@@ -209,7 +277,9 @@ distill:
   fail_on_nonfinite: false
   max_nonfinite_batches: 50
   require_stockfish_eval: true
-  num_workers: 0
+  quality_gate_min_val_top1: ${DISTILL_QUALITY_GATE_MIN_VAL_TOP1}
+  quality_gate_epoch: ${DISTILL_QUALITY_GATE_EPOCH}
+  num_workers: 4
   val_check_interval: 0.1
   eval_every_n_epochs: 1
 
@@ -242,10 +312,33 @@ transformer:
   action_dim: 1968
 YAML
 
-if ls "${DATA_DIR}"/shard_*.pt >/dev/null 2>&1; then
-  echo "Reusing existing distill shards in ${DATA_DIR}"
+NEEDS_DATASET_REBUILD=0
+DATASET_REBUILD_REASON=""
+
+if [[ "${DISTILL_FORCE_REBUILD_DATA}" == "1" ]]; then
+  NEEDS_DATASET_REBUILD=1
+  DATASET_REBUILD_REASON="DISTILL_FORCE_REBUILD_DATA=1"
+elif ! ls "${DATA_DIR}"/shard_*.pt >/dev/null 2>&1; then
+  NEEDS_DATASET_REBUILD=1
+  DATASET_REBUILD_REASON="no shard files found"
 else
+  CURRENT_DATASET_TAG="$(read_dataset_meta_tag "${DATASET_META_PATH}" || true)"
+  if [[ -z "${CURRENT_DATASET_TAG}" ]]; then
+    NEEDS_DATASET_REBUILD=1
+    DATASET_REBUILD_REASON="missing dataset metadata tag"
+  elif [[ "${CURRENT_DATASET_TAG}" != "${DISTILL_DATASET_TAG}" ]]; then
+    NEEDS_DATASET_REBUILD=1
+    DATASET_REBUILD_REASON="dataset tag mismatch (have='${CURRENT_DATASET_TAG}', want='${DISTILL_DATASET_TAG}')"
+  fi
+fi
+
+if [[ "${NEEDS_DATASET_REBUILD}" == "1" ]]; then
+  echo "Rebuilding distill dataset (${DATASET_REBUILD_REASON})"
+  rm -f "${DATA_DIR}"/shard_*.pt "${DATASET_META_PATH}" "${CONVERSION_STATS_PATH}"
   python -m src.distill.convert_deepmind_data --config "${CONFIG_PATH}" --num_shards "${DEEPMIND_NUM_SHARDS}" --min_win_prob "${DEEPMIND_MIN_WIN_PROB}"
+  write_dataset_meta "${DATASET_META_PATH}"
+else
+  echo "Reusing existing distill shards in ${DATA_DIR} (dataset tag matches)"
 fi
 
 if is_drive_enabled; then
@@ -261,6 +354,16 @@ if is_drive_enabled; then
       --remote-dir "${PERSIST_NAMESPACE}/distill_data" \
       --glob "shard_*.pt" \
       --max-files "${GDRIVE_UPLOAD_MAX_SHARDS}"
+  fi
+  run_optional_sync python "${GDRIVE_SYNC_SCRIPT}" upload-file \
+    --folder-id "${GDRIVE_FOLDER_ID}" \
+    --local-path "${DATASET_META_PATH}" \
+    --remote-path "${PERSIST_NAMESPACE}/distill_data/_build_meta.json"
+  if [[ -f "${CONVERSION_STATS_PATH}" ]]; then
+    run_optional_sync python "${GDRIVE_SYNC_SCRIPT}" upload-file \
+      --folder-id "${GDRIVE_FOLDER_ID}" \
+      --local-path "${CONVERSION_STATS_PATH}" \
+      --remote-path "${PERSIST_NAMESPACE}/distill_data/conversion_stats.json"
   fi
 fi
 

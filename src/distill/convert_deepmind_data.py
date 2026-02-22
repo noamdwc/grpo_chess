@@ -15,9 +15,11 @@ Run as:
 """
 
 import argparse
+import json
 import os
 import struct
 import urllib.request
+from collections import Counter
 from dataclasses import dataclass
 from typing import Optional
 
@@ -215,21 +217,26 @@ def _flush_grouped_positions(
     fen_groups: dict[str, list[tuple[str, float]]],
     buffer: list[dict],
     config: ConvertConfig,
-) -> tuple[int, int]:
+) -> tuple[int, int, Counter[int], int]:
     """Convert grouped FEN records into samples and append to buffer.
 
-    Returns (positions_kept, positions_skipped).
+    Returns (positions_kept, positions_skipped, top_k_histogram, total_teacher_moves).
     """
     kept = 0
     skipped = 0
+    top_k_histogram: Counter[int] = Counter()
+    total_teacher_moves = 0
     for fen, moves_and_probs in fen_groups.items():
         sample = make_grouped_sample(fen, moves_and_probs, config.top_k, config.temperature)
         if sample is None:
             skipped += 1
         else:
+            teacher_moves = int(sample["teacher_action_indices"].numel())
+            top_k_histogram[teacher_moves] += 1
+            total_teacher_moves += teacher_moves
             buffer.append(sample)
             kept += 1
-    return kept, skipped
+    return kept, skipped, top_k_histogram, total_teacher_moves
 
 
 def convert(config: ConvertConfig):
@@ -252,6 +259,13 @@ def convert(config: ConvertConfig):
     buffer: list[dict] = []
     out_shard_idx = 0
     total_saved = 0
+    total_records = 0
+    total_filtered_records = 0
+    total_grouped_positions = 0
+    total_kept_positions = 0
+    total_skipped_positions = 0
+    total_teacher_moves = 0
+    top_k_histogram: Counter[int] = Counter()
 
     for i, bag_idx in enumerate(shard_indices):
         print(f"\nShard {i + 1}/{config.num_shards} (bag index {bag_idx}):")
@@ -262,6 +276,7 @@ def convert(config: ConvertConfig):
         # Group all records by FEN within this .bag shard
         fen_groups: dict[str, list[tuple[str, float]]] = {}
         filtered_records = 0
+        total_records += num_records
 
         for raw in tqdm(
             read_bag_records(bag_path),
@@ -280,7 +295,17 @@ def convert(config: ConvertConfig):
             fen_groups[fen].append((move, win_prob))
 
         # Convert grouped positions to samples
-        kept, skipped = _flush_grouped_positions(fen_groups, buffer, config)
+        kept, skipped, shard_top_k_histogram, shard_teacher_moves = _flush_grouped_positions(
+            fen_groups,
+            buffer,
+            config,
+        )
+        total_filtered_records += filtered_records
+        total_grouped_positions += len(fen_groups)
+        total_kept_positions += kept
+        total_skipped_positions += skipped
+        total_teacher_moves += shard_teacher_moves
+        top_k_histogram.update(shard_top_k_histogram)
 
         print(
             f"  {num_records:,} records → {len(fen_groups):,} positions "
@@ -324,7 +349,37 @@ def convert(config: ConvertConfig):
             print(f"  Saved {shard_path} ({len(to_save):,} samples)")
             out_shard_idx += 1
 
+    mean_teacher_moves = 0.0
+    if total_kept_positions > 0:
+        mean_teacher_moves = total_teacher_moves / total_kept_positions
+
+    stats_path = os.path.join(config.output_dir, "conversion_stats.json")
+    stats_payload = {
+        "config": {
+            "num_shards": config.num_shards,
+            "top_k": config.top_k,
+            "temperature": config.temperature,
+            "min_win_prob": config.min_win_prob,
+            "shard_size": config.shard_size,
+            "max_samples": config.max_samples,
+            "output_dir": config.output_dir,
+        },
+        "records_total": total_records,
+        "records_below_min_win_prob": total_filtered_records,
+        "positions_grouped": total_grouped_positions,
+        "positions_kept": total_kept_positions,
+        "positions_skipped": total_skipped_positions,
+        "teacher_moves_total": total_teacher_moves,
+        "teacher_moves_mean_per_kept_position": mean_teacher_moves,
+        "samples_saved": total_saved,
+        "output_shards": out_shard_idx,
+        "top_k_histogram": {str(k): v for k, v in sorted(top_k_histogram.items())},
+    }
+    with open(stats_path, "w", encoding="utf-8") as f:
+        json.dump(stats_payload, f, indent=2, sort_keys=True)
+
     print(f"\nDone! {total_saved:,} samples in {out_shard_idx} shards → {config.output_dir}")
+    print(f"Conversion stats saved to {stats_path}")
 
 
 # ---------------------------------------------------------------------------
