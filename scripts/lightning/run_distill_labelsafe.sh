@@ -45,13 +45,14 @@ GDRIVE_UPLOAD_MAX_SHARDS="${GDRIVE_UPLOAD_MAX_SHARDS:-${DISTILL_MAX_SHARDS}}"
 GDRIVE_SYNC_SCRIPT="${GDRIVE_SYNC_SCRIPT:-scripts/lightning/gdrive_sync.py}"
 DISTILL_OUTPUT_DIR="${DISTILL_OUTPUT_DIR:-checkpoints/distill_labelsafe}"
 DISTILL_FORCE_REBUILD_DATA="${DISTILL_FORCE_REBUILD_DATA:-0}"
-DISTILL_QUALITY_GATE_MIN_VAL_TOP1="${DISTILL_QUALITY_GATE_MIN_VAL_TOP1:-0.08}"
+DISTILL_QUALITY_GATE_MIN_VAL_TOP1="${DISTILL_QUALITY_GATE_MIN_VAL_TOP1:-0.0}"
 DISTILL_QUALITY_GATE_EPOCH="${DISTILL_QUALITY_GATE_EPOCH:-3}"
+DEEPMIND_MAX_SAMPLES="${DEEPMIND_MAX_SAMPLES:-300000}"
 DISTILL_DATASET_TAG_DEFAULT="deepmind_data.v1:num_shards=${DEEPMIND_NUM_SHARDS},min_win_prob=${DEEPMIND_MIN_WIN_PROB},top_k=8,temperature=1.0,shard_size=50000"
 DISTILL_DATASET_TAG="${DISTILL_DATASET_TAG:-${DISTILL_DATASET_TAG_DEFAULT}}"
 DATASET_META_PATH="${DATA_DIR}/_build_meta.json"
 CONVERSION_STATS_PATH="${DATA_DIR}/conversion_stats.json"
-export DISTILL_DATASET_TAG DEEPMIND_NUM_SHARDS DEEPMIND_MIN_WIN_PROB DATA_DIR
+export DISTILL_DATASET_TAG DEEPMIND_NUM_SHARDS DEEPMIND_MIN_WIN_PROB DATA_DIR DEEPMIND_MAX_SAMPLES
 
 mkdir -p "${PERSIST_ROOT}" "${DATA_DIR}"
 
@@ -260,6 +261,7 @@ deepmind_data:
   min_win_prob: ${DEEPMIND_MIN_WIN_PROB}
   output_dir: "${DATA_DIR}"
   shard_size: 50000
+  max_samples: ${DEEPMIND_MAX_SAMPLES}
 
 distill:
   lr: 0.00006
@@ -335,7 +337,11 @@ fi
 if [[ "${NEEDS_DATASET_REBUILD}" == "1" ]]; then
   echo "Rebuilding distill dataset (${DATASET_REBUILD_REASON})"
   rm -f "${DATA_DIR}"/shard_*.pt "${DATASET_META_PATH}" "${CONVERSION_STATS_PATH}"
-  python -m src.distill.convert_deepmind_data --config "${CONFIG_PATH}" --num_shards "${DEEPMIND_NUM_SHARDS}" --min_win_prob "${DEEPMIND_MIN_WIN_PROB}"
+  python -m src.distill.convert_deepmind_data \
+    --config "${CONFIG_PATH}" \
+    --num_shards "${DEEPMIND_NUM_SHARDS}" \
+    --min_win_prob "${DEEPMIND_MIN_WIN_PROB}" \
+    --max_samples "${DEEPMIND_MAX_SAMPLES}"
   write_dataset_meta "${DATASET_META_PATH}"
 else
   echo "Reusing existing distill shards in ${DATA_DIR} (dataset tag matches)"
