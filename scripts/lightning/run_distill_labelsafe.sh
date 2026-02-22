@@ -68,6 +68,9 @@ TEACHER_SKIP_LAST_N_MOVES="${TEACHER_SKIP_LAST_N_MOVES:-5}"
 TEACHER_SAMPLE_POSITIONS_PER_GAME="${TEACHER_SAMPLE_POSITIONS_PER_GAME:-3}"
 TEACHER_PROCESS_BATCH_SIZE="${TEACHER_PROCESS_BATCH_SIZE:-256}"
 TEACHER_NUM_WORKERS="${TEACHER_NUM_WORKERS:-4}"
+DISTILL_TORCH_RUNTIME_NUMPY="${DISTILL_TORCH_RUNTIME_NUMPY:-1.26.4}"
+DISABLE_LIGHTNING_SITECUSTOMIZE="${DISABLE_LIGHTNING_SITECUSTOMIZE:-1}"
+RUNTIME_SITECUSTOMIZE_DIR="${RUNTIME_SITECUSTOMIZE_DIR:-/tmp/grpo_chess_sitecustomize}"
 
 DISTILL_PREFLIGHT_MIN_K_MEAN="${DISTILL_PREFLIGHT_MIN_K_MEAN:-}"
 DISTILL_PREFLIGHT_MAX_K1_FRAC="${DISTILL_PREFLIGHT_MAX_K1_FRAC:-}"
@@ -120,6 +123,17 @@ export TEACHER_MODEL TEACHER_CHECKPOINT_DIR TEACHER_CHECKPOINT_STEP TEACHER_BATC
 export TEACHER_HF_CACHE_DIR TEACHER_SHARD_SIZE TEACHER_MIN_ELO TEACHER_MAX_SAMPLES
 export TEACHER_SKIP_FIRST_N_MOVES TEACHER_SKIP_LAST_N_MOVES TEACHER_SAMPLE_POSITIONS_PER_GAME
 export TEACHER_PROCESS_BATCH_SIZE TEACHER_NUM_WORKERS
+
+# Lightning images may ship a global sitecustomize that eagerly imports
+# Lightning/PyTorch modules on every python startup. That can break unrelated
+# setup steps when temporary dependency versions (for teacher/JAX) are active.
+if [[ "${DISABLE_LIGHTNING_SITECUSTOMIZE}" == "1" ]]; then
+  mkdir -p "${RUNTIME_SITECUSTOMIZE_DIR}"
+  cat > "${RUNTIME_SITECUSTOMIZE_DIR}/sitecustomize.py" <<'PY'
+# Intentionally empty: override environment-provided sitecustomize side effects.
+PY
+  export PYTHONPATH="${RUNTIME_SITECUSTOMIZE_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+fi
 
 choose_artifact_root() {
   if [[ -n "${ARTIFACT_ROOT:-}" ]]; then
@@ -424,6 +438,16 @@ if mode == "quality":
 PY
 }
 
+restore_distill_runtime_numpy() {
+  local numpy_version="$1"
+  echo "Restoring runtime NumPy compatibility for distill: ${numpy_version}"
+  python -m pip install --quiet "numpy==${numpy_version}"
+  python - <<'PY'
+import numpy as np
+print(f"Runtime NumPy version: {np.__version__}")
+PY
+}
+
 find_stockfish_binary() {
   local candidate=""
   local candidates=()
@@ -661,6 +685,10 @@ if is_drive_enabled; then
       --local-path "${DATASET_QUALITY_STATS_PATH}" \
       --remote-path "${PERSIST_NAMESPACE}/${PERSIST_DATA_REMOTE_DIR}/dataset_quality_stats.json"
   fi
+fi
+
+if [[ "${DISTILL_MODE}" == "quality" ]]; then
+  restore_distill_runtime_numpy "${DISTILL_TORCH_RUNTIME_NUMPY}"
 fi
 
 python -m src.distill.distill --config "${CONFIG_PATH}"
