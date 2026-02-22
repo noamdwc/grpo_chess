@@ -95,16 +95,21 @@ Submit with:
 
 ## 5) Persistence Pattern (Lightning Recommended)
 
-Use Lightning persistent storage by default.
+For Lightning Jobs, `/teamspace/studios/this_studio/...` is job-local and not shared across job submissions.
 
-- Default cache root:
+- Job-local fallback (works within one job only):
   - `/teamspace/studios/this_studio/artifacts`
+- Recommended shared cache root (if mounted and writable):
+  - `/teamspace/s3_connections/<mount>/grpo_chess_artifacts`
 - Suggested distill cache:
-  - `/teamspace/studios/this_studio/artifacts/distill_labelsafe_v2/distill_data`
+  - `<ARTIFACT_ROOT>/distill_labelsafe_v2/distill_data`
 - Suggested pretrain checkpoint cache:
-  - `/teamspace/studios/this_studio/artifacts/distill_labelsafe_v2/pretrain.ckpt`
+  - `<ARTIFACT_ROOT>/distill_labelsafe_v2/pretrain.ckpt`
 
-Before downloading/converting, check if files already exist and reuse them.
+`scripts/lightning/run_distill_labelsafe.sh` now:
+- auto-detects a writable mount under `/teamspace/s3_connections/*` when available
+- warns when using job-local fallback path
+- can hard-fail with `REQUIRE_PERSISTENT_CACHE=1` if only job-local storage is available
 
 Optional Google Drive backend is supported but currently parked for agent-driven jobs due to credential-boundary risk. See Section 11.
 

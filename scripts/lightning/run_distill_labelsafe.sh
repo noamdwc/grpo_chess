@@ -25,11 +25,7 @@ else
   USE_WANDB=false
 fi
 
-ARTIFACT_ROOT="${ARTIFACT_ROOT:-/teamspace/studios/this_studio/artifacts}"
 PERSIST_NAMESPACE="${PERSIST_NAMESPACE:-distill_labelsafe_v2}"
-PERSIST_ROOT="${PERSIST_ROOT:-${ARTIFACT_ROOT}/${PERSIST_NAMESPACE}}"
-DATA_DIR="${DATA_DIR:-${PERSIST_ROOT}/distill_data}"
-CKPT_PATH="${CKPT_PATH:-${PERSIST_ROOT}/pretrain.ckpt}"
 CONFIG_PATH="${CONFIG_PATH:-/tmp/distill_labelsafe.lightning.yaml}"
 PRETRAIN_CKPT_DRIVE_URL="${PRETRAIN_CKPT_DRIVE_URL:-}"
 DEEPMIND_NUM_SHARDS="${DEEPMIND_NUM_SHARDS:-8}"
@@ -48,11 +44,49 @@ DISTILL_FORCE_REBUILD_DATA="${DISTILL_FORCE_REBUILD_DATA:-0}"
 DISTILL_QUALITY_GATE_MIN_VAL_TOP1="${DISTILL_QUALITY_GATE_MIN_VAL_TOP1:-0.0}"
 DISTILL_QUALITY_GATE_EPOCH="${DISTILL_QUALITY_GATE_EPOCH:-3}"
 DEEPMIND_MAX_SAMPLES="${DEEPMIND_MAX_SAMPLES:-300000}"
-DISTILL_DATASET_TAG_DEFAULT="deepmind_data.v1:num_shards=${DEEPMIND_NUM_SHARDS},min_win_prob=${DEEPMIND_MIN_WIN_PROB},top_k=8,temperature=1.0,shard_size=50000"
+AUTO_USE_S3_CONNECTION_CACHE="${AUTO_USE_S3_CONNECTION_CACHE:-1}"
+REQUIRE_PERSISTENT_CACHE="${REQUIRE_PERSISTENT_CACHE:-0}"
+DISTILL_DATASET_TAG_DEFAULT="deepmind_data.v1:num_shards=${DEEPMIND_NUM_SHARDS},min_win_prob=${DEEPMIND_MIN_WIN_PROB},top_k=8,temperature=1.0,shard_size=50000,max_samples=${DEEPMIND_MAX_SAMPLES}"
 DISTILL_DATASET_TAG="${DISTILL_DATASET_TAG:-${DISTILL_DATASET_TAG_DEFAULT}}"
+export DISTILL_DATASET_TAG DEEPMIND_NUM_SHARDS DEEPMIND_MIN_WIN_PROB DEEPMIND_MAX_SAMPLES
+
+choose_artifact_root() {
+  if [[ -n "${ARTIFACT_ROOT:-}" ]]; then
+    printf '%s\n' "${ARTIFACT_ROOT}"
+    return 0
+  fi
+
+  if [[ "${AUTO_USE_S3_CONNECTION_CACHE}" == "1" ]] && [[ -d "/teamspace/s3_connections" ]]; then
+    local conn_dir=""
+    for conn_dir in /teamspace/s3_connections/*; do
+      [[ -d "${conn_dir}" ]] || continue
+      if mkdir -p "${conn_dir}/grpo_chess_artifacts" 2>/dev/null; then
+        printf '%s\n' "${conn_dir}/grpo_chess_artifacts"
+        return 0
+      fi
+    done
+  fi
+
+  printf '%s\n' "/teamspace/studios/this_studio/artifacts"
+}
+
+ARTIFACT_ROOT="$(choose_artifact_root)"
+PERSIST_ROOT="${PERSIST_ROOT:-${ARTIFACT_ROOT}/${PERSIST_NAMESPACE}}"
+DATA_DIR="${DATA_DIR:-${PERSIST_ROOT}/distill_data}"
+CKPT_PATH="${CKPT_PATH:-${PERSIST_ROOT}/pretrain.ckpt}"
 DATASET_META_PATH="${DATA_DIR}/_build_meta.json"
 CONVERSION_STATS_PATH="${DATA_DIR}/conversion_stats.json"
-export DISTILL_DATASET_TAG DEEPMIND_NUM_SHARDS DEEPMIND_MIN_WIN_PROB DATA_DIR DEEPMIND_MAX_SAMPLES
+export DATA_DIR
+
+if [[ "${PERSIST_BACKEND}" == "lightning" ]] && [[ "${ARTIFACT_ROOT}" == /teamspace/studios/this_studio/* ]]; then
+  echo "Warning: ARTIFACT_ROOT=${ARTIFACT_ROOT} is job-local in Lightning Jobs and is not shared across jobs."
+  echo "Warning: Cache reuse across job submissions will not work with this path."
+  echo "Warning: Set ARTIFACT_ROOT to a writable mounted path (for example /teamspace/s3_connections/<mount>/grpo_chess_artifacts)."
+  if [[ "${REQUIRE_PERSISTENT_CACHE}" == "1" ]]; then
+    echo "ERROR: REQUIRE_PERSISTENT_CACHE=1 but no persistent writable ARTIFACT_ROOT is configured." >&2
+    exit 1
+  fi
+fi
 
 mkdir -p "${PERSIST_ROOT}" "${DATA_DIR}"
 
@@ -151,6 +185,7 @@ payload = {
     "dataset_tag": os.environ["DISTILL_DATASET_TAG"],
     "num_shards": int(os.environ["DEEPMIND_NUM_SHARDS"]),
     "min_win_prob": float(os.environ["DEEPMIND_MIN_WIN_PROB"]),
+    "max_samples": int(os.environ["DEEPMIND_MAX_SAMPLES"]),
     "top_k": 8,
     "temperature": 1.0,
     "shard_size": 50000,
