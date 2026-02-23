@@ -14,6 +14,17 @@ class GRPOLossInfo:
     advantage_mean: torch.Tensor
     advantage_std: torch.Tensor
 
+
+def importance_ratio(logprobs_new: torch.Tensor, logprobs_old: torch.Tensor) -> torch.Tensor:
+    """Compute importance ratio pi_new / pi_old from log-probabilities."""
+    if logprobs_new.shape != logprobs_old.shape:
+        raise ValueError(
+            f"logprobs_new and logprobs_old must have matching shapes, "
+            f"got {logprobs_new.shape} vs {logprobs_old.shape}"
+        )
+    return (logprobs_new - logprobs_old).exp()
+
+
 def grpo_chess_loss(
     logprobs_new: torch.Tensor,   # [G, T]  log πθ(a_{g,k,t} | s_{g,k,t})
     logprobs_old: torch.Tensor,   # [G, T]  log πold(a_{g,k,t} | s_{g,k,t})
@@ -42,7 +53,7 @@ def grpo_chess_loss(
     #    r_{g,k,t}(θ) = πθ(a_{g,k,t}|s_{g,k,t}) / πold(a_{g,k,t}|s_{g,k,t})
     #                 = exp( logπθ - logπold )
     # ------------------------------------------------------------
-    ratio = (logprobs_new - logprobs_old).exp() # [G, T]
+    ratio = importance_ratio(logprobs_new, logprobs_old)  # [G, T]
     pg_unclipped = -advantages * ratio  # [G, T]
     pg_clipped = -advantages * ratio.clamp(1.0 - clip_eps, 1.0 + clip_eps) # [G, T]
 
@@ -126,7 +137,7 @@ def ppo_chess_loss(
     """
     if pad_mask is None:
       pad_mask = torch.ones_like(logprobs_new, dtype=torch.bool)
-    ratio = (logprobs_new - logprobs_old).exp() # [G, T]
+    ratio = importance_ratio(logprobs_new, logprobs_old)  # [G, T]
     pg_unclipped = -advantages * ratio  # [G, T]
     pg_clipped = -advantages * ratio.clamp(1.0 - clip_eps, 1.0 + clip_eps) # [G, T]
     # Surrogate policy gradient loss (PPO-clip part)

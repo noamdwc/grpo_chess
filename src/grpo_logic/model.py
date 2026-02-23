@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from src.models import ChessTransformer, ChessTransformerConfig
 from src.grpo_logic.loss import grpo_ppo_loss
+from src.grpo_logic.mode_utils import temporary_eval
 from src.grpo_logic.sampling import sample_trajectories_batched
 from src.eval_utils import EvalConfig
 from src.chess.policy_player import PolicyConfig
@@ -227,10 +228,11 @@ class GRPOChessTransformer(pl.LightningModule):
         Returns:
             Tuple of (loss, loss_info)
         """
-        # Compute new log probs with current policy (must match rollout temperature)
-        new_log_probs = self.policy_model.get_group_log_probs(
-            trajectories_states, trajectories_actions, trajectories_legal_masks,
-            temperature=self.hparams.grpo_config.rollout_temperature,
+        # Compute new log probs with dropout disabled, while keeping gradients enabled.
+        new_log_probs = self._compute_new_log_probs(
+            trajectories_states=trajectories_states,
+            trajectories_actions=trajectories_actions,
+            trajectories_legal_masks=trajectories_legal_masks,
         )
 
         loss, loss_info = grpo_ppo_loss(
@@ -247,6 +249,36 @@ class GRPOChessTransformer(pl.LightningModule):
             raise ValueError(f"Non-finite loss encountered: {loss.item()}")
 
         return loss, loss_info
+
+    def _compute_new_log_probs(
+        self,
+        trajectories_states: torch.Tensor,
+        trajectories_actions: torch.Tensor,
+        trajectories_legal_masks: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """Compute trainable log-probs for the current policy with dropout off."""
+        with temporary_eval(self.policy_model):
+            return self.policy_model.get_group_log_probs(
+                trajectories_states,
+                trajectories_actions,
+                trajectories_legal_masks,
+                temperature=self.hparams.grpo_config.rollout_temperature,
+            )
+
+    def _compute_old_log_probs(
+        self,
+        trajectories_states: torch.Tensor,
+        trajectories_actions: torch.Tensor,
+        trajectories_legal_masks: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """Compute reference log-probs for the old policy with dropout off and no-grad."""
+        with temporary_eval(self.old_policy_model), torch.no_grad():
+            return self.old_policy_model.get_group_log_probs(
+                trajectories_states,
+                trajectories_actions,
+                trajectories_legal_masks,
+                temperature=self.hparams.grpo_config.rollout_temperature,
+            )
 
     def _run_safety_checks(self, loss_info) -> None:
         """Run safety checks on training dynamics and abort if clip fraction stays too high."""
@@ -285,15 +317,16 @@ class GRPOChessTransformer(pl.LightningModule):
         if not boards:
             return  # Skip if game over
 
-        trajectories_sample = sample_trajectories_batched(
-            self.old_policy_model,
-            boards,
-            self.hparams.grpo_config.num_trajectories,
-            self.hparams.grpo_config.trajectory_depth,
-            temperature=self.hparams.grpo_config.rollout_temperature,
-            teacher_forcing_prob=self.hparams.grpo_config.teacher_forcing_prob,
-            teacher_forcing_depth=self.hparams.grpo_config.teacher_forcing_depth,
-        )
+        with temporary_eval(self.old_policy_model), torch.no_grad():
+            trajectories_sample = sample_trajectories_batched(
+                self.old_policy_model,
+                boards,
+                self.hparams.grpo_config.num_trajectories,
+                self.hparams.grpo_config.trajectory_depth,
+                temperature=self.hparams.grpo_config.rollout_temperature,
+                teacher_forcing_prob=self.hparams.grpo_config.teacher_forcing_prob,
+                teacher_forcing_depth=self.hparams.grpo_config.teacher_forcing_depth,
+            )
         if trajectories_sample is None:
             return  # Skip if no moves
 

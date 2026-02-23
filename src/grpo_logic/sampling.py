@@ -12,6 +12,7 @@ from src.models import ChessTransformer
 from src.searchless_chess_imports import ACTION_TO_MOVE, SEQUENCE_LENGTH, MOVE_TO_ACTION
 from src.chess.chess_logic import board_to_tensor,  get_legal_moves_mask
 from src.chess.stockfish import stockfish_play, DEFAULT_STOCKFISH_TIMEOUT
+from src.grpo_logic.mode_utils import temporary_eval
 
 
 def _get_teacher_engine_name() -> str:
@@ -95,11 +96,13 @@ def batched_policy_step(model: ChessTransformer, boards: List[chess.Board], temp
     if not legal_mask.any(dim=1).all():
         bad = (~legal_mask.any(dim=1)).nonzero(as_tuple=False).flatten().tolist()
         raise ValueError(f"Empty legal mask for boards: {bad}")
-    probs = model.get_legal_moves_probs(states_tensor, legal_mask, temperature)  # [N, O]
-
-    action_idx = torch.multinomial(probs, 1).squeeze(1)  # [N,]
-    chosen_probs = probs.gather(1, action_idx.unsqueeze(1)).squeeze(1)  # [N,]
-    chosen_log_probs = torch.log(chosen_probs + 1e-12)  # [N,], avoid log(0)
+    # Sampling uses stochastic action draws, but policy logits/probabilities must be
+    # evaluated with dropout disabled and without autograd tracking.
+    with temporary_eval(model), torch.no_grad():
+        probs = model.get_legal_moves_probs(states_tensor, legal_mask, temperature)  # [N, O]
+        action_idx = torch.multinomial(probs, 1).squeeze(1)  # [N,]
+        chosen_probs = probs.gather(1, action_idx.unsqueeze(1)).squeeze(1)  # [N,]
+        chosen_log_probs = torch.log(chosen_probs + 1e-12)  # [N,], avoid log(0)
 
     # Convert action indices to moves, ensure legality
     moves = []
