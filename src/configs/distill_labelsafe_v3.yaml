@@ -30,7 +30,7 @@ distill:
   weight_decay: 0.01
   max_grad_norm: 0.5
   checkpoint_dir: "checkpoints/distill_labelsafe"
-  pretrain_checkpoint: "/content/drive/MyDrive/data/grpo-chess/pretrain_checkpoints/pretrain-20260128-1215-16es-epoch=12-train/loss=2.3285.ckpt"
+  pretrain_checkpoint: "checkpoints/pretrain.ckpt"
   use_wandb: true
   wandb_project: "chess-grpo-pretrain"
   log_model_artifacts: false
