@@ -88,26 +88,36 @@ def group_advantage(group_rewards: torch.Tensor) -> torch.Tensor:
 
 def step_group_advantage(step_rewards: torch.Tensor, pad_mask: torch.Tensor | None = None) -> torch.Tensor:
     """
-    Compute per-step normalized advantages from step rewards.
-    For each timestep t, normalizes across the G dimension (trajectories).
+    Compute per-step z-score normalized advantages from step rewards.
+    For each timestep t, z-score normalizes across the G dimension (trajectories):
 
-    NOTE: No std normalization is applied here, Using DR. GRPO paper.
+        advantage[b, g, t] = (reward[b,g,t] - mean_g[b,t]) / max(std_g[b,t], 1e-8)
+
+    eps=1e-8 is a denominator floor (clamp_min). When all G rewards at a timestep
+    are equal, std=0 and the numerator is also 0, so advantages are exactly 0.
+    Padded entries (pad_mask=False) are zeroed in the output.
+
     Args:
         step_rewards: Per-step rewards tensor [B, G, T]
         pad_mask: Optional mask for valid steps [B, G, T], True=valid
 
     Returns:
-        Normalized advantages [B, G, T] where each timestep is normalized across G
+        Z-score normalized advantages [B, G, T] where each timestep is normalized
+        across the G dimension independently.
     """
-    # Normalize across G dimension for each (batch, timestep), respecting padding.
+    eps = 1e-8
     if pad_mask is None:
         mean_t = step_rewards.mean(dim=1, keepdim=True)  # [B, 1, T]
-        advantages = step_rewards - mean_t  # [B, G, T]
+        std_t = step_rewards.std(dim=1, unbiased=False, keepdim=True).clamp_min(eps)  # [B, 1, T]
+        advantages = (step_rewards - mean_t) / std_t  # [B, G, T]
     else:
         valid = pad_mask.float()
         valid_count = valid.sum(dim=1, keepdim=True).clamp_min(1.0)  # [B, 1, T]
         mean_t = (step_rewards * valid).sum(dim=1, keepdim=True) / valid_count  # [B, 1, T]
-        advantages = (step_rewards - mean_t) * valid  # [B, G, T]
+        sq_diff = ((step_rewards - mean_t) ** 2) * valid
+        var_t = sq_diff.sum(dim=1, keepdim=True) / valid_count
+        std_t = var_t.sqrt().clamp_min(eps)  # [B, 1, T]
+        advantages = ((step_rewards - mean_t) / std_t) * valid  # [B, G, T]
 
     return advantages
 
