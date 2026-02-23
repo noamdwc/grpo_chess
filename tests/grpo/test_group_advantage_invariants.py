@@ -12,7 +12,7 @@ or external data required.
 import torch
 import pytest
 
-from src.grpo_logic.loss import step_group_advantage
+from src.grpo_logic.loss import step_group_advantage, grpo_ppo_loss
 
 
 # ---------------------------------------------------------------------------
@@ -208,3 +208,48 @@ def test_step_group_advantage_pad_mask_zeroes_padded_entries():
     # Valid entries at the partial timestep (t=2, only G=0,1 valid) should be finite
     valid_t2 = out[0, :2, 2]
     assert torch.isfinite(valid_t2).all()
+
+
+# ---------------------------------------------------------------------------
+# F — Integration: scale invariance survives the full production loss pipeline
+# ---------------------------------------------------------------------------
+
+def test_grpo_loss_is_invariant_to_positive_reward_scaling_when_kl_disabled():
+    """Policy loss from grpo_ppo_loss is unchanged when step_rewards are scaled by alpha>0,
+    provided KL is disabled (kl_coef=0).
+
+    With z-score normalization, alpha * rewards → same advantages → same PPO loss.
+    With KL disabled the only term is the PPO clip loss, so the full loss is also
+    scale-invariant. This test validates that the invariant survives the complete
+    production pipeline, not just the advantage helper.
+
+    Catches: z-score normalization being bypassed or overridden downstream.
+    """
+    torch.manual_seed(5)
+    B, G, T = 2, 4, 5
+
+    # Fixed log-probs — kept identical for both runs (only rewards change)
+    logprobs_old = torch.randn(B, G, T) - 2.0   # plausible log-prob range
+    # new log-probs slightly different from old to get non-trivial ratios
+    logprobs_new = logprobs_old + 0.1 * torch.randn(B, G, T)
+    logprobs_new = logprobs_new.detach().requires_grad_(False)
+
+    # Non-degenerate rewards with clear spread across G
+    step_rewards = torch.randn(B, G, T)
+    pad_mask = torch.ones(B, G, T, dtype=torch.bool)
+
+    base_loss = grpo_ppo_loss(
+        logprobs_new, logprobs_old, step_rewards,
+        pad_mask=pad_mask, kl_coef=0.0,
+    )
+
+    for alpha in [2.0, 0.1, 50.0]:
+        scaled_loss = grpo_ppo_loss(
+            logprobs_new, logprobs_old, alpha * step_rewards,
+            pad_mask=pad_mask, kl_coef=0.0,
+        )
+        assert torch.allclose(scaled_loss, base_loss, atol=1e-5), (
+            f"alpha={alpha}: policy loss changed from {base_loss:.6f} to {scaled_loss:.6f} "
+            f"(diff {(scaled_loss - base_loss).abs():.2e}). "
+            f"Fails if z-score normalization is missing from the production path."
+        )
