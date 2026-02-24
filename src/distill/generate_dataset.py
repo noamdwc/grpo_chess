@@ -5,6 +5,7 @@ Requires JAX environment. Run as:
 """
 
 import argparse
+import json
 import os
 import time
 import random
@@ -40,6 +41,7 @@ class GenerateConfig:
     num_workers: int = 0
     top_k: int = 8
     teacher_temperature: float = 1.0
+    teacher_target_score_norm: str = "plain"
     hf_cache_dir: Optional[str] = None  # e.g. "/content/drive/MyDrive/hf_cache"
     output_dir: str = "data/distill"
     shard_size: int = 50_000
@@ -184,6 +186,7 @@ def _print_config(config: GenerateConfig):
     print(f"  Checkpoint step:  {config.checkpoint_step:,}")
     print(f"  Top-k:            {config.top_k}")
     print(f"  Temperature:      {config.teacher_temperature}")
+    print(f"  Score norm mode:  {config.teacher_target_score_norm}")
     print(f"  Max samples:      {config.max_samples:,}")
     print(f"  Shard size:       {config.shard_size:,}")
     print(f"  Min ELO:          {config.min_elo}")
@@ -234,6 +237,10 @@ def generate(config: GenerateConfig):
     current_shard = []
     total_processed = existing_samples
     failed = 0
+    diag_batches = 0
+    diag_positions = 0.0
+    diag_weighted_sums: dict[str, float] = {}
+    diag_running_sums: dict[str, float] = {}
 
     t_prev = time.time()
 
@@ -252,11 +259,23 @@ def generate(config: GenerateConfig):
         t_to_numpy = time.time()
         all_log_probs = engine.predict_fn(seqs)[:, -1]
         t_infer = time.time()
-        samples = postprocess_teacher_batch(
+        samples, batch_diag = postprocess_teacher_batch(
             all_log_probs, bucket_values, batch,
             config.top_k, config.teacher_temperature,
+            score_norm_mode=config.teacher_target_score_norm,
+            return_diagnostics=True,
         )
         t_post = time.time()
+
+        diag_batches += 1
+        batch_positions = float(batch_diag.get("n_positions", 0.0))
+        diag_positions += batch_positions
+        for key, value in batch_diag.items():
+            if key in {"n_positions"}:
+                continue
+            diag_running_sums[key] = diag_running_sums.get(key, 0.0) + float(value)
+            if key.endswith("_mean") and batch_positions > 0.0:
+                diag_weighted_sums[key] = diag_weighted_sums.get(key, 0.0) + float(value) * batch_positions
 
         n_seqs = seqs.shape[0]
         batch_compute = max(t_post - t_data, 1e-6)
@@ -269,6 +288,17 @@ def generate(config: GenerateConfig):
                   f"inference={t_infer - t_to_numpy:.1f}s ({n_seqs} seqs, {seq_per_s:.1f} seq/s)  "
                   f"postprocess={t_post - t_infer:.2f}s  "
                   f"batch={batch_compute:.1f}s ({pos_per_s:.2f} pos/s)")
+        if batch_idx % 20 == 0:
+            print(
+                "  [teacher_diagnostics] "
+                f"top1_prob_mean={batch_diag.get('teacher_top1_prob_mean', float('nan')):.4f}, "
+                f"top1_margin_prob_mean={batch_diag.get('teacher_top1_minus_top2_prob_mean', float('nan')):.4f}, "
+                f"entropy_mean={batch_diag.get('teacher_entropy_mean', float('nan')):.4f}, "
+                f"effective_k_mean={batch_diag.get('teacher_effective_k_mean', float('nan')):.4f}, "
+                f"top1_margin_raw_mean={batch_diag.get('teacher_top1_minus_top2_raw_mean', float('nan')):.4f}, "
+                f"top1_margin_scaled_mean={batch_diag.get('teacher_top1_minus_top2_scaled_mean', float('nan')):.4f}, "
+                f"topk_raw_std_mean={batch_diag.get('teacher_topk_raw_score_std_mean', float('nan')):.4f}"
+            )
 
         current_shard.extend(samples)
         total_processed += len(samples)
@@ -294,6 +324,24 @@ def generate(config: GenerateConfig):
         save_shard(current_shard, shard_path)
         print(f"Saved {shard_path} ({len(current_shard):,} samples)")
 
+    if diag_batches > 0:
+        diagnostics_payload = {
+            "n_batches": diag_batches,
+            "n_positions": int(diag_positions),
+            "score_norm_mode": config.teacher_target_score_norm,
+            "batch_avg": {
+                key: value / diag_batches for key, value in diag_running_sums.items()
+            },
+            "weighted_by_positions_mean_metrics": {
+                key: (value / diag_positions) if diag_positions > 0 else float("nan")
+                for key, value in diag_weighted_sums.items()
+            },
+        }
+        diagnostics_path = os.path.join(config.output_dir, "teacher_diagnostics.json")
+        with open(diagnostics_path, "w", encoding="utf-8") as f:
+            json.dump(diagnostics_payload, f, indent=2, sort_keys=True)
+        print(f"Wrote teacher diagnostics: {diagnostics_path}")
+
     print(f"\nDone! Total: {total_processed:,} samples, Failed: {failed:,}")
 
 
@@ -311,6 +359,12 @@ def main():
     parser.add_argument("--num_workers", type=int, help="Override num_workers for DataLoader")
     parser.add_argument("--output_dir", type=str, help="Override output directory for shards and cache")
     parser.add_argument("--hf_cache_dir", type=str, help="HuggingFace dataset cache directory")
+    parser.add_argument(
+        "--teacher_target_score_norm",
+        type=str,
+        choices=["plain", "zscore"],
+        help="Score normalization mode for top-k EV scores before softmax",
+    )
     args = parser.parse_args()
 
     data = load_yaml_file(args.config)
@@ -330,6 +384,8 @@ def main():
         config.output_dir = args.output_dir
     if args.hf_cache_dir:
         config.hf_cache_dir = args.hf_cache_dir
+    if args.teacher_target_score_norm:
+        config.teacher_target_score_norm = args.teacher_target_score_norm
 
     generate(config)
 

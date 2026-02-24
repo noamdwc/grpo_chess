@@ -54,6 +54,16 @@ class DistillConfig:
     require_stockfish_eval: bool = False
     quality_gate_min_val_top1: float = 0.0
     quality_gate_epoch: int = 0
+    distill_lambda_soft: float = 1.0
+    distill_lambda_hard: float = 0.0
+    distill_target_top1_mix_alpha: float = 0.0
+    checkpoint_monitor_eval_metric: str = "eval_stockfish/score"
+    checkpoint_monitor_eval_mode: str = "max"
+    checkpoint_monitor_eval_top_k: int = 1
+    enable_standard_opening_eval: bool = False
+    standard_eval_every_n_epochs: Optional[int] = None
+    standard_eval_randomize_opening: bool = False
+    standard_eval_opening_plies: int = 0
 
 
 @dataclass
@@ -215,17 +225,40 @@ class DistillChessTransformer(pl.LightningModule):
             teacher_is_legal, student_at_teacher, torch.zeros_like(student_at_teacher)
         )
 
-        # Cross-entropy with legality-filtered, renormalized teacher soft labels
-        loss_per_sample = -(teacher_probs_norm * student_at_teacher).sum(dim=1)
-        loss = loss_per_sample[valid_sample_mask].mean()
+        target_top1_mix_alpha = float(self.distill_config.distill_target_top1_mix_alpha)
+        target_top1_mix_alpha = min(max(target_top1_mix_alpha, 0.0), 1.0)
+
+        # Optional target sharpening:
+        # p_mixed = (1 - alpha) * p_soft + alpha * onehot(top1)
+        teacher_top1_k_idx = teacher_probs_norm.argmax(dim=1, keepdim=True)
+        if target_top1_mix_alpha > 0.0:
+            teacher_top1_onehot = torch.zeros_like(teacher_probs_norm).scatter_(1, teacher_top1_k_idx, 1.0)
+            soft_targets = (1.0 - target_top1_mix_alpha) * teacher_probs_norm + (
+                target_top1_mix_alpha * teacher_top1_onehot
+            )
+            soft_targets = soft_targets / soft_targets.sum(dim=1, keepdim=True).clamp_min(1e-8)
+        else:
+            soft_targets = teacher_probs_norm
+
+        # Soft distillation loss over top-k teacher targets.
+        soft_loss_per_sample = -(soft_targets * student_at_teacher).sum(dim=1)
+        soft_loss = soft_loss_per_sample[valid_sample_mask].mean()
+
+        # Hard CE loss on teacher top-1 action.
+        hard_log_prob = student_at_teacher.gather(1, teacher_top1_k_idx).squeeze(1)
+        hard_loss_per_sample = -hard_log_prob
+        hard_loss = hard_loss_per_sample[valid_sample_mask].mean()
+
+        lambda_soft = float(self.distill_config.distill_lambda_soft)
+        lambda_hard = float(self.distill_config.distill_lambda_hard)
+        loss = (lambda_soft * soft_loss) + (lambda_hard * hard_loss)
 
         # Metrics
         with torch.no_grad():
             # Student's top-1 prediction
             student_top1 = masked_logits.argmax(dim=-1)  # [B]
-            # Teacher's top-1 legal entry
-            first_legal_idx = teacher_is_legal.float().argmax(dim=1, keepdim=True)
-            teacher_top1 = teacher_indices.gather(1, first_legal_idx).squeeze(1)  # [B]
+            # Teacher's top-1 legal entry after legality filtering + renormalization.
+            teacher_top1 = teacher_indices.gather(1, teacher_top1_k_idx).squeeze(1)  # [B]
 
             if bool(valid_sample_mask.any()):
                 top1_match = (student_top1[valid_sample_mask] == teacher_top1[valid_sample_mask]).float().mean()
@@ -260,14 +293,54 @@ class DistillChessTransformer(pl.LightningModule):
             teacher_entries_total = k_mask.float().sum().clamp_min(1.0)
             teacher_legal_fraction = teacher_is_legal.float().sum() / teacher_entries_total
             teacher_valid_sample_fraction = valid_sample_mask.float().mean()
+            target_entropy_per_sample = -(teacher_probs_norm * teacher_log_probs).sum(dim=1)
+            target_entropy = target_entropy_per_sample[valid_sample_mask].mean()
+
+            top_values = teacher_probs_norm.topk(
+                k=min(2, teacher_probs_norm.shape[1]),
+                dim=1,
+            ).values
+            target_top1_prob_per_sample = top_values[:, 0]
+            if top_values.shape[1] > 1:
+                target_top1_margin_per_sample = top_values[:, 0] - top_values[:, 1]
+            else:
+                target_top1_margin_per_sample = top_values[:, 0]
+            target_top1_prob = target_top1_prob_per_sample[valid_sample_mask].mean()
+            target_top1_margin = target_top1_margin_per_sample[valid_sample_mask].mean()
+            target_effective_k = target_entropy_per_sample[valid_sample_mask].exp().mean()
+            loss_total = loss
+            loss_soft_metric = soft_loss
+            loss_hard_metric = hard_loss
 
         metrics = {
+            "loss_total": loss_total,
+            "loss_soft": loss_soft_metric,
+            "loss_hard": loss_hard_metric,
             "top1_match": top1_match,
             "top5_match": top5_match,
             "entropy": entropy,
             "kl_divergence": kl_divergence,
             "teacher_legal_fraction": teacher_legal_fraction,
             "teacher_valid_sample_fraction": teacher_valid_sample_fraction,
+            "target_entropy": target_entropy,
+            "target_top1_prob": target_top1_prob,
+            "target_top1_margin": target_top1_margin,
+            "target_effective_k": target_effective_k,
+            "target_top1_mix_alpha": torch.tensor(
+                target_top1_mix_alpha,
+                dtype=logits.dtype,
+                device=logits.device,
+            ),
+            "distill_lambda_soft": torch.tensor(
+                lambda_soft,
+                dtype=logits.dtype,
+                device=logits.device,
+            ),
+            "distill_lambda_hard": torch.tensor(
+                lambda_hard,
+                dtype=logits.dtype,
+                device=logits.device,
+            ),
         }
         return loss, metrics
 
@@ -284,13 +357,25 @@ class DistillChessTransformer(pl.LightningModule):
             return self._handle_nonfinite_training("non-finite loss")
         metrics = self._sanitize_metrics(metrics)
 
-        self.log("train/loss", self._finite_scalar(loss, default=1_000_000.0), prog_bar=True)
+        self.log("train/loss", self._finite_scalar(metrics["loss_total"], default=1_000_000.0), prog_bar=True)
+        self.log("train/loss_total", metrics["loss_total"], prog_bar=True)
+        self.log("train/loss_soft", metrics["loss_soft"])
+        self.log("train/loss_hard", metrics["loss_hard"])
         self.log("train/top1_match", metrics["top1_match"], prog_bar=True)
         self.log("train/top5_match", metrics["top5_match"])
+        self.log("train/teacher_top1_match", metrics["top1_match"])
+        self.log("train/teacher_top5_match", metrics["top5_match"])
         self.log("train/entropy", metrics["entropy"])
         self.log("train/kl_divergence", metrics["kl_divergence"])
         self.log("train/teacher_legal_fraction", metrics["teacher_legal_fraction"])
         self.log("train/teacher_valid_sample_fraction", metrics["teacher_valid_sample_fraction"])
+        self.log("train/target_entropy", metrics["target_entropy"])
+        self.log("train/target_top1_prob", metrics["target_top1_prob"])
+        self.log("train/target_top1_margin", metrics["target_top1_margin"])
+        self.log("train/target_effective_k", metrics["target_effective_k"])
+        self.log("train/target_top1_mix_alpha", metrics["target_top1_mix_alpha"])
+        self.log("train/distill_lambda_soft", metrics["distill_lambda_soft"])
+        self.log("train/distill_lambda_hard", metrics["distill_lambda_hard"])
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -306,13 +391,25 @@ class DistillChessTransformer(pl.LightningModule):
             return self._handle_nonfinite_validation("non-finite loss")
         metrics = self._sanitize_metrics(metrics)
 
-        self.log("val/loss", self._finite_scalar(loss, default=1_000_000.0), prog_bar=True, sync_dist=True)
+        self.log("val/loss", self._finite_scalar(metrics["loss_total"], default=1_000_000.0), prog_bar=True, sync_dist=True)
+        self.log("val/loss_total", metrics["loss_total"], prog_bar=True, sync_dist=True)
+        self.log("val/loss_soft", metrics["loss_soft"], sync_dist=True)
+        self.log("val/loss_hard", metrics["loss_hard"], sync_dist=True)
         self.log("val/top1_match", metrics["top1_match"], prog_bar=True, sync_dist=True)
         self.log("val/top5_match", metrics["top5_match"], sync_dist=True)
+        self.log("val/teacher_top1_match", metrics["top1_match"], sync_dist=True)
+        self.log("val/teacher_top5_match", metrics["top5_match"], sync_dist=True)
         self.log("val/entropy", metrics["entropy"], sync_dist=True)
         self.log("val/kl_divergence", metrics["kl_divergence"], sync_dist=True)
         self.log("val/teacher_legal_fraction", metrics["teacher_legal_fraction"], sync_dist=True)
         self.log("val/teacher_valid_sample_fraction", metrics["teacher_valid_sample_fraction"], sync_dist=True)
+        self.log("val/target_entropy", metrics["target_entropy"], sync_dist=True)
+        self.log("val/target_top1_prob", metrics["target_top1_prob"], sync_dist=True)
+        self.log("val/target_top1_margin", metrics["target_top1_margin"], sync_dist=True)
+        self.log("val/target_effective_k", metrics["target_effective_k"], sync_dist=True)
+        self.log("val/target_top1_mix_alpha", metrics["target_top1_mix_alpha"], sync_dist=True)
+        self.log("val/distill_lambda_soft", metrics["distill_lambda_soft"], sync_dist=True)
+        self.log("val/distill_lambda_hard", metrics["distill_lambda_hard"], sync_dist=True)
         return loss
 
     def configure_optimizers(self):
@@ -389,6 +486,8 @@ def build_stockfish_eval_callback(
     eval_cfg: EvalConfig,
     stockfish_cfg: StockfishConfig,
     policy_cfg: PolicyConfig,
+    metric_prefix: str = "eval_stockfish",
+    every_n_epochs: Optional[int] = None,
 ) -> Optional[StockfishEvalCallback]:
     """Create Stockfish eval callback, optionally hard-failing when binary is missing."""
     try:
@@ -406,7 +505,74 @@ def build_stockfish_eval_callback(
     stockfish_cfg = replace(stockfish_cfg, path=resolved_stockfish)
     print(f"Stockfish evaluation enabled with binary: {resolved_stockfish}")
     evaluator = Evaluator(eval_cfg=eval_cfg, policy_cfg=policy_cfg, stockfish_cfg=stockfish_cfg)
-    return StockfishEvalCallback(evaluator, every_n_epochs=distill_config.eval_every_n_epochs)
+    effective_every_n_epochs = every_n_epochs if every_n_epochs is not None else distill_config.eval_every_n_epochs
+    return StockfishEvalCallback(
+        evaluator,
+        every_n_epochs=effective_every_n_epochs,
+        metric_prefix=metric_prefix,
+    )
+
+
+def _extract_model_state_from_lightning_checkpoint(checkpoint_path: str) -> dict[str, torch.Tensor]:
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+
+    if "state_dict" in checkpoint:
+        state_dict = {
+            k[6:]: v for k, v in checkpoint["state_dict"].items() if k.startswith("model.")
+        }
+        if state_dict:
+            return state_dict
+    if "model_state_dict" in checkpoint:
+        return checkpoint["model_state_dict"]
+    # Last-resort fallback for non-standard checkpoints.
+    return checkpoint
+
+
+def _resolve_final_export_source(
+    eval_checkpoint_cb: Optional[ModelCheckpoint],
+    loss_checkpoint_cb: ModelCheckpoint,
+    stockfish_eval_callback: Optional[StockfishEvalCallback] = None,
+) -> tuple[Optional[str], str, Optional[str], Optional[float]]:
+    """Resolve final export checkpoint in priority order.
+
+    Returns:
+        (checkpoint_path, source, monitor_name, monitor_value)
+    """
+    eval_successes = (
+        int(getattr(stockfish_eval_callback, "_successes", 0))
+        if stockfish_eval_callback is not None
+        else 0
+    )
+    if eval_checkpoint_cb is not None and eval_checkpoint_cb.best_model_path and eval_successes > 0:
+        score = (
+            float(eval_checkpoint_cb.best_model_score.detach().cpu())
+            if isinstance(eval_checkpoint_cb.best_model_score, torch.Tensor)
+            else (float(eval_checkpoint_cb.best_model_score) if eval_checkpoint_cb.best_model_score is not None else None)
+        )
+        return (
+            eval_checkpoint_cb.best_model_path,
+            "best_eval_metric",
+            eval_checkpoint_cb.monitor,
+            score,
+        )
+
+    if loss_checkpoint_cb.best_model_path:
+        score = (
+            float(loss_checkpoint_cb.best_model_score.detach().cpu())
+            if isinstance(loss_checkpoint_cb.best_model_score, torch.Tensor)
+            else (float(loss_checkpoint_cb.best_model_score) if loss_checkpoint_cb.best_model_score is not None else None)
+        )
+        return (
+            loss_checkpoint_cb.best_model_path,
+            "best_loss_metric",
+            loss_checkpoint_cb.monitor,
+            score,
+        )
+
+    if loss_checkpoint_cb.last_model_path:
+        return (loss_checkpoint_cb.last_model_path, "last_checkpoint", None, None)
+
+    return (None, "in_memory", None, None)
 
 
 class DistillQualityGateCallback(Callback):
@@ -491,17 +657,15 @@ def train(
     checkpoint_dir = Path(distill_config.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    callbacks = [
-        ModelCheckpoint(
-            dirpath=str(checkpoint_dir),
-            filename=run_name + "-{epoch:02d}-{train/loss:.4f}",
-            save_top_k=3,
-            monitor="train/loss",
-            mode="min",
-            save_last=True,
-        ),
-        LearningRateMonitor(logging_interval="step"),
-    ]
+    loss_checkpoint_cb = ModelCheckpoint(
+        dirpath=str(checkpoint_dir),
+        filename=run_name + "-{epoch:02d}-{train/loss:.4f}",
+        save_top_k=3,
+        monitor="train/loss",
+        mode="min",
+        save_last=True,
+    )
+    callbacks = [loss_checkpoint_cb, LearningRateMonitor(logging_interval="step")]
 
     logger = None
     if distill_config.use_wandb:
@@ -516,9 +680,46 @@ def train(
         eval_cfg=eval_cfg,
         stockfish_cfg=stockfish_cfg,
         policy_cfg=policy_cfg,
+        metric_prefix="eval_stockfish",
+        every_n_epochs=distill_config.eval_every_n_epochs,
     )
+    eval_checkpoint_cb: Optional[ModelCheckpoint] = None
     if stockfish_eval_callback is not None:
         callbacks.append(stockfish_eval_callback)
+        eval_checkpoint_every_n_epochs = max(1, int(distill_config.eval_every_n_epochs))
+        eval_checkpoint_cb = ModelCheckpoint(
+            dirpath=str(checkpoint_dir),
+            filename=run_name + "-eval-best-{epoch:02d}",
+            save_top_k=max(1, int(distill_config.checkpoint_monitor_eval_top_k)),
+            monitor=distill_config.checkpoint_monitor_eval_metric,
+            mode=distill_config.checkpoint_monitor_eval_mode,
+            save_on_train_epoch_end=True,
+            every_n_epochs=eval_checkpoint_every_n_epochs,
+            auto_insert_metric_name=False,
+        )
+        callbacks.append(eval_checkpoint_cb)
+
+    if distill_config.enable_standard_opening_eval:
+        standard_eval_cfg = replace(
+            eval_cfg,
+            randomize_opening=distill_config.standard_eval_randomize_opening,
+            opening_plies=distill_config.standard_eval_opening_plies,
+        )
+        standard_every_n_epochs = (
+            distill_config.standard_eval_every_n_epochs
+            if distill_config.standard_eval_every_n_epochs is not None
+            else distill_config.eval_every_n_epochs
+        )
+        standard_eval_callback = build_stockfish_eval_callback(
+            distill_config=distill_config,
+            eval_cfg=standard_eval_cfg,
+            stockfish_cfg=stockfish_cfg,
+            policy_cfg=policy_cfg,
+            metric_prefix="eval_stockfish_standard",
+            every_n_epochs=standard_every_n_epochs,
+        )
+        if standard_eval_callback is not None:
+            callbacks.append(standard_eval_callback)
     if distill_config.quality_gate_min_val_top1 > 0.0 and distill_config.quality_gate_epoch > 0:
         callbacks.append(
             DistillQualityGateCallback(
@@ -540,13 +741,33 @@ def train(
 
     trainer.fit(model, train_dataloader, val_dataloader, ckpt_path=distill_config.resume_from)
 
-    # Save final checkpoint
+    # Export final checkpoint from the strongest available source.
+    selected_ckpt_path, selected_source, selected_monitor, selected_monitor_value = _resolve_final_export_source(
+        eval_checkpoint_cb=eval_checkpoint_cb,
+        loss_checkpoint_cb=loss_checkpoint_cb,
+        stockfish_eval_callback=stockfish_eval_callback,
+    )
+    if selected_ckpt_path:
+        print(
+            "Final export source: "
+            f"source={selected_source}, monitor={selected_monitor}, "
+            f"monitor_value={selected_monitor_value}, checkpoint={selected_ckpt_path}"
+        )
+        export_state_dict = _extract_model_state_from_lightning_checkpoint(selected_ckpt_path)
+    else:
+        print("Final export source: source=in_memory, no checkpoint file available.")
+        export_state_dict = model.model.state_dict()
+
     final_path = checkpoint_dir / "distill_final.pt"
     torch.save(
         {
-            "model_state_dict": model.model.state_dict(),
+            "model_state_dict": export_state_dict,
             "transformer_config": transformer_config,
             "distill_config": distill_config,
+            "export_source": selected_source,
+            "export_checkpoint_path": selected_ckpt_path,
+            "export_monitor": selected_monitor,
+            "export_monitor_value": selected_monitor_value,
         },
         final_path,
     )

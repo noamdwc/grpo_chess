@@ -80,7 +80,12 @@ class Evaluator:
         )
         return results, policy_or_searcher, pgns
 
-    def evaluate_and_log(self, pl_module: pl.LightningModule, model: nn.Module) -> Optional[Dict]:
+    def evaluate_and_log(
+        self,
+        pl_module: pl.LightningModule,
+        model: nn.Module,
+        metric_prefix: str = "eval_stockfish",
+    ) -> Optional[Dict]:
         """Run evaluation and log results to the Lightning module's logger.
 
         Returns results dict or None if evaluation failed.
@@ -112,31 +117,31 @@ class Evaluator:
         draws = float(results["draws"])
         losses = float(results["losses"])
 
-        pl_module.log("eval_stockfish/score", results["score"], prog_bar=True)
-        pl_module.log("eval_stockfish/elo_diff", results["elo_diff_vs_stockfish_approx"], prog_bar=True)
-        pl_module.log("eval_stockfish/games", float(results["games"]))
-        pl_module.log("eval_stockfish/wins", wins)
-        pl_module.log("eval_stockfish/draws", draws)
-        pl_module.log("eval_stockfish/losses", losses)
-        pl_module.log("eval_stockfish/win_rate", wins / games)
-        pl_module.log("eval_stockfish/draw_rate", draws / games)
-        pl_module.log("eval_stockfish/loss_rate", losses / games)
+        pl_module.log(f"{metric_prefix}/score", results["score"], prog_bar=True)
+        pl_module.log(f"{metric_prefix}/elo_diff", results["elo_diff_vs_stockfish_approx"], prog_bar=True)
+        pl_module.log(f"{metric_prefix}/games", float(results["games"]))
+        pl_module.log(f"{metric_prefix}/wins", wins)
+        pl_module.log(f"{metric_prefix}/draws", draws)
+        pl_module.log(f"{metric_prefix}/losses", losses)
+        pl_module.log(f"{metric_prefix}/win_rate", wins / games)
+        pl_module.log(f"{metric_prefix}/draw_rate", draws / games)
+        pl_module.log(f"{metric_prefix}/loss_rate", losses / games)
         print(
-            "[StockfishEvalCallback] Results: "
+            f"[StockfishEvalCallback:{metric_prefix}] Results: "
             f"score={results['score']:.4f}, elo_diff={results['elo_diff_vs_stockfish_approx']:.1f}, "
             f"W/D/L={int(wins)}/{int(draws)}/{int(losses)} ({results['games']} games)"
         )
 
         for reason, cnt in results["termination_reasons"].items():
-            pl_module.log(f"eval_stockfish/term_{reason}", cnt / games)
+            pl_module.log(f"{metric_prefix}/term_{reason}", cnt / games)
 
         if pgns and pl_module.logger and hasattr(pl_module.logger, "experiment"):
             try:
                 import wandb
                 combined_pgn = "\n\n".join(pgns)
                 pl_module.logger.experiment.log({
-                    "eval_stockfish/pgns": wandb.Html(f"<pre>{combined_pgn}</pre>"),
-                    "eval_stockfish/pgn_text": combined_pgn,
+                    f"{metric_prefix}/pgns": wandb.Html(f"<pre>{combined_pgn}</pre>"),
+                    f"{metric_prefix}/pgn_text": combined_pgn,
                 })
             except Exception:
                 pass
@@ -185,12 +190,19 @@ class Evaluator:
 class StockfishEvalCallback(Callback):
     """Lightning callback that evaluates the model against Stockfish periodically."""
 
-    def __init__(self, evaluator: Evaluator, every_n_epochs: int = 1, model_attr: str = "model"):
+    def __init__(
+        self,
+        evaluator: Evaluator,
+        every_n_epochs: int = 1,
+        model_attr: str = "model",
+        metric_prefix: str = "eval_stockfish",
+    ):
         if every_n_epochs < 1:
             raise ValueError(f"every_n_epochs must be >= 1, got {every_n_epochs}")
         self.evaluator = evaluator
         self.every_n_epochs = every_n_epochs
         self.model_attr = model_attr
+        self.metric_prefix = metric_prefix
         self._attempts = 0
         self._successes = 0
         self._failures = 0
@@ -200,17 +212,33 @@ class StockfishEvalCallback(Callback):
             return
         self._attempts += 1
         print(
-            f"[StockfishEvalCallback] Running evaluation at epoch {trainer.current_epoch + 1}",
+            f"[StockfishEvalCallback:{self.metric_prefix}] Running evaluation at epoch {trainer.current_epoch + 1}",
             flush=True,
         )
         model = getattr(pl_module, self.model_attr)
-        results = self.evaluator.evaluate_and_log(pl_module, model)
+        results = self.evaluator.evaluate_and_log(pl_module, model, metric_prefix=self.metric_prefix)
         if results is None:
             self._failures += 1
+            # Keep monitored metrics present even when eval fails, so
+            # ModelCheckpoint(monitor=...) does not crash on missing keys.
+            pl_module.log(f"{self.metric_prefix}/score", -1.0, prog_bar=True)
+            pl_module.log(f"{self.metric_prefix}/elo_diff", -10_000.0, prog_bar=False)
+            pl_module.log(f"{self.metric_prefix}/games", 0.0)
+            pl_module.log(f"{self.metric_prefix}/wins", 0.0)
+            pl_module.log(f"{self.metric_prefix}/draws", 0.0)
+            pl_module.log(f"{self.metric_prefix}/losses", 0.0)
+            pl_module.log(f"{self.metric_prefix}/win_rate", 0.0)
+            pl_module.log(f"{self.metric_prefix}/draw_rate", 0.0)
+            pl_module.log(f"{self.metric_prefix}/loss_rate", 1.0)
+            print(
+                f"[StockfishEvalCallback:{self.metric_prefix}] Evaluation failed; "
+                "logged fallback metrics for checkpoint compatibility.",
+                flush=True,
+            )
         else:
             self._successes += 1
 
         # Always log callback health so we can distinguish "not called" vs "called but failed".
-        pl_module.log("eval_stockfish/callback_attempts", float(self._attempts), on_step=False, on_epoch=True)
-        pl_module.log("eval_stockfish/callback_successes", float(self._successes), on_step=False, on_epoch=True)
-        pl_module.log("eval_stockfish/callback_failures", float(self._failures), on_step=False, on_epoch=True)
+        pl_module.log(f"{self.metric_prefix}/callback_attempts", float(self._attempts), on_step=False, on_epoch=True)
+        pl_module.log(f"{self.metric_prefix}/callback_successes", float(self._successes), on_step=False, on_epoch=True)
+        pl_module.log(f"{self.metric_prefix}/callback_failures", float(self._failures), on_step=False, on_epoch=True)

@@ -293,6 +293,7 @@ def postprocess_teacher_output(
     action_indices: torch.Tensor,
     top_k: int,
     temperature: float,
+    score_norm_mode: str = "plain",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Convert raw teacher log-probs to top-k action indices and soft probs.
 
@@ -302,6 +303,9 @@ def postprocess_teacher_output(
         action_indices: [num_legal] action indices for sorted legal moves.
         top_k: Number of top moves to keep.
         temperature: Softmax temperature for teacher probabilities.
+        score_norm_mode: Score normalization mode before softmax. One of:
+            - "plain": no normalization (backwards-compatible behavior)
+            - "zscore": per-position z-score normalization over top-k EVs
 
     Returns:
         (teacher_action_indices [top_k], teacher_probs [top_k])
@@ -312,8 +316,14 @@ def postprocess_teacher_output(
     k = min(top_k, len(win_probs))
     top_indices = np.argsort(win_probs)[-k:][::-1].copy()  # [k], copy for positive stride
 
-    # Stable softmax over top-k win probabilities
+    # Optional score normalization to sharpen weak/flat EV differences.
     top_win_probs = win_probs[top_indices]           # [k]
+    if score_norm_mode == "zscore":
+        top_win_probs = (top_win_probs - top_win_probs.mean()) / (top_win_probs.std() + 1e-6)
+    elif score_norm_mode != "plain":
+        raise ValueError(f"Unsupported score_norm_mode={score_norm_mode!r}; expected 'plain' or 'zscore'.")
+
+    # Stable softmax over top-k scores
     if temperature != 1.0:
         top_win_probs = top_win_probs / temperature
     top_win_probs = top_win_probs - top_win_probs.max()
@@ -331,7 +341,9 @@ def postprocess_teacher_batch(
     batch: dict,
     top_k: int,
     temperature: float,
-) -> list[dict]:
+    score_norm_mode: str = "plain",
+    return_diagnostics: bool = False,
+) -> list[dict] | tuple[list[dict], dict[str, float]]:
     """Vectorized post-processing for an entire batch of positions.
 
     Args:
@@ -340,9 +352,13 @@ def postprocess_teacher_batch(
         batch: Collated batch dict from collate_positions.
         top_k: Number of top moves to keep per position.
         temperature: Softmax temperature for teacher probabilities.
+        score_norm_mode: Score normalization mode before softmax. One of:
+            - "plain": no normalization (backwards-compatible behavior)
+            - "zscore": per-position z-score normalization over top-k EVs
 
     Returns:
-        List of sample dicts (one per valid position in the batch).
+        List of sample dicts (one per valid position in the batch), or
+        (samples, diagnostics) if return_diagnostics=True.
     """
     seq_counts = batch["seq_counts"]
     N = len(seq_counts)
@@ -362,13 +378,67 @@ def postprocess_teacher_batch(
     sorted_idx = np.argsort(padded, axis=1)          # [N, max_legal]
     top_idx = sorted_idx[:, -k:][:, ::-1].copy()      # [N, k], copy for positive stride
     top_win = np.take_along_axis(padded, top_idx, axis=1)  # [N, k]
+    raw_top_win = top_win.copy()
+
+    valid_top_mask = np.isfinite(raw_top_win)
+    safe_raw_top = np.where(valid_top_mask, raw_top_win, np.nan)
+    raw_spread = np.nanstd(safe_raw_top, axis=1)
+    raw_spread = np.nan_to_num(raw_spread, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # Optional score normalization before softmax.
+    softmax_inputs = top_win
+    if score_norm_mode == "zscore":
+        safe_scores = np.where(valid_top_mask, softmax_inputs, np.nan)
+        means = np.nanmean(safe_scores, axis=1, keepdims=True)
+        stds = np.nanstd(safe_scores, axis=1, keepdims=True)
+        means = np.nan_to_num(means, nan=0.0, posinf=0.0, neginf=0.0)
+        stds = np.nan_to_num(stds, nan=0.0, posinf=0.0, neginf=0.0)
+        softmax_inputs = (softmax_inputs - means) / (stds + 1e-6)
+        softmax_inputs = np.where(valid_top_mask, softmax_inputs, -np.inf)
+    elif score_norm_mode != "plain":
+        raise ValueError(f"Unsupported score_norm_mode={score_norm_mode!r}; expected 'plain' or 'zscore'.")
 
     # Vectorized stable softmax (padding entries are -inf → exp=0, safe)
     if temperature != 1.0:
-        top_win = top_win / temperature
-    top_win = top_win - top_win.max(axis=1, keepdims=True)
-    exp_p = np.exp(top_win)                          # [N, k]
+        softmax_inputs = softmax_inputs / temperature
+    softmax_inputs = softmax_inputs - softmax_inputs.max(axis=1, keepdims=True)
+    exp_p = np.exp(softmax_inputs)                   # [N, k]
     soft_probs = exp_p / exp_p.sum(axis=1, keepdims=True)  # [N, k]
+
+    if k >= 2:
+        top1_minus_top2_raw = raw_top_win[:, 0] - raw_top_win[:, 1]
+        top1_minus_top2_scaled = softmax_inputs[:, 0] - softmax_inputs[:, 1]
+        top1_minus_top2_prob = soft_probs[:, 0] - soft_probs[:, 1]
+    else:
+        top1_minus_top2_raw = raw_top_win[:, 0]
+        top1_minus_top2_scaled = softmax_inputs[:, 0]
+        top1_minus_top2_prob = soft_probs[:, 0]
+
+    eps = 1e-12
+    entropy = -(soft_probs * np.log(np.clip(soft_probs, eps, 1.0))).sum(axis=1)
+    effective_k = np.exp(entropy)
+    top1_prob = soft_probs[:, 0]
+
+    def _summary_stats(values: np.ndarray, prefix: str) -> dict[str, float]:
+        values = values.astype(np.float64, copy=False)
+        return {
+            f"{prefix}_mean": float(np.mean(values)),
+            f"{prefix}_std": float(np.std(values)),
+            f"{prefix}_p50": float(np.percentile(values, 50)),
+            f"{prefix}_p90": float(np.percentile(values, 90)),
+        }
+
+    diagnostics = {
+        "n_positions": float(N),
+        "top_k_effective": float(k),
+        **_summary_stats(top1_minus_top2_raw, "teacher_top1_minus_top2_raw"),
+        **_summary_stats(top1_minus_top2_scaled, "teacher_top1_minus_top2_scaled"),
+        **_summary_stats(raw_spread, "teacher_topk_raw_score_std"),
+        **_summary_stats(top1_prob, "teacher_top1_prob"),
+        **_summary_stats(top1_minus_top2_prob, "teacher_top1_minus_top2_prob"),
+        **_summary_stats(entropy, "teacher_entropy"),
+        **_summary_stats(effective_k, "teacher_effective_k"),
+    }
 
     # Build sample dicts (cheap indexing only)
     samples = []
@@ -381,6 +451,8 @@ def postprocess_teacher_batch(
             "teacher_action_indices": batch["action_indices"][i][idx],  # [ki]
             "teacher_probs": torch.from_numpy(soft_probs[i, :ki].copy()).float(),  # [ki]
         })
+    if return_diagnostics:
+        return samples, diagnostics
     return samples
 
 
@@ -394,6 +466,7 @@ def process_position(
     fen: str,
     top_k: int,
     temperature: float,
+    score_norm_mode: str = "plain",
 ) -> Optional[dict]:
     """Run teacher inference on a single position via engine.analyse().
 
@@ -419,7 +492,7 @@ def process_position(
     )
 
     teacher_action_indices, teacher_probs = postprocess_teacher_output(
-        result["log_probs"], bucket_values, action_indices, top_k, temperature,
+        result["log_probs"], bucket_values, action_indices, top_k, temperature, score_norm_mode,
     )
 
     try:

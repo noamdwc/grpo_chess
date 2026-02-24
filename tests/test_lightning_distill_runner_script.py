@@ -37,6 +37,10 @@ def test_runner_writes_quality_gate_to_generated_config():
     text = _script_text()
     assert "quality_gate_min_val_top1: ${DISTILL_QUALITY_GATE_MIN_VAL_TOP1}" in text
     assert "quality_gate_epoch: ${DISTILL_QUALITY_GATE_EPOCH}" in text
+    assert "distill_lambda_soft: ${DISTILL_LAMBDA_SOFT}" in text
+    assert "distill_lambda_hard: ${DISTILL_LAMBDA_HARD}" in text
+    assert "distill_target_top1_mix_alpha: ${DISTILL_TARGET_TOP1_MIX_ALPHA}" in text
+    assert 'teacher_target_score_norm: "${TEACHER_TARGET_SCORE_NORM}"' in text
 
 
 def test_runner_supports_quality_mode_dataset_generation():

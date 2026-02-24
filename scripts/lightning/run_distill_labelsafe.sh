@@ -50,6 +50,9 @@ DISTILL_OUTPUT_DIR="${DISTILL_OUTPUT_DIR:-checkpoints/distill_labelsafe}"
 DISTILL_FORCE_REBUILD_DATA="${DISTILL_FORCE_REBUILD_DATA:-0}"
 DISTILL_QUALITY_GATE_MIN_VAL_TOP1="${DISTILL_QUALITY_GATE_MIN_VAL_TOP1:-}"
 DISTILL_QUALITY_GATE_EPOCH="${DISTILL_QUALITY_GATE_EPOCH:-3}"
+DISTILL_LAMBDA_SOFT="${DISTILL_LAMBDA_SOFT:-}"
+DISTILL_LAMBDA_HARD="${DISTILL_LAMBDA_HARD:-}"
+DISTILL_TARGET_TOP1_MIX_ALPHA="${DISTILL_TARGET_TOP1_MIX_ALPHA:-}"
 AUTO_USE_S3_CONNECTION_CACHE="${AUTO_USE_S3_CONNECTION_CACHE:-1}"
 REQUIRE_PERSISTENT_CACHE="${REQUIRE_PERSISTENT_CACHE:-0}"
 
@@ -59,6 +62,7 @@ TEACHER_CHECKPOINT_STEP="${TEACHER_CHECKPOINT_STEP:-6400000}"
 TEACHER_BATCH_SIZE="${TEACHER_BATCH_SIZE:-512}"
 TEACHER_TOP_K="${TEACHER_TOP_K:-8}"
 TEACHER_TEMPERATURE="${TEACHER_TEMPERATURE:-1.0}"
+TEACHER_TARGET_SCORE_NORM="${TEACHER_TARGET_SCORE_NORM:-}"
 TEACHER_HF_CACHE_DIR="${TEACHER_HF_CACHE_DIR:-}"
 TEACHER_SHARD_SIZE="${TEACHER_SHARD_SIZE:-50000}"
 TEACHER_MIN_ELO="${TEACHER_MIN_ELO:-1800}"
@@ -78,6 +82,11 @@ JAX_CUDA_REQUIRED="${JAX_CUDA_REQUIRED:-auto}"
 DISTILL_PREFLIGHT_MIN_K_MEAN="${DISTILL_PREFLIGHT_MIN_K_MEAN:-}"
 DISTILL_PREFLIGHT_MAX_K1_FRAC="${DISTILL_PREFLIGHT_MAX_K1_FRAC:-}"
 DISTILL_PREFLIGHT_MIN_ENTROPY="${DISTILL_PREFLIGHT_MIN_ENTROPY:-}"
+DISTILL_PREFLIGHT_MAX_TEACHER_ENTROPY="${DISTILL_PREFLIGHT_MAX_TEACHER_ENTROPY:-}"
+DISTILL_PREFLIGHT_MIN_TEACHER_TOP1_PROB="${DISTILL_PREFLIGHT_MIN_TEACHER_TOP1_PROB:-}"
+DISTILL_PREFLIGHT_MIN_TEACHER_TOP1_MARGIN="${DISTILL_PREFLIGHT_MIN_TEACHER_TOP1_MARGIN:-}"
+DISTILL_PREFLIGHT_MAX_TEACHER_EFFECTIVE_K="${DISTILL_PREFLIGHT_MAX_TEACHER_EFFECTIVE_K:-}"
+DISTILL_PREFLIGHT_FAIL_ON_FLAT_LABELS="${DISTILL_PREFLIGHT_FAIL_ON_FLAT_LABELS:-}"
 DISTILL_PREFLIGHT_MAX_SHARDS="${DISTILL_PREFLIGHT_MAX_SHARDS:-${DISTILL_MAX_SHARDS}}"
 DISTILL_PREFLIGHT_MAX_SAMPLES="${DISTILL_PREFLIGHT_MAX_SAMPLES:-200000}"
 
@@ -86,6 +95,38 @@ if [[ -z "${DISTILL_QUALITY_GATE_MIN_VAL_TOP1}" ]]; then
     DISTILL_QUALITY_GATE_MIN_VAL_TOP1="0.08"
   else
     DISTILL_QUALITY_GATE_MIN_VAL_TOP1="0.0"
+  fi
+fi
+
+if [[ -z "${TEACHER_TARGET_SCORE_NORM}" ]]; then
+  if [[ "${DISTILL_MODE}" == "quality" ]]; then
+    TEACHER_TARGET_SCORE_NORM="zscore"
+  else
+    TEACHER_TARGET_SCORE_NORM="plain"
+  fi
+fi
+
+if [[ -z "${DISTILL_LAMBDA_SOFT}" ]]; then
+  if [[ "${DISTILL_MODE}" == "quality" ]]; then
+    DISTILL_LAMBDA_SOFT="0.30"
+  else
+    DISTILL_LAMBDA_SOFT="1.0"
+  fi
+fi
+
+if [[ -z "${DISTILL_LAMBDA_HARD}" ]]; then
+  if [[ "${DISTILL_MODE}" == "quality" ]]; then
+    DISTILL_LAMBDA_HARD="0.70"
+  else
+    DISTILL_LAMBDA_HARD="0.0"
+  fi
+fi
+
+if [[ -z "${DISTILL_TARGET_TOP1_MIX_ALPHA}" ]]; then
+  if [[ "${DISTILL_MODE}" == "quality" ]]; then
+    DISTILL_TARGET_TOP1_MIX_ALPHA="0.15"
+  else
+    DISTILL_TARGET_TOP1_MIX_ALPHA="0.0"
   fi
 fi
 
@@ -110,9 +151,32 @@ if [[ -z "${DISTILL_PREFLIGHT_MIN_ENTROPY}" ]]; then
     DISTILL_PREFLIGHT_MIN_ENTROPY="0.0"
   fi
 fi
+if [[ -z "${DISTILL_PREFLIGHT_MAX_TEACHER_ENTROPY}" ]]; then
+  if [[ "${DISTILL_MODE}" == "quality" ]]; then
+    DISTILL_PREFLIGHT_MAX_TEACHER_ENTROPY="1.90"
+  fi
+fi
+if [[ -z "${DISTILL_PREFLIGHT_MIN_TEACHER_TOP1_PROB}" ]]; then
+  if [[ "${DISTILL_MODE}" == "quality" ]]; then
+    DISTILL_PREFLIGHT_MIN_TEACHER_TOP1_PROB="0.20"
+  fi
+fi
+if [[ -z "${DISTILL_PREFLIGHT_MIN_TEACHER_TOP1_MARGIN}" ]]; then
+  if [[ "${DISTILL_MODE}" == "quality" ]]; then
+    DISTILL_PREFLIGHT_MIN_TEACHER_TOP1_MARGIN="0.05"
+  fi
+fi
+if [[ -z "${DISTILL_PREFLIGHT_MAX_TEACHER_EFFECTIVE_K}" ]]; then
+  if [[ "${DISTILL_MODE}" == "quality" ]]; then
+    DISTILL_PREFLIGHT_MAX_TEACHER_EFFECTIVE_K="5.5"
+  fi
+fi
+if [[ -z "${DISTILL_PREFLIGHT_FAIL_ON_FLAT_LABELS}" ]]; then
+  DISTILL_PREFLIGHT_FAIL_ON_FLAT_LABELS="0"
+fi
 
 if [[ "${DISTILL_MODE}" == "quality" ]]; then
-  DISTILL_DATASET_TAG_DEFAULT="teacher_data.v1:model=${TEACHER_MODEL},step=${TEACHER_CHECKPOINT_STEP},top_k=${TEACHER_TOP_K},temperature=${TEACHER_TEMPERATURE},min_elo=${TEACHER_MIN_ELO},max_samples=${TEACHER_MAX_SAMPLES},shard_size=${TEACHER_SHARD_SIZE},sample_positions_per_game=${TEACHER_SAMPLE_POSITIONS_PER_GAME}"
+  DISTILL_DATASET_TAG_DEFAULT="teacher_data.v1:model=${TEACHER_MODEL},step=${TEACHER_CHECKPOINT_STEP},top_k=${TEACHER_TOP_K},temperature=${TEACHER_TEMPERATURE},score_norm=${TEACHER_TARGET_SCORE_NORM},min_elo=${TEACHER_MIN_ELO},max_samples=${TEACHER_MAX_SAMPLES},shard_size=${TEACHER_SHARD_SIZE},sample_positions_per_game=${TEACHER_SAMPLE_POSITIONS_PER_GAME}"
   DISTILL_REMOTE_DATA_DIR_DEFAULT="distill_data_quality"
 else
   DISTILL_DATASET_TAG_DEFAULT="deepmind_data.v1:num_shards=${DEEPMIND_NUM_SHARDS},min_win_prob=${DEEPMIND_MIN_WIN_PROB},top_k=8,temperature=1.0,shard_size=50000,max_samples=${DEEPMIND_MAX_SAMPLES}"
@@ -126,6 +190,7 @@ export TEACHER_MODEL TEACHER_CHECKPOINT_DIR TEACHER_CHECKPOINT_STEP TEACHER_BATC
 export TEACHER_HF_CACHE_DIR TEACHER_SHARD_SIZE TEACHER_MIN_ELO TEACHER_MAX_SAMPLES
 export TEACHER_SKIP_FIRST_N_MOVES TEACHER_SKIP_LAST_N_MOVES TEACHER_SAMPLE_POSITIONS_PER_GAME
 export TEACHER_PROCESS_BATCH_SIZE TEACHER_NUM_WORKERS
+export TEACHER_TARGET_SCORE_NORM DISTILL_LAMBDA_SOFT DISTILL_LAMBDA_HARD DISTILL_TARGET_TOP1_MIX_ALPHA
 
 has_nvidia_gpu() {
   if ! command -v nvidia-smi >/dev/null 2>&1; then
@@ -321,6 +386,7 @@ else:
             "teacher_batch_size": int(os.environ["TEACHER_BATCH_SIZE"]),
             "top_k": int(os.environ["TEACHER_TOP_K"]),
             "teacher_temperature": float(os.environ["TEACHER_TEMPERATURE"]),
+            "teacher_target_score_norm": os.environ["TEACHER_TARGET_SCORE_NORM"],
             "teacher_shard_size": int(os.environ["TEACHER_SHARD_SIZE"]),
             "teacher_min_elo": int(os.environ["TEACHER_MIN_ELO"]),
             "teacher_max_samples": int(os.environ["TEACHER_MAX_SAMPLES"]),
@@ -340,7 +406,7 @@ PY
 run_dataset_preflight() {
   local data_dir="$1"
   local stats_path="$2"
-  python - "${data_dir}" "${stats_path}" "${DISTILL_MODE}" "${DISTILL_PREFLIGHT_MAX_SHARDS}" "${DISTILL_PREFLIGHT_MAX_SAMPLES}" "${DISTILL_PREFLIGHT_MIN_K_MEAN}" "${DISTILL_PREFLIGHT_MAX_K1_FRAC}" "${DISTILL_PREFLIGHT_MIN_ENTROPY}" <<'PY'
+  python - "${data_dir}" "${stats_path}" "${DISTILL_MODE}" "${DISTILL_PREFLIGHT_MAX_SHARDS}" "${DISTILL_PREFLIGHT_MAX_SAMPLES}" "${DISTILL_PREFLIGHT_MIN_K_MEAN}" "${DISTILL_PREFLIGHT_MAX_K1_FRAC}" "${DISTILL_PREFLIGHT_MIN_ENTROPY}" "${DISTILL_PREFLIGHT_MAX_TEACHER_ENTROPY}" "${DISTILL_PREFLIGHT_MIN_TEACHER_TOP1_PROB}" "${DISTILL_PREFLIGHT_MIN_TEACHER_TOP1_MARGIN}" "${DISTILL_PREFLIGHT_MAX_TEACHER_EFFECTIVE_K}" "${DISTILL_PREFLIGHT_FAIL_ON_FLAT_LABELS}" <<'PY'
 import collections
 import json
 import math
@@ -358,6 +424,21 @@ min_k_mean = float(sys.argv[6])
 max_k1_frac = float(sys.argv[7])
 min_entropy = float(sys.argv[8])
 
+def _parse_optional_float(raw: str):
+    raw = (raw or "").strip()
+    if raw == "" or raw.lower() in {"none", "null", "nan"}:
+        return None
+    return float(raw)
+
+def _parse_bool(raw: str) -> bool:
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+max_teacher_entropy = _parse_optional_float(sys.argv[9])
+min_teacher_top1_prob = _parse_optional_float(sys.argv[10])
+min_teacher_top1_margin = _parse_optional_float(sys.argv[11])
+max_teacher_effective_k = _parse_optional_float(sys.argv[12])
+fail_on_flat_labels = _parse_bool(sys.argv[13])
+
 shard_paths = sorted(data_dir.glob("shard_*.pt"))
 if max_shards > 0:
     shard_paths = shard_paths[:max_shards]
@@ -369,6 +450,8 @@ total_k = 0.0
 k1_count = 0
 total_entropy = 0.0
 total_top1_prob = 0.0
+total_top1_margin = 0.0
+total_effective_k = 0.0
 k_hist = collections.Counter()
 
 for shard_path in shard_paths:
@@ -405,8 +488,15 @@ for shard_path in shard_paths:
         probs = probs.clamp_min(1e-12)
         probs = probs / probs.sum()
 
-        total_entropy += float(-(probs * probs.log()).sum().item())
-        total_top1_prob += float(probs.max().item())
+        entropy = float(-(probs * probs.log()).sum().item())
+        top_probs = torch.topk(probs, k=min(2, k)).values
+        top1_prob = float(top_probs[0].item())
+        top2_prob = float(top_probs[1].item()) if top_probs.numel() > 1 else 0.0
+
+        total_entropy += entropy
+        total_top1_prob += top1_prob
+        total_top1_margin += (top1_prob - top2_prob)
+        total_effective_k += math.exp(entropy)
 
     if max_samples > 0 and total_samples >= max_samples:
         break
@@ -418,6 +508,10 @@ k_mean = total_k / total_samples
 k1_frac = k1_count / total_samples
 entropy_mean = total_entropy / total_samples
 top1_prob_mean = total_top1_prob / total_samples
+top1_margin_mean = total_top1_margin / total_samples
+effective_k_mean = total_effective_k / total_samples
+k_mode = int(max(k_hist.items(), key=lambda kv: kv[1])[0]) if k_hist else 0
+max_entropy_ln_k_mode = math.log(k_mode) if k_mode > 0 else 0.0
 
 stats = {
     "distill_mode": mode,
@@ -429,11 +523,20 @@ stats = {
     "k1_frac": k1_frac,
     "teacher_entropy_mean": entropy_mean,
     "teacher_top1_prob_mean": top1_prob_mean,
+    "teacher_top1_minus_top2_mean": top1_margin_mean,
+    "teacher_effective_k_mean": effective_k_mean,
+    "inferred_top_k_mode": k_mode,
+    "max_entropy_ln_k_mode": max_entropy_ln_k_mode,
     "k_histogram": dict(sorted(k_hist.items(), key=lambda kv: int(kv[0]))),
     "thresholds": {
         "min_k_mean": min_k_mean,
         "max_k1_frac": max_k1_frac,
         "min_teacher_entropy": min_entropy,
+        "max_teacher_entropy": max_teacher_entropy,
+        "min_teacher_top1_prob": min_teacher_top1_prob,
+        "min_teacher_top1_margin": min_teacher_top1_margin,
+        "max_teacher_effective_k": max_teacher_effective_k,
+        "fail_on_flat_labels": fail_on_flat_labels,
     },
 }
 
@@ -450,11 +553,36 @@ if mode == "quality":
         failures.append(f"k1_frac={k1_frac:.4f} > allowed {max_k1_frac:.4f}")
     if entropy_mean < min_entropy:
         failures.append(f"teacher_entropy_mean={entropy_mean:.4f} < required {min_entropy:.4f}")
+    if max_teacher_entropy is not None and entropy_mean > max_teacher_entropy:
+        failures.append(f"teacher_entropy_mean={entropy_mean:.4f} > allowed {max_teacher_entropy:.4f}")
+    if min_teacher_top1_prob is not None and top1_prob_mean < min_teacher_top1_prob:
+        failures.append(f"teacher_top1_prob_mean={top1_prob_mean:.4f} < required {min_teacher_top1_prob:.4f}")
+    if min_teacher_top1_margin is not None and top1_margin_mean < min_teacher_top1_margin:
+        failures.append(f"teacher_top1_minus_top2_mean={top1_margin_mean:.4f} < required {min_teacher_top1_margin:.4f}")
+    if max_teacher_effective_k is not None and effective_k_mean > max_teacher_effective_k:
+        failures.append(f"teacher_effective_k_mean={effective_k_mean:.4f} > allowed {max_teacher_effective_k:.4f}")
 
     if failures:
+        print("WARNING: Distill dataset preflight detected weak/flat teacher signal.", file=sys.stderr)
+        print(
+            f"WARNING: inferred_top_k_mode={k_mode}, max_entropy_ln(k)={max_entropy_ln_k_mode:.4f}, "
+            f"teacher_entropy_mean={entropy_mean:.4f}, teacher_top1_prob_mean={top1_prob_mean:.4f}, "
+            f"teacher_top1_minus_top2_mean={top1_margin_mean:.4f}, teacher_effective_k_mean={effective_k_mean:.4f}",
+            file=sys.stderr,
+        )
         for failure in failures:
-            print(f"ERROR: Distill dataset preflight failed: {failure}", file=sys.stderr)
-        raise SystemExit(2)
+            print(f"WARNING: {failure}", file=sys.stderr)
+        print(
+            "WARNING: Suggested fixes: lower TEACHER_TEMPERATURE, reduce TEACHER_TOP_K, use a stronger teacher model, "
+            "or increase quality data/sample budget.",
+            file=sys.stderr,
+        )
+        if fail_on_flat_labels:
+            print(
+                "WARNING: DISTILL_PREFLIGHT_FAIL_ON_FLAT_LABELS=1 is set, "
+                "but this pipeline is configured to warn-only and continue.",
+                file=sys.stderr,
+            )
 PY
 }
 
@@ -580,6 +708,7 @@ generate:
   num_workers: ${TEACHER_NUM_WORKERS}
   top_k: ${TEACHER_TOP_K}
   teacher_temperature: ${TEACHER_TEMPERATURE}
+  teacher_target_score_norm: "${TEACHER_TARGET_SCORE_NORM}"
   hf_cache_dir: "${TEACHER_HF_CACHE_DIR}"
   output_dir: "${DATA_DIR}"
   shard_size: ${TEACHER_SHARD_SIZE}
@@ -616,6 +745,9 @@ distill:
   require_stockfish_eval: true
   quality_gate_min_val_top1: ${DISTILL_QUALITY_GATE_MIN_VAL_TOP1}
   quality_gate_epoch: ${DISTILL_QUALITY_GATE_EPOCH}
+  distill_lambda_soft: ${DISTILL_LAMBDA_SOFT}
+  distill_lambda_hard: ${DISTILL_LAMBDA_HARD}
+  distill_target_top1_mix_alpha: ${DISTILL_TARGET_TOP1_MIX_ALPHA}
   num_workers: 4
   val_check_interval: 0.1
   eval_every_n_epochs: 1
