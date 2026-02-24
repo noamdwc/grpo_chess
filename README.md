@@ -92,6 +92,9 @@ grpo_chess/
 ### For Detailed Module Documentation
 See [src/README.md](src/README.md) for comprehensive documentation of the GRPO implementation.
 
+### For Lightning Cloud Job Operations
+See [docs/lightning_cloud_jobs.md](docs/lightning_cloud_jobs.md) for setup, submission, monitoring, GPU usage, and troubleshooting on Lightning.ai.
+
 ### For Research Insights (AI Agents & Humans)
 See [research_docs/](research_docs/) for structured analysis documents, debugging insights, and research findings.
 
@@ -148,6 +151,23 @@ python -m src.train_self_play --config my_experiment.yaml
 - **Model size** (`transformer.embed_dim`, `transformer.num_layers`): Transformer architecture dimensions
 
 See `src/configs/default.yaml` for the complete list of all hyperparameters and their default values.
+
+## Baselines
+
+### DeepMind 136M Teacher (2026-02-24)
+
+Evaluated against Stockfish skill level 2 (32 games, randomized openings):
+
+| Model | Score | W / D / L | Elo diff |
+|-------|-------|-----------|----------|
+| DeepMind 136M teacher | **0.688** | 12 / 20 / 0 | **+137** |
+
+This is the distillation **success threshold**: a student model scoring ≥ 0.688 has preserved teacher playing strength. See [`research_docs/2026-02-24_deepmind-136m-teacher-baseline.md`](research_docs/2026-02-24_deepmind-136m-teacher-baseline.md) for full details.
+
+To reproduce:
+```bash
+python -m src.distill.eval_teacher --config src/configs/distill.yaml
+```
 
 ## Experiment Tracking
 

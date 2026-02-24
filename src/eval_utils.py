@@ -7,6 +7,7 @@ import chess.engine
 import random
 
 import torch
+from tqdm import tqdm
 
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
@@ -171,7 +172,7 @@ def evaluate_policy_vs_stockfish(
     pgns: List[str] = []
 
     try:
-        for g in range(eval_cfg.games):
+        for g in tqdm(range(eval_cfg.games), desc="Evaluating", unit="game"):
             policy_is_white = (g % 2 == 0)
             res, reason, pgn = play_one_game(policy, sf, policy_is_white, eval_cfg, game_number=g)
             term_reasons[reason] = term_reasons.get(reason, 0) + 1
