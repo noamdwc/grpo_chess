@@ -12,6 +12,7 @@ import torch
 from torch.utils.data import Dataset
 
 from src.searchless_chess_imports import MOVE_TO_ACTION, tokenize
+from src.chess.chess_logic import ChessPlayer
 
 # Path to searchless_chess submodule
 _SC_ROOT = Path(__file__).resolve().parent.parent.parent / "searchless_chess"
@@ -432,3 +433,30 @@ def process_position(
         "teacher_action_indices": teacher_action_indices,  # [top_k]
         "teacher_probs": teacher_probs,              # [top_k]
     }
+
+
+# ---------------------------------------------------------------------------
+# ChessPlayer wrapper for evaluation
+# ---------------------------------------------------------------------------
+
+class DeepMindPlayer(ChessPlayer):
+    """Wraps the JAX ActionValueEngine as a ChessPlayer for evaluation."""
+
+    def __init__(self, engine, bucket_values: np.ndarray):
+        self._engine = engine
+        self._bucket_values = bucket_values
+
+    def act(self, board: chess.Board) -> chess.Move:
+        sorted_legal = sorted(
+            [m for m in board.legal_moves if m.uci() in MOVE_TO_ACTION],
+            key=lambda m: MOVE_TO_ACTION[m.uci()],
+        )
+        if not sorted_legal:
+            import random
+            return random.choice(list(board.legal_moves))
+
+        result = self._engine.analyse(board)       # {"log_probs": [num_legal, 128]}
+        log_probs = result["log_probs"]            # np.ndarray [num_legal, 128]
+        win_probs = np.exp(log_probs) @ self._bucket_values  # [num_legal]
+        best_idx = int(np.argmax(win_probs))
+        return sorted_legal[best_idx]
