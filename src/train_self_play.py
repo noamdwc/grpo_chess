@@ -34,7 +34,9 @@ def train(
     # Build dataloader kwargs from config, with defaults
     dataloader_config = {
         "batch_size": config.training.batch_size,
-        "num_workers": 2,
+        # Multi-worker GRPO data loading can deadlock at epoch end on Colab.
+        # Keep default single-process for reliability; callers can override.
+        "num_workers": 0,
     }
     
     # Apply dataloader_kwargs overrides and warn if overriding config values
