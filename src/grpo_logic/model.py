@@ -6,7 +6,7 @@ import chess
 from dataclasses import dataclass
 
 from src.models import ChessTransformer, ChessTransformerConfig
-from src.grpo_logic.loss import grpo_ppo_loss
+from src.grpo_logic.loss import GRPOLossInfo, grpo_ppo_loss
 from src.grpo_logic.mode_utils import temporary_eval
 from src.grpo_logic.sampling import sample_trajectories_batched
 from src.eval_utils import EvalConfig
@@ -223,7 +223,7 @@ class GRPOChessTransformer(pl.LightningModule):
         trajectories_legal_masks: torch.Tensor | None,
         step_rewards: torch.Tensor,
         effective_pad_mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, object]:
+    ) -> tuple[torch.Tensor | None, GRPOLossInfo | None]:
         """Perform a single PPO optimization step.
 
         Args:
@@ -255,7 +255,14 @@ class GRPOChessTransformer(pl.LightningModule):
         )
 
         if not torch.isfinite(loss):
-            raise ValueError(f"Non-finite loss encountered: {loss.item()}")
+            self.log(
+                "train/nonfinite_ppo_loss_skips",
+                1.0,
+                prog_bar=False,
+                on_step=True,
+                on_epoch=True,
+            )
+            return None, None
 
         return loss, loss_info
 
@@ -355,11 +362,17 @@ class GRPOChessTransformer(pl.LightningModule):
         start_player_mask = (t % 2 == 0)[None, None, :]  # [1, 1, T]
         # Exclude teacher-forced actions from policy-gradient updates.
         effective_pad_mask = pad_mask & start_player_mask & (~teacher_forced_mask)  # [B, G, T]
+        if not bool(effective_pad_mask.any()):
+            self.log("train/skipped_no_policy_steps", 1.0, prog_bar=False, on_step=True, on_epoch=True)
+            return
 
         ppo_steps = self.hparams.grpo_config.ppo_steps
+        successful_ppo_steps = 0
+        final_loss: torch.Tensor | None = None
+        final_loss_info: GRPOLossInfo | None = None
 
         # Perform multiple PPO optimization steps on the same sampled trajectories
-        for ppo_step_idx in range(ppo_steps):
+        for _ in range(ppo_steps):
             loss, loss_info = self._ppo_step(
                 trajectories_states,
                 trajectories_actions,
@@ -368,14 +381,25 @@ class GRPOChessTransformer(pl.LightningModule):
                 step_rewards,
                 effective_pad_mask,
             )
+            if loss is None or loss_info is None:
+                continue
 
             # Manual optimization step
             opt.zero_grad()
             self.manual_backward(loss)
             self.clip_gradients(opt, gradient_clip_val=1.0, gradient_clip_algorithm="norm")
             opt.step()
+            successful_ppo_steps += 1
+            final_loss = loss
+            final_loss_info = loss_info
+
+        if successful_ppo_steps == 0 or final_loss is None or final_loss_info is None:
+            self.log("train/skipped_all_ppo_steps", 1.0, prog_bar=False, on_step=True, on_epoch=True)
+            return
 
         # Standard logging (log final ppo_step metrics)
+        loss = final_loss
+        loss_info = final_loss_info
         self.log("train/loss", loss, prog_bar=True)
         self.log("train_total_loss", loss)
         self.log("train/ppo_loss", loss_info.ppo_loss)

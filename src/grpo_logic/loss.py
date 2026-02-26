@@ -2,6 +2,9 @@ import torch
 from typing import Tuple
 from dataclasses import dataclass
 
+MIN_LOG_RATIO = -20.0
+MAX_LOG_RATIO = 20.0
+
 
 @dataclass
 class GRPOLossInfo:
@@ -22,7 +25,11 @@ def importance_ratio(logprobs_new: torch.Tensor, logprobs_old: torch.Tensor) -> 
             f"logprobs_new and logprobs_old must have matching shapes, "
             f"got {logprobs_new.shape} vs {logprobs_old.shape}"
         )
-    return (logprobs_new - logprobs_old).exp()
+    # Clamp log-ratio before exp to prevent overflow during unstable early training.
+    log_ratio = logprobs_new - logprobs_old
+    log_ratio = torch.nan_to_num(log_ratio, nan=0.0, posinf=MAX_LOG_RATIO, neginf=MIN_LOG_RATIO)
+    log_ratio = log_ratio.clamp(min=MIN_LOG_RATIO, max=MAX_LOG_RATIO)
+    return log_ratio.exp()
 
 
 def grpo_chess_loss(
@@ -147,17 +154,27 @@ def ppo_chess_loss(
     """
     if pad_mask is None:
       pad_mask = torch.ones_like(logprobs_new, dtype=torch.bool)
-    ratio = importance_ratio(logprobs_new, logprobs_old)  # [G, T]
-    pg_unclipped = -advantages * ratio  # [G, T]
-    pg_clipped = -advantages * ratio.clamp(1.0 - clip_eps, 1.0 + clip_eps) # [G, T]
+    valid_mask = (
+        pad_mask
+        & torch.isfinite(logprobs_new)
+        & torch.isfinite(logprobs_old)
+        & torch.isfinite(advantages)
+    )
+    safe_logprobs_new = torch.where(valid_mask, logprobs_new, torch.zeros_like(logprobs_new))
+    safe_logprobs_old = torch.where(valid_mask, logprobs_old, torch.zeros_like(logprobs_old))
+    safe_advantages = torch.where(valid_mask, advantages, torch.zeros_like(advantages))
+
+    ratio = importance_ratio(safe_logprobs_new, safe_logprobs_old)  # [G, T]
+    pg_unclipped = -safe_advantages * ratio  # [G, T]
+    pg_clipped = -safe_advantages * ratio.clamp(1.0 - clip_eps, 1.0 + clip_eps) # [G, T]
     # Surrogate policy gradient loss (PPO-clip part)
     # This corresponds to the -E[min(...)] in the formula.
-    policy_loss = torch.max(pg_unclipped, pg_clipped) * pad_mask.float()
+    policy_loss = torch.max(pg_unclipped, pg_clipped) * valid_mask.float()
     if return_info:
-        valid_steps = pad_mask.sum().clamp_min(1.0)
-        mean_padded_ratio = (ratio * pad_mask.float()).sum() / valid_steps
+        valid_steps = valid_mask.sum().clamp_min(1.0)
+        mean_padded_ratio = (ratio * valid_mask.float()).sum() / valid_steps
         clip_fraction_mask = (ratio > (1.0 + clip_eps)) | (ratio < (1.0 - clip_eps))
-        mean_clip_fraction = (clip_fraction_mask.float() * pad_mask.float()).sum() / valid_steps
+        mean_clip_fraction = (clip_fraction_mask.float() * valid_mask.float()).sum() / valid_steps
         return policy_loss, mean_padded_ratio, mean_clip_fraction # [G, T], scalar, scalar
     return policy_loss # [G, T]
 
@@ -178,7 +195,13 @@ def kl_penalty(logprobs_new: torch.Tensor,
     """
     if pad_mask is None:
       pad_mask = torch.ones_like(logprobs_new, dtype=torch.bool)
-    return (logprobs_old - logprobs_new)[pad_mask].mean()
+    valid_kl = (logprobs_old - logprobs_new)[pad_mask]
+    if valid_kl.numel() == 0:
+        return torch.zeros((), dtype=logprobs_new.dtype, device=logprobs_new.device)
+    finite_kl = valid_kl[torch.isfinite(valid_kl)]
+    if finite_kl.numel() == 0:
+        return torch.zeros((), dtype=logprobs_new.dtype, device=logprobs_new.device)
+    return finite_kl.mean()
 
 
 def grpo_ppo_loss(
@@ -221,34 +244,61 @@ def grpo_ppo_loss(
     if pad_mask is None:
         pad_mask = torch.ones_like(logprobs_new, dtype=torch.bool)
 
+    valid_mask = (
+        pad_mask
+        & torch.isfinite(logprobs_new)
+        & torch.isfinite(logprobs_old)
+        & torch.isfinite(step_rewards)
+    )
+    if not bool(valid_mask.any()):
+        zero = torch.zeros((), dtype=logprobs_new.dtype, device=logprobs_new.device)
+        if return_info:
+            return zero, GRPOLossInfo(
+                kl_div=zero.detach(),
+                mean_ratio=zero.detach(),
+                mean_clip_fraction=zero.detach(),
+                ppo_loss=zero.detach(),
+                entropy=zero.detach(),
+                advantage_mean=zero.detach(),
+                advantage_std=zero.detach(),
+            )
+        return zero
+
     # Compute per-step advantages (normalized across G for each timestep)
-    advantages = step_group_advantage(step_rewards, pad_mask).detach()  # [B, G, T]
+    advantages = step_group_advantage(step_rewards, valid_mask).detach()  # [B, G, T]
 
     ppo_loss, mean_ratio, mean_clip_fraction = ppo_chess_loss(logprobs_new,
                                                               logprobs_old,
                                                               advantages,
                                                               clip_ratio,
-                                                              pad_mask,
+                                                              valid_mask,
                                                               return_info=True)
-    valid_steps = pad_mask.sum().clamp_min(1)
+    valid_steps = valid_mask.sum().clamp_min(1)
     ppo_loss = ppo_loss.sum() / valid_steps
-    kl_div = kl_penalty(logprobs_new, logprobs_old, pad_mask)
+    kl_div = kl_penalty(logprobs_new, logprobs_old, valid_mask)
 
     # Entropy: H(π) ≈ -E[log π(a|s)] — logged for monitoring, not part of loss
-    entropy = -logprobs_new[pad_mask].mean()
+    valid_logprobs_new = logprobs_new[valid_mask]
+    entropy = -valid_logprobs_new.mean() if valid_logprobs_new.numel() > 0 else torch.zeros_like(ppo_loss)
 
     loss = ppo_loss + kl_coef * kl_div
 
     if return_info:
-        valid_advantages = advantages[pad_mask]
+        valid_advantages = advantages[valid_mask]
+        if valid_advantages.numel() > 0:
+            adv_mean = valid_advantages.mean().detach()
+            adv_std = valid_advantages.std(unbiased=False).detach()
+        else:
+            adv_mean = torch.zeros((), dtype=logprobs_new.dtype, device=logprobs_new.device)
+            adv_std = torch.zeros((), dtype=logprobs_new.dtype, device=logprobs_new.device)
         return loss, GRPOLossInfo(
             kl_div=kl_div.detach(),
             mean_ratio=mean_ratio.detach(),
             mean_clip_fraction=mean_clip_fraction.detach(),
             ppo_loss=ppo_loss.detach(),
             entropy=entropy.detach(),
-            advantage_mean=valid_advantages.mean().detach(),
-            advantage_std=valid_advantages.std().detach(),
+            advantage_mean=adv_mean,
+            advantage_std=adv_std,
         )
     return loss
     
