@@ -1,6 +1,6 @@
 ---
-title: "DeepMind 136M Teacher Baseline vs Stockfish"
-date: "2026-02-24"
+title: "DeepMind Teacher Model Baselines vs Stockfish (9M and 136M)"
+date: "2026-02-26"
 agent: "claude-sonnet-4-6"
 
 git_commit: "26681b4033e396431f4ad9e03e8d904217a444c9"
@@ -30,13 +30,13 @@ tags:
   - teacher-model
 ---
 
-# DeepMind 136M Teacher Baseline vs Stockfish
+# DeepMind Teacher Model Baselines vs Stockfish (9M and 136M)
 
 ## Executive Summary
 
-The DeepMind 136M searchless chess teacher model scores **0.688** (12W / 20D / 0L) against Stockfish skill level 2, corresponding to approximately **+137 Elo** above that opponent. This is the target performance ceiling for distilled student models.
+Both DeepMind searchless chess models (9M and 136M parameters) were evaluated against Stockfish skill level 2 over 32 games each. Neither model ever loses. The 136M scores **0.688** (+137 Elo) and the 9M scores **0.625** (+89 Elo). These are the distillation success thresholds for student models trained from each teacher.
 
-**TL;DR:** Teacher wins 37.5%, draws 62.5%, loses 0% vs Stockfish skill 2. Any distilled student scoring below ~0.69 has degraded teacher strength.
+**TL;DR:** 136M is stronger (+48 Elo over 9M), but 9M is still solidly above Stockfish skill 2. A distilled 9M student should target ≥0.625.
 
 ## Eval Configuration
 
@@ -54,28 +54,27 @@ From `src/configs/distill.yaml`:
 
 ## Results
 
-| Metric | Value |
-|--------|-------|
-| Score | **0.688** |
-| Wins | 12 |
-| Draws | 20 |
-| Losses | 0 |
-| Elo diff vs Stockfish skill=2 | **+137** |
+| Model | Score | W / D / L | Elo diff | Checkpoint step |
+|-------|-------|-----------|----------|-----------------|
+| DeepMind 136M | **0.688** | 12 / 20 / 0 | **+137** | 6,400,000 |
+| DeepMind 9M | **0.625** | 8 / 24 / 0 | **+89** | 6,400,000 |
 
 Run via:
 ```bash
-python -m src.distill.eval_teacher --config distill.yaml
+python -m src.distill.eval_teacher --config distill.yaml --teacher_model 136M
+python -m src.distill.eval_teacher --config distill.yaml --teacher_model 9M
 ```
 
-Model: `136M` checkpoint at step 6,400,000 (`searchless_chess/checkpoints/136M`), bfloat16 inference on CPU.
+Checkpoints: `searchless_chess/checkpoints/{9M,136M}/`, bfloat16 inference on CPU.
 
 ## Interpretation
 
-- **0 losses** indicates the teacher is reliably above Stockfish skill 2.
-- The high draw rate (62.5%) is expected: the teacher plays accurately but Stockfish defends well even at skill 2, leading to many drawn endgames.
-- This score is the **distillation success threshold**: a student model that achieves ≥0.688 has preserved teacher playing strength.
+- **0 losses** for both models — both are reliably above Stockfish skill 2.
+- The higher draw rate for 9M (75% vs 62.5% for 136M) suggests 9M plays more defensively / reaches more drawn endgames rather than converting to wins.
+- **Distillation thresholds**: a student distilled from 9M should target ≥0.625; from 136M ≥0.688.
+- The 48 Elo gap between 9M and 136M quantifies the cost of the 15x size reduction in the teacher itself — the distilled student can only hope to match, not exceed, its teacher.
 
 ## Open Questions
 
-- [ ] How does the teacher score vs Stockfish skill levels 5, 10, 15? Would give a clearer picture of its absolute strength.
-- [ ] Does the distilled 9M student approach this score after GRPO fine-tuning?
+- [ ] How do both models score vs Stockfish skill 5, 10, 15? Would give absolute strength context.
+- [ ] Does a distilled 9M student (post GRPO fine-tuning) approach the 9M teacher's 0.625?

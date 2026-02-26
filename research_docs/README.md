@@ -189,6 +189,7 @@ Based on the [ML Reproducibility Checklist](https://www.cs.mcgill.ca/~jpineau/Re
 | Model | Eval opponent | Score | W / D / L | Elo diff | Doc |
 |-------|---------------|-------|-----------|----------|-----|
 | DeepMind 136M teacher | Stockfish skill=2 | 0.688 | 12/20/0 | +137 | [2026-02-24](./2026-02-24_deepmind-136m-teacher-baseline.md) |
+| DeepMind 9M teacher | Stockfish skill=2 | 0.625 | 8/24/0 | +89 | [2026-02-26](./2026-02-24_deepmind-136m-teacher-baseline.md) |
 
 These are reference points for distillation evaluation. A student model that matches the teacher score has preserved playing strength.
 

@@ -16,10 +16,13 @@ from src.chess.stockfish import StockfishPlayer, StockfishConfig, resolve_stockf
 def main():
     parser = argparse.ArgumentParser(description="Evaluate DeepMind teacher vs Stockfish")
     parser.add_argument("--config", default="distill.yaml")
+    parser.add_argument("--teacher_model", help="Override teacher model (e.g. 9M, 136M, 270M)")
     args = parser.parse_args()
 
     data = load_yaml_file(args.config)
     gen_cfg = dict_to_dataclass(GenerateConfig, data.get("generate", {}))
+    if args.teacher_model:
+        gen_cfg.teacher_model = args.teacher_model
     eval_cfg = dict_to_dataclass(EvalConfig, data.get("eval", {}))
     sf_cfg = dict_to_dataclass(StockfishConfig, data.get("stockfish", {}))
 
