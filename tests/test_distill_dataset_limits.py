@@ -78,3 +78,31 @@ def test_load_train_eval_handles_variable_teacher_width_across_shards(tmp_path):
     assert train_ds.teacher_indices.shape[1] == 4
     assert train_ds.teacher_probs.shape[1] == 4
     assert train_ds.k_masks.shape[1] == 4
+
+
+def test_padded_entries_have_zero_probs(tmp_path) -> None:
+    """Padded k slots (k_mask=False) must carry teacher_probs == 0.0 and
+    teacher_indices == 0. Prevents silent loss contamination if k_mask is ever
+    inadvertently ignored and the raw padded values are used instead.
+    """
+    # k=[3, 2, 1]: after padding to width 3, samples 1 and 2 have padded slots.
+    _write_variable_k_shard(tmp_path / "shard_0000.pt", [3, 2, 1], token_value=1)
+
+    train_ds, _ = DistillDataset.load_train_eval(str(tmp_path), eval_fraction=0.0)
+
+    k_masks = train_ds.k_masks          # [N, 3] bool
+    teacher_probs = train_ds.teacher_probs  # [N, 3] float32
+    teacher_indices = train_ds.teacher_indices  # [N, 3] long
+
+    # All samples must have at least one padded slot for this test to be meaningful.
+    assert (~k_masks).any(), "No padded entries found; check shard construction"
+
+    padded_probs = teacher_probs[~k_masks]
+    assert (padded_probs == 0.0).all(), (
+        f"Padded entries carry non-zero teacher_probs; max abs = {padded_probs.abs().max():.6f}"
+    )
+
+    padded_indices = teacher_indices[~k_masks]
+    assert (padded_indices == 0).all(), (
+        f"Padded entries carry non-zero teacher_indices; max = {padded_indices.max()}"
+    )

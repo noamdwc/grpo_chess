@@ -171,3 +171,125 @@ def test_distill_quality_gate_passes_when_metric_meets_threshold():
     )
 
     callback.on_validation_epoch_end(trainer, pl_module=object())
+
+
+# ---------------------------------------------------------------------------
+# Fixed FEN set — same positions as test_distill_label_safety._SAMPLE_FENS.
+# Covers starting position, castling, promotion, en passant, endgames.
+# ---------------------------------------------------------------------------
+_SAMPLE_FENS = [
+    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",          # starting position
+    "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",  # Italian Game
+    "8/k1P5/8/8/8/8/8/7K w - - 0 1",                                       # pawn promotion
+    "rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3",       # en passant
+    "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",                                # castling both sides
+    "4k3/8/8/8/8/8/8/4K3 w - - 0 1",                                        # bare kings
+    "r2qkb1r/pp1bpppp/2n2n2/3p4/3P4/2N2N2/PP2PPPP/R1BQKB1R b KQkq - 3 6",  # middlegame
+    "8/5k2/3p4/1p1Pp2p/pP2Pp1P/P4P1K/8/8 b - - 0 41",                     # pawn endgame
+]
+
+
+def test_masked_logits_do_not_affect_loss() -> None:
+    """Perturbing an illegal-move logit by +1e6 must leave the loss unchanged.
+    Catches masking bugs where the -inf fill is incomplete, the gather is applied
+    before masking, or softmax normalisation leaks masked probability mass.
+    """
+    A, B, K = 16, 4, 3
+    model = _tiny_model(DistillConfig())
+
+    torch.manual_seed(99)
+    logits = torch.randn(B, A)
+    legal_masks = torch.zeros(B, A, dtype=torch.bool)
+    legal_masks[:, :5] = True  # only actions 0-4 are legal; 5-15 are masked
+
+    teacher_indices = torch.randint(0, 5, (B, K))
+    teacher_probs = torch.softmax(torch.randn(B, K), dim=-1)
+    k_mask = torch.ones(B, K, dtype=torch.bool)
+
+    loss_baseline, _ = model._compute_loss(logits, legal_masks, teacher_indices, teacher_probs, k_mask)
+
+    # Perturb a logit that corresponds to a masked (illegal) action.
+    perturbed = logits.clone()
+    perturbed[:, 10] += 1e6  # action 10 is illegal for all samples
+
+    loss_perturbed, _ = model._compute_loss(perturbed, legal_masks, teacher_indices, teacher_probs, k_mask)
+
+    assert abs(loss_baseline.item() - loss_perturbed.item()) < 1e-5, (
+        f"Masked logit perturbation changed loss: "
+        f"{loss_baseline.item():.6f} -> {loss_perturbed.item():.6f}"
+    )
+
+
+def test_eval_policy_produces_only_legal_moves() -> None:
+    """Greedy PolicyPlayer must select a legal move for every board position.
+    Catches bugs in action_to_move mapping or legal-mask construction that would
+    produce illegal moves at eval time while training loss looks normal.
+    """
+    import chess
+    from src.chess.policy_player import PolicyPlayer
+    from src.models import ChessTransformer
+
+    model_cfg = ChessTransformerConfig(
+        vocab_size=300, embed_dim=32, num_layers=1, num_heads=4, action_dim=1968
+    )
+    torch.manual_seed(0)
+    inner_model = ChessTransformer(model_cfg)
+    player = PolicyPlayer(inner_model, device="cpu", cfg=PolicyConfig(greedy=True))
+
+    for fen in _SAMPLE_FENS:
+        board = chess.Board(fen)
+        legal_moves = set(board.legal_moves)
+        if not legal_moves:
+            continue  # skip terminal positions
+
+        move = player.act(board)
+        assert move in legal_moves, (
+            f"FEN={fen!r}: PolicyPlayer returned illegal move {move.uci()!r}"
+        )
+
+
+def test_tiny_overfit_loss_decreases() -> None:
+    """Training on a fixed tiny batch must reduce loss substantially.
+    Catches wrong gather/indexing, dead gradients, or loss-function bugs where
+    the loss appears finite but does not propagate useful signal to the model.
+    """
+    import torch.optim as optim
+
+    A, B = 16, 8
+    cfg = ChessTransformerConfig(vocab_size=300, embed_dim=32, num_layers=1, num_heads=4, action_dim=A)
+    model = DistillChessTransformer(cfg, DistillConfig(distill_lambda_soft=1.0, distill_lambda_hard=0.0))
+    model.log = lambda *a, **kw: None  # type: ignore[method-assign]
+
+    torch.manual_seed(123)
+    board_tokens = torch.randint(0, 300, (B, 77))
+    legal_masks = torch.zeros(B, A, dtype=torch.bool)
+    legal_masks[:, :4] = True  # 4 legal actions per sample
+    # Fixed teacher target: always action 0 with probability 1.0.
+    teacher_indices = torch.zeros(B, 1, dtype=torch.long)
+    teacher_probs = torch.ones(B, 1, dtype=torch.float32)
+    k_mask = torch.ones(B, 1, dtype=torch.bool)
+
+    optimizer = optim.Adam(model.model.parameters(), lr=5e-3)
+
+    with torch.no_grad():
+        logits0 = model.model(board_tokens)
+        loss0, _ = model._compute_loss(logits0, legal_masks, teacher_indices, teacher_probs, k_mask)
+    loss0_val = loss0.item()
+
+    for _ in range(150):
+        optimizer.zero_grad()
+        logits = model.model(board_tokens)
+        loss, _ = model._compute_loss(logits, legal_masks, teacher_indices, teacher_probs, k_mask)
+        loss.backward()
+        optimizer.step()
+
+    with torch.no_grad():
+        logits_final = model.model(board_tokens)
+        loss_final, _ = model._compute_loss(
+            logits_final, legal_masks, teacher_indices, teacher_probs, k_mask
+        )
+
+    assert loss_final.item() < 0.7 * loss0_val, (
+        f"Loss did not decrease sufficiently after 150 steps: "
+        f"initial={loss0_val:.4f}, final={loss_final.item():.4f}"
+    )

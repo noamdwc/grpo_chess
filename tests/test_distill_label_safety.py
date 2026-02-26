@@ -137,3 +137,125 @@ def test_teacher_zscore_score_norm_sharpens_flat_topk_targets() -> None:
     assert plain_probs[0].item() < 0.30
     assert zscore_probs[0].item() > plain_probs[0].item()
     assert zscore_probs[0].item() > 0.40
+
+
+# ---------------------------------------------------------------------------
+# Fixed FEN set covering starting position, castling, promotion, en passant,
+# and endgames. Deterministic; no downloads required. Also used in
+# test_distill_cloud_reliability.py — keep the two lists in sync.
+# ---------------------------------------------------------------------------
+_SAMPLE_FENS = [
+    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",          # starting position
+    "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",  # Italian Game
+    "8/k1P5/8/8/8/8/8/7K w - - 0 1",                                       # pawn promotion
+    "rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3",       # en passant
+    "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",                                # castling both sides
+    "4k3/8/8/8/8/8/8/4K3 w - - 0 1",                                        # bare kings
+    "r2qkb1r/pp1bpppp/2n2n2/3p4/3P4/2N2N2/PP2PPPP/R1BQKB1R b KQkq - 3 6",  # middlegame
+    "8/5k2/3p4/1p1Pp2p/pP2Pp1P/P4P1K/8/8 b - - 0 41",                     # pawn endgame
+]
+
+
+def test_mapping_consistency_teacher_equals_eval() -> None:
+    """Single canonical MOVE_TO_ACTION must be shared by teacher pipeline, legal mask
+    builder, and eval-time policy decoder. A divergence would corrupt training data
+    silently: the student learns the wrong labels for given board tokens.
+    """
+    from src.searchless_chess_imports import MOVE_TO_ACTION as canonical
+    from src.searchless_chess_imports import ACTION_TO_MOVE as canonical_a2m
+    from src.chess.chess_logic import MOVE_TO_ACTION as eval_m2a
+    from src.chess.chess_logic import ACTION_TO_MOVE as eval_a2m
+    from src.distill.teacher import ACTION_SPACE_SIZE
+    from src.chess.chess_logic import MAX_ACTION
+
+    # Teacher pipeline and eval decode path must use the exact same mapping.
+    assert canonical == eval_m2a, (
+        f"MOVE_TO_ACTION differs: canonical has {len(canonical)} entries, eval has {len(eval_m2a)}"
+    )
+    assert canonical_a2m == eval_a2m, "ACTION_TO_MOVE differs between canonical and eval path"
+
+    # Action space dimensions must agree across both modules.
+    assert ACTION_SPACE_SIZE == MAX_ACTION + 1, (
+        f"teacher ACTION_SPACE_SIZE={ACTION_SPACE_SIZE} != chess_logic MAX_ACTION+1={MAX_ACTION + 1}"
+    )
+
+    # Mapping must be dense: values 0..N-1 are all assigned.
+    action_ids = set(canonical.values())
+    assert action_ids == set(range(ACTION_SPACE_SIZE)), (
+        "MOVE_TO_ACTION values are not contiguous [0, ACTION_SPACE_SIZE): missing IDs detected"
+    )
+
+
+def test_legal_mask_covers_all_legal_moves() -> None:
+    """build_legal_mask_from_fen must contain True for every legal move (no false
+    negatives) and True only for legal moves (no false positives). Validates that
+    the mask builder uses the canonical MOVE_TO_ACTION and that every legal move
+    reachable by python-chess is representable in the action vocabulary.
+    """
+    import chess
+    from src.chess.chess_logic import build_legal_mask_from_fen
+    from src.searchless_chess_imports import MOVE_TO_ACTION, ACTION_TO_MOVE
+
+    for fen in _SAMPLE_FENS:
+        board = chess.Board(fen)
+        legal_uci = {m.uci() for m in board.legal_moves}
+        mask = build_legal_mask_from_fen(fen)  # bool tensor [1968]
+
+        # All legal moves must be representable in MOVE_TO_ACTION (no gaps).
+        missing_from_vocab = [u for u in legal_uci if u not in MOVE_TO_ACTION]
+        assert not missing_from_vocab, (
+            f"FEN={fen!r}: {len(missing_from_vocab)} legal moves absent from MOVE_TO_ACTION: "
+            f"{missing_from_vocab}"
+        )
+
+        # No false negatives: every legal move must set its action index to True.
+        for uci in legal_uci:
+            idx = MOVE_TO_ACTION[uci]
+            assert mask[idx].item(), (
+                f"FEN={fen!r}: legal move {uci!r} (action {idx}) is missing from the mask"
+            )
+
+        # No false positives: every True position must correspond to a legal move.
+        for idx in mask.nonzero(as_tuple=True)[0].tolist():
+            uci = ACTION_TO_MOVE[idx]
+            assert uci in legal_uci, (
+                f"FEN={fen!r}: mask[{idx}]=True but {uci!r} is not a legal move"
+            )
+
+
+def test_collated_teacher_targets_are_legal() -> None:
+    """After collation every valid (k_mask=True) teacher index must point to a True
+    entry in its sample's legal mask. Catches data-generation bugs where the teacher
+    records a move that is illegal for the given board position; such entries would
+    be silently zeroed by the loss but could indicate a systematic labelling error.
+    """
+    from src.distill.distill_dataset import collate_distill_batch
+
+    A = 1968  # full action space
+    K = 4
+    N = 6
+    torch.manual_seed(7)
+
+    batch = []
+    for i in range(N):
+        board_tokens = torch.zeros(77, dtype=torch.long)
+        legal_mask = torch.zeros(A, dtype=torch.bool)
+        # Give each sample a disjoint set of 8 legal actions to keep the test clean.
+        legal_acts = list(range(i * 8, i * 8 + 8))
+        legal_mask[legal_acts] = True
+
+        # Teacher targets: point to the first K actions in the legal set.
+        teacher_idx = torch.tensor(legal_acts[:K], dtype=torch.long)
+        teacher_prob = torch.full((K,), 1.0 / K, dtype=torch.float32)
+        k_mask_s = torch.ones(K, dtype=torch.bool)
+        batch.append((board_tokens, legal_mask, teacher_idx, teacher_prob, k_mask_s))
+
+    board_tokens, legal_masks, teacher_indices, teacher_probs, k_masks = collate_distill_batch(batch)
+
+    # Every valid teacher index must be in the legal mask for that sample.
+    is_legal = legal_masks.gather(1, teacher_indices)  # [N, K] bool
+    valid_is_legal = is_legal[k_masks]
+    assert valid_is_legal.all(), (
+        f"Some valid teacher targets point to illegal actions: "
+        f"{valid_is_legal.float().mean():.3f} legal fraction (expected 1.0)"
+    )
