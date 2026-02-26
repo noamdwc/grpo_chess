@@ -182,7 +182,8 @@ Evaluated against Stockfish skill level 2 (32 games, randomized openings):
 | Model | Score | W / D / L | Elo diff |
 |-------|-------|-----------|----------|
 | DeepMind 136M teacher | **0.688** | 12 / 20 / 0 | **+137** |
-| DeepMind 9M teacher | **0.625** | 8 / 24 / 0 | **+89** |
+| DeepMind 270M teacher | 0.656 | 10 / 22 / 0 | +112 |
+| DeepMind 9M teacher | 0.625 | 8 / 24 / 0 | +89 |
 
 These are the distillation **success thresholds**: a student model should match its teacher's score to demonstrate preserved playing strength. See [`research_docs/2026-02-24_deepmind-136m-teacher-baseline.md`](research_docs/2026-02-24_deepmind-136m-teacher-baseline.md) for full details.
 
