@@ -112,6 +112,30 @@ def test_load_checkpoint_with_compat_retries_module_has_no_attribute_message(
     assert alias_count["n"] == 1
 
 
+def test_load_checkpoint_with_compat_retries_distillconfig_alias(monkeypatch: pytest.MonkeyPatch) -> None:
+    call_count = {"n": 0}
+
+    def fake_load(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise AttributeError("Can't get attribute 'DistillConfig' on <module 'src.train_self_play'>")
+        return {"model_state_dict": {"x": 1}}
+
+    alias_calls: list[tuple[str, str]] = []
+
+    def fake_register_pickled_symbol_alias(symbol_name: str, module_name: str) -> None:
+        alias_calls.append((symbol_name, module_name))
+
+    monkeypatch.setattr("src.checkpoint_compat.torch.load", fake_load)
+    monkeypatch.setattr("src.checkpoint_compat._register_pickled_symbol_alias", fake_register_pickled_symbol_alias)
+    monkeypatch.setattr("src.checkpoint_compat._register_legacy_dataclass_aliases", lambda: None)
+
+    ckpt = load_checkpoint_with_compat("legacy.pt", map_location="cpu", weights_only=False)
+    assert ckpt == {"model_state_dict": {"x": 1}}
+    assert call_count["n"] == 2
+    assert ("DistillConfig", "src.train_self_play") in alias_calls
+
+
 def test_load_checkpoint_with_compat_preserves_unrelated_attribute_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_load(*args, **kwargs):
         raise AttributeError("Can't get attribute 'SomethingElse' on <module 'x'>")

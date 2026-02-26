@@ -2,7 +2,9 @@
 
 from collections.abc import Mapping
 import importlib
+import re
 import sys
+import types
 from typing import Optional
 
 import torch
@@ -15,37 +17,86 @@ def register_legacy_checkpoint_aliases() -> None:
     sys.modules.setdefault("src.grpo_self_play", src)
 
 
-def _register_legacy_dataclass_aliases() -> None:
-    """Register legacy dataclass symbols expected by older pickled checkpoints."""
-    pretrain_config_cls = None
-    try:
-        pretrain_module = importlib.import_module("src.pretrain.pretrain")
-        pretrain_config_cls = getattr(pretrain_module, "PretrainConfig", None)
-    except Exception:
-        pretrain_config_cls = None
+_KNOWN_CONFIG_CLASS_SOURCES = {
+    "PretrainConfig": "src.pretrain.pretrain",
+    "DistillConfig": "src.distill.distill",
+}
 
-    # Fallback lightweight placeholder so unpickling can proceed even if imports fail.
-    if pretrain_config_cls is None:
-        pretrain_config_cls = type("PretrainConfig", (), {})
-        pretrain_config_cls.__module__ = "src.distill.distill"
+_RUNTIME_MAIN_MODULE_SUFFIXES = {
+    "src.distill.distill": "src/distill/distill.py",
+    "src.train_self_play": "src/train_self_play.py",
+}
 
-    # Prefer the already-running distill module when executed as: python -m src.distill.distill
-    distill_module = sys.modules.get("src.distill.distill")
-    if distill_module is None:
-        main_module = sys.modules.get("__main__")
-        main_file = getattr(main_module, "__file__", "")
-        if isinstance(main_file, str) and main_file.endswith("src/distill/distill.py"):
-            distill_module = main_module
-            sys.modules["src.distill.distill"] = main_module
 
-    if distill_module is None:
+def _resolve_symbol_class(symbol_name: str, target_module: str) -> type:
+    source_module_name = _KNOWN_CONFIG_CLASS_SOURCES.get(symbol_name)
+    if source_module_name:
         try:
-            distill_module = importlib.import_module("src.distill.distill")
+            source_module = importlib.import_module(source_module_name)
+            source_cls = getattr(source_module, symbol_name, None)
+            if source_cls is not None:
+                return source_cls
         except Exception:
-            distill_module = None
+            pass
 
-    if distill_module is not None and not hasattr(distill_module, "PretrainConfig"):
-        setattr(distill_module, "PretrainConfig", pretrain_config_cls)
+    # Fallback lightweight placeholder so unpickling can proceed.
+    placeholder = type(symbol_name, (), {})
+    placeholder.__module__ = target_module
+    return placeholder
+
+
+def _resolve_runtime_module(module_name: str) -> Optional[types.ModuleType]:
+    module = sys.modules.get(module_name)
+    if isinstance(module, types.ModuleType):
+        return module
+
+    main_module = sys.modules.get("__main__")
+    main_file = getattr(main_module, "__file__", "")
+    suffix = _RUNTIME_MAIN_MODULE_SUFFIXES.get(module_name)
+    if isinstance(main_file, str) and suffix and main_file.endswith(suffix):
+        if isinstance(main_module, types.ModuleType):
+            sys.modules[module_name] = main_module
+            return main_module
+
+    try:
+        return importlib.import_module(module_name)
+    except Exception:
+        placeholder_module = types.ModuleType(module_name)
+        sys.modules[module_name] = placeholder_module
+        return placeholder_module
+
+
+def _register_pickled_symbol_alias(symbol_name: str, module_name: str) -> None:
+    module = _resolve_runtime_module(module_name)
+    if module is None:
+        return
+    if hasattr(module, symbol_name):
+        return
+    setattr(module, symbol_name, _resolve_symbol_class(symbol_name, module_name))
+
+
+def _parse_missing_pickled_symbol(error_message: str) -> Optional[tuple[str, str]]:
+    patterns = [
+        r"Can't get attribute '([^']+)' on <module '([^']+)'",
+        r"module '([^']+)' has no attribute '([^']+)'",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, error_message)
+        if not match:
+            continue
+        if pattern.startswith("Can't get attribute"):
+            symbol_name, module_name = match.group(1), match.group(2)
+        else:
+            module_name, symbol_name = match.group(1), match.group(2)
+        if symbol_name.endswith("Config"):
+            return symbol_name, module_name
+    return None
+
+
+def _register_legacy_dataclass_aliases() -> None:
+    """Register known legacy dataclass symbols from earlier checkpoint formats."""
+    _register_pickled_symbol_alias("PretrainConfig", "src.distill.distill")
+    _register_pickled_symbol_alias("DistillConfig", "src.train_self_play")
 
 
 def load_checkpoint_with_compat(
@@ -60,9 +111,11 @@ def load_checkpoint_with_compat(
         return torch.load(checkpoint_path, map_location=map_location, weights_only=weights_only)
     except AttributeError as exc:
         message = str(exc)
-        legacy_pretrain_alias_error = "PretrainConfig" in message and "distill" in message
-        if not legacy_pretrain_alias_error:
+        parsed = _parse_missing_pickled_symbol(message)
+        if parsed is None:
             raise
+        symbol_name, module_name = parsed
+        _register_pickled_symbol_alias(symbol_name, module_name)
         _register_legacy_dataclass_aliases()
         return torch.load(checkpoint_path, map_location=map_location, weights_only=weights_only)
 

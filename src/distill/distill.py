@@ -10,7 +10,7 @@ import os
 import time
 import random
 import string
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Optional
 
@@ -793,8 +793,9 @@ def train(
     torch.save(
         {
             "model_state_dict": export_state_dict,
-            "transformer_config": transformer_config,
-            "distill_config": distill_config,
+            # Save plain dicts to avoid module-path-sensitive pickle class references.
+            "transformer_config": asdict(transformer_config),
+            "distill_config": asdict(distill_config),
             "export_source": selected_source,
             "export_checkpoint_path": selected_ckpt_path,
             "export_monitor": selected_monitor,
