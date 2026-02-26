@@ -31,6 +31,10 @@ def test_runner_includes_dataset_metadata_and_rebuild_controls():
     assert 'DISABLE_LIGHTNING_SITECUSTOMIZE="${DISABLE_LIGHTNING_SITECUSTOMIZE:-1}"' in text
     assert 'sitecustomize.py' in text
     assert 'QUALITY_REPAIR_PANDAS_ABI="${QUALITY_REPAIR_PANDAS_ABI:-1}"' in text
+    assert 'LIGHTNING_SHARED_CACHE_DIR="${LIGHTNING_SHARED_CACHE_DIR:-/teamspace/uploads/grpo_chess_artifacts}"' in text
+    assert 'if mkdir -p "${LIGHTNING_SHARED_CACHE_DIR}" 2>/dev/null; then' in text
+    assert 'AUTO_USE_EFS_CONNECTION_CACHE="${AUTO_USE_EFS_CONNECTION_CACHE:-1}"' in text
+    assert 'if [[ "${AUTO_USE_EFS_CONNECTION_CACHE}" == "1" ]] && [[ -d "/teamspace/efs_connections" ]]; then' in text
 
 
 def test_runner_writes_quality_gate_to_generated_config():

@@ -33,9 +33,11 @@ Use GPU for training whenever possible.
    - `mcp__lightning__submit_job`
 4. Monitor status:
    - `mcp__lightning__list_jobs`
-5. Pull logs when job is terminal:
+5. Pull live tail logs while job is running/pending:
+   - `mcp__lightning__get_live_logs`
+6. Pull full logs when job is terminal:
    - `mcp__lightning__get_logs`
-6. Stop bad runs:
+7. Stop bad runs:
    - `mcp__lightning__cancel_job`
 
 ## 4) Submission Templates
@@ -97,17 +99,21 @@ Submit with:
 
 For Lightning Jobs, `/teamspace/studios/this_studio/...` is job-local and not shared across job submissions.
 
-- Job-local fallback (works within one job only):
-  - `/teamspace/studios/this_studio/artifacts`
+- Default shared cache root in this repo runner:
+  - `/teamspace/uploads/grpo_chess_artifacts`
 - Recommended shared cache root (if mounted and writable):
   - `/teamspace/s3_connections/<mount>/grpo_chess_artifacts`
+  - `/teamspace/efs_connections/<mount>/grpo_chess_artifacts`
+- Job-local fallback (works within one job only):
+  - `/teamspace/studios/this_studio/artifacts`
 - Suggested distill cache:
   - `<ARTIFACT_ROOT>/distill_labelsafe_v2/distill_data`
 - Suggested pretrain checkpoint cache:
   - `<ARTIFACT_ROOT>/distill_labelsafe_v2/pretrain.ckpt`
 
 `scripts/lightning/run_distill_labelsafe.sh` now:
-- auto-detects a writable mount under `/teamspace/s3_connections/*` when available
+- auto-detects a writable mount under `/teamspace/s3_connections/*` or `/teamspace/efs_connections/*` when available
+- otherwise defaults to `/teamspace/uploads/grpo_chess_artifacts` for cross-job reuse
 - warns when using job-local fallback path
 - can hard-fail with `REQUIRE_PERSISTENT_CACHE=1` if only job-local storage is available
 

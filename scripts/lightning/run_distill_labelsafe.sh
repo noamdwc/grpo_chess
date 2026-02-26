@@ -54,7 +54,9 @@ DISTILL_LAMBDA_SOFT="${DISTILL_LAMBDA_SOFT:-}"
 DISTILL_LAMBDA_HARD="${DISTILL_LAMBDA_HARD:-}"
 DISTILL_TARGET_TOP1_MIX_ALPHA="${DISTILL_TARGET_TOP1_MIX_ALPHA:-}"
 AUTO_USE_S3_CONNECTION_CACHE="${AUTO_USE_S3_CONNECTION_CACHE:-1}"
+AUTO_USE_EFS_CONNECTION_CACHE="${AUTO_USE_EFS_CONNECTION_CACHE:-1}"
 REQUIRE_PERSISTENT_CACHE="${REQUIRE_PERSISTENT_CACHE:-0}"
+LIGHTNING_SHARED_CACHE_DIR="${LIGHTNING_SHARED_CACHE_DIR:-/teamspace/uploads/grpo_chess_artifacts}"
 
 TEACHER_MODEL="${TEACHER_MODEL:-136M}"
 TEACHER_CHECKPOINT_DIR="${TEACHER_CHECKPOINT_DIR:-searchless_chess/checkpoints}"
@@ -225,8 +227,8 @@ choose_artifact_root() {
     return 0
   fi
 
+  local conn_dir=""
   if [[ "${AUTO_USE_S3_CONNECTION_CACHE}" == "1" ]] && [[ -d "/teamspace/s3_connections" ]]; then
-    local conn_dir=""
     for conn_dir in /teamspace/s3_connections/*; do
       [[ -d "${conn_dir}" ]] || continue
       if mkdir -p "${conn_dir}/grpo_chess_artifacts" 2>/dev/null; then
@@ -234,6 +236,22 @@ choose_artifact_root() {
         return 0
       fi
     done
+  fi
+
+  if [[ "${AUTO_USE_EFS_CONNECTION_CACHE}" == "1" ]] && [[ -d "/teamspace/efs_connections" ]]; then
+    for conn_dir in /teamspace/efs_connections/*; do
+      [[ -d "${conn_dir}" ]] || continue
+      if mkdir -p "${conn_dir}/grpo_chess_artifacts" 2>/dev/null; then
+        printf '%s\n' "${conn_dir}/grpo_chess_artifacts"
+        return 0
+      fi
+    done
+  fi
+
+  # Prefer a shared Teamspace jobs path before falling back to job-local storage.
+  if mkdir -p "${LIGHTNING_SHARED_CACHE_DIR}" 2>/dev/null; then
+    printf '%s\n' "${LIGHTNING_SHARED_CACHE_DIR}"
+    return 0
   fi
 
   printf '%s\n' "/teamspace/studios/this_studio/artifacts"
@@ -251,7 +269,7 @@ export DATA_DIR
 if [[ "${PERSIST_BACKEND}" == "lightning" ]] && [[ "${ARTIFACT_ROOT}" == /teamspace/studios/this_studio/* ]]; then
   echo "Warning: ARTIFACT_ROOT=${ARTIFACT_ROOT} is job-local in Lightning Jobs and is not shared across jobs."
   echo "Warning: Cache reuse across job submissions will not work with this path."
-  echo "Warning: Set ARTIFACT_ROOT to a writable mounted path (for example /teamspace/s3_connections/<mount>/grpo_chess_artifacts)."
+  echo "Warning: Set ARTIFACT_ROOT to a persistent path (for example /teamspace/s3_connections/<mount>/grpo_chess_artifacts or /teamspace/efs_connections/<mount>/grpo_chess_artifacts)."
   if [[ "${REQUIRE_PERSISTENT_CACHE}" == "1" ]]; then
     echo "ERROR: REQUIRE_PERSISTENT_CACHE=1 but no persistent writable ARTIFACT_ROOT is configured." >&2
     exit 1
