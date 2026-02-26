@@ -216,7 +216,12 @@ def test_train_mode_without_eval_guard_is_dropout_noisy():
 def test_ppo_step_skips_when_loss_has_no_grad(monkeypatch):
     _seed_all(9)
     model = _build_model(action_dim=64)
-    model.log = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    log_calls: list[dict] = []
+
+    def _record_log(*_args, **kwargs):
+        log_calls.append(kwargs)
+
+    model.log = _record_log  # type: ignore[method-assign]
 
     states, actions, legal_masks = _make_trajectory_batch(
         seed=10,
@@ -255,3 +260,4 @@ def test_ppo_step_skips_when_loss_has_no_grad(monkeypatch):
 
     assert loss is None
     assert loss_info is None
+    assert any(call.get("batch_size") == 1 for call in log_calls)

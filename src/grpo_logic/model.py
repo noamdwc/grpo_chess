@@ -261,6 +261,7 @@ class GRPOChessTransformer(pl.LightningModule):
                 prog_bar=False,
                 on_step=True,
                 on_epoch=True,
+                batch_size=int(effective_pad_mask.shape[0]),
             )
             return None, None
         if (not loss.requires_grad) or (loss.grad_fn is None):
@@ -270,6 +271,7 @@ class GRPOChessTransformer(pl.LightningModule):
                 prog_bar=False,
                 on_step=True,
                 on_epoch=True,
+                batch_size=int(effective_pad_mask.shape[0]),
             )
             return None, None
 
@@ -372,7 +374,14 @@ class GRPOChessTransformer(pl.LightningModule):
         # Exclude teacher-forced actions from policy-gradient updates.
         effective_pad_mask = pad_mask & start_player_mask & (~teacher_forced_mask)  # [B, G, T]
         if not bool(effective_pad_mask.any()):
-            self.log("train/skipped_no_policy_steps", 1.0, prog_bar=False, on_step=True, on_epoch=True)
+            self.log(
+                "train/skipped_no_policy_steps",
+                1.0,
+                prog_bar=False,
+                on_step=True,
+                on_epoch=True,
+                batch_size=int(pad_mask.shape[0]),
+            )
             return
 
         ppo_steps = self.hparams.grpo_config.ppo_steps
@@ -403,7 +412,14 @@ class GRPOChessTransformer(pl.LightningModule):
             final_loss_info = loss_info
 
         if successful_ppo_steps == 0 or final_loss is None or final_loss_info is None:
-            self.log("train/skipped_all_ppo_steps", 1.0, prog_bar=False, on_step=True, on_epoch=True)
+            self.log(
+                "train/skipped_all_ppo_steps",
+                1.0,
+                prog_bar=False,
+                on_step=True,
+                on_epoch=True,
+                batch_size=int(pad_mask.shape[0]),
+            )
             return
 
         # Standard logging (log final ppo_step metrics)
