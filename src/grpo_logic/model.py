@@ -263,6 +263,15 @@ class GRPOChessTransformer(pl.LightningModule):
                 on_epoch=True,
             )
             return None, None
+        if (not loss.requires_grad) or (loss.grad_fn is None):
+            self.log(
+                "train/nograd_ppo_loss_skips",
+                1.0,
+                prog_bar=False,
+                on_step=True,
+                on_epoch=True,
+            )
+            return None, None
 
         return loss, loss_info
 

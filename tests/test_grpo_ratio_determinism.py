@@ -8,7 +8,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from src.grpo_logic.loss import importance_ratio
+from src.grpo_logic.loss import GRPOLossInfo, importance_ratio
 from src.grpo_logic.mode_utils import temporary_eval
 from src.grpo_logic.model import GRPOChessTransformer, GRPOConfig
 from src.grpo_logic.sampling import batched_policy_step
@@ -211,3 +211,47 @@ def test_train_mode_without_eval_guard_is_dropout_noisy():
 
     all_equal = all(torch.allclose(outputs[0], out) for out in outputs[1:])
     assert not all_equal
+
+
+def test_ppo_step_skips_when_loss_has_no_grad(monkeypatch):
+    _seed_all(9)
+    model = _build_model(action_dim=64)
+    model.log = lambda *args, **kwargs: None  # type: ignore[method-assign]
+
+    states, actions, legal_masks = _make_trajectory_batch(
+        seed=10,
+        action_dim=64,
+        batch_size=1,
+        num_trajectories=2,
+        depth=3,
+    )
+    old_log_probs = torch.zeros((1, 2, 3))
+    step_rewards = torch.zeros((1, 2, 3))
+    pad_mask = torch.ones((1, 2, 3), dtype=torch.bool)
+
+    def fake_grpo_ppo_loss(*_args, **_kwargs):
+        zero = torch.tensor(0.0)  # Deliberately no grad_fn / requires_grad=False
+        info = GRPOLossInfo(
+            kl_div=zero,
+            mean_ratio=zero,
+            mean_clip_fraction=zero,
+            ppo_loss=zero,
+            entropy=zero,
+            advantage_mean=zero,
+            advantage_std=zero,
+        )
+        return zero, info
+
+    monkeypatch.setattr("src.grpo_logic.model.grpo_ppo_loss", fake_grpo_ppo_loss)
+
+    loss, loss_info = model._ppo_step(
+        states,
+        actions,
+        old_log_probs,
+        legal_masks,
+        step_rewards,
+        pad_mask,
+    )
+
+    assert loss is None
+    assert loss_info is None
