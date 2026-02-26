@@ -12,7 +12,7 @@ Usage:
 """
 
 import argparse
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Optional
 
@@ -548,8 +548,9 @@ def train(
     final_path = Path(pretrain_config.checkpoint_dir) / "pretrain_final.pt"
     torch.save({
         'model_state_dict': model.model.state_dict(),
-        'transformer_config': transformer_config,
-        'pretrain_config': pretrain_config,
+        # Save plain dicts to avoid module-path-sensitive pickle class references.
+        'transformer_config': asdict(transformer_config),
+        'pretrain_config': asdict(pretrain_config),
     }, final_path)
 
     print(f"\nPretraining complete! Final checkpoint saved to {final_path}")

@@ -1,6 +1,7 @@
 """Compatibility helpers for loading legacy checkpoints."""
 
 from collections.abc import Mapping
+import importlib
 import sys
 from typing import Optional
 
@@ -12,6 +13,41 @@ import src
 def register_legacy_checkpoint_aliases() -> None:
     """Register module aliases used by checkpoints saved before refactors."""
     sys.modules.setdefault("src.grpo_self_play", src)
+
+
+def _register_legacy_dataclass_aliases() -> None:
+    """Register legacy dataclass symbols expected by older pickled checkpoints."""
+    try:
+        pretrain_module = importlib.import_module("src.pretrain.pretrain")
+        pretrain_config_cls = getattr(pretrain_module, "PretrainConfig", None)
+        if pretrain_config_cls is None:
+            return
+
+        # Older checkpoints can reference PretrainConfig from src.distill.distill.
+        distill_module = importlib.import_module("src.distill.distill")
+        if not hasattr(distill_module, "PretrainConfig"):
+            setattr(distill_module, "PretrainConfig", pretrain_config_cls)
+    except Exception:
+        # Best-effort aliasing for backward compatibility; ignore import-time failures.
+        return
+
+
+def load_checkpoint_with_compat(
+    checkpoint_path: str,
+    *,
+    map_location: str | torch.device = "cpu",
+    weights_only: bool = False,
+):
+    """Load checkpoint with retries for known legacy pickle symbol mismatches."""
+    register_legacy_checkpoint_aliases()
+    try:
+        return torch.load(checkpoint_path, map_location=map_location, weights_only=weights_only)
+    except AttributeError as exc:
+        message = str(exc)
+        if "Can't get attribute 'PretrainConfig'" not in message:
+            raise
+        _register_legacy_dataclass_aliases()
+        return torch.load(checkpoint_path, map_location=map_location, weights_only=weights_only)
 
 
 def _get_cls_embedding_resize_mismatch(

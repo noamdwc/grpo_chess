@@ -2,7 +2,11 @@ import sys
 
 import pytest
 
-from src.checkpoint_compat import load_state_dict_with_checkpoint_compat, register_legacy_checkpoint_aliases
+from src.checkpoint_compat import (
+    load_checkpoint_with_compat,
+    load_state_dict_with_checkpoint_compat,
+    register_legacy_checkpoint_aliases,
+)
 from src.models import ChessTransformer, ChessTransformerConfig
 
 
@@ -56,3 +60,36 @@ def test_load_state_dict_with_checkpoint_compat_preserves_non_cls_errors() -> No
             checkpoint_path="broken.pt",
             strict=False,
         )
+
+
+def test_load_checkpoint_with_compat_retries_pretrainconfig_alias(monkeypatch: pytest.MonkeyPatch) -> None:
+    call_count = {"n": 0}
+
+    def fake_load(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise AttributeError("Can't get attribute 'PretrainConfig' on <module 'src.distill.distill'>")
+        return {"model_state_dict": {"x": 1}}
+
+    alias_count = {"n": 0}
+
+    def fake_register_aliases() -> None:
+        alias_count["n"] += 1
+
+    monkeypatch.setattr("src.checkpoint_compat.torch.load", fake_load)
+    monkeypatch.setattr("src.checkpoint_compat._register_legacy_dataclass_aliases", fake_register_aliases)
+
+    ckpt = load_checkpoint_with_compat("legacy.pt", map_location="cpu", weights_only=False)
+    assert ckpt == {"model_state_dict": {"x": 1}}
+    assert call_count["n"] == 2
+    assert alias_count["n"] == 1
+
+
+def test_load_checkpoint_with_compat_preserves_unrelated_attribute_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_load(*args, **kwargs):
+        raise AttributeError("Can't get attribute 'SomethingElse' on <module 'x'>")
+
+    monkeypatch.setattr("src.checkpoint_compat.torch.load", fake_load)
+
+    with pytest.raises(AttributeError, match="SomethingElse"):
+        load_checkpoint_with_compat("legacy.pt", map_location="cpu", weights_only=False)

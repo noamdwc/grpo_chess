@@ -22,7 +22,7 @@ from pytorch_lightning.callbacks import Callback, ModelCheckpoint, LearningRateM
 from torch.utils.data import DataLoader
 
 from src.models import ChessTransformer, ChessTransformerConfig
-from src.checkpoint_compat import load_state_dict_with_checkpoint_compat, register_legacy_checkpoint_aliases
+from src.checkpoint_compat import load_checkpoint_with_compat, load_state_dict_with_checkpoint_compat, register_legacy_checkpoint_aliases
 from src.distill.distill_dataset import DistillDataset, collate_distill_batch
 from src.configs.config_loader import load_yaml_file, dict_to_dataclass
 from src.evaluator import Evaluator, StockfishEvalCallback
@@ -160,7 +160,7 @@ class DistillChessTransformer(pl.LightningModule):
     def _load_pretrained_weights(self, checkpoint_path: str) -> None:
         print(f"Loading pretrained weights from: {checkpoint_path}")
         register_legacy_checkpoint_aliases()
-        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        checkpoint = load_checkpoint_with_compat(checkpoint_path, map_location="cpu", weights_only=False)
 
         if "model_state_dict" in checkpoint:
             state_dict = checkpoint["model_state_dict"]
@@ -545,7 +545,7 @@ def build_stockfish_eval_callback(
 
 
 def _extract_model_state_from_lightning_checkpoint(checkpoint_path: str) -> dict[str, torch.Tensor]:
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    checkpoint = load_checkpoint_with_compat(checkpoint_path, map_location="cpu", weights_only=False)
 
     if "state_dict" in checkpoint:
         state_dict = {

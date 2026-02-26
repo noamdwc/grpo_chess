@@ -14,7 +14,11 @@ from src.chess.policy_player import PolicyConfig
 from src.chess.searcher import SearchConfig
 from src.chess.stockfish import StockfishConfig
 from src.pretrain.pretrain_load_config import PretrainLoadConfig
-from src.checkpoint_compat import load_state_dict_with_checkpoint_compat, register_legacy_checkpoint_aliases
+from src.checkpoint_compat import (
+    load_checkpoint_with_compat,
+    load_state_dict_with_checkpoint_compat,
+    register_legacy_checkpoint_aliases,
+)
 
 
 @dataclass
@@ -129,7 +133,7 @@ class GRPOChessTransformer(pl.LightningModule):
         print(f"Loading pretrained weights from: {checkpoint_path}")
 
         register_legacy_checkpoint_aliases()
-        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+        checkpoint = load_checkpoint_with_compat(checkpoint_path, map_location="cpu", weights_only=False)
 
         # Handle different checkpoint formats
         if 'model_state_dict' in checkpoint:
