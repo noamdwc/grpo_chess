@@ -255,6 +255,23 @@ class DistillChessTransformer(pl.LightningModule):
 
         # Metrics
         with torch.no_grad():
+            stored_probs = teacher_probs * k_mask.float()
+            stored_mass = stored_probs.sum(dim=1)
+            stored_valid_mask = stored_mass > 1e-8
+            stored_probs_norm = stored_probs / stored_mass.clamp_min(1e-8).unsqueeze(1)
+            stored_log_probs = torch.log(stored_probs_norm.clamp(min=1e-10))
+
+            if bool(stored_valid_mask.any()):
+                teacher_topk_mass = stored_mass[stored_valid_mask].mean()
+                teacher_entropy_mean = (
+                    -(stored_probs_norm * stored_log_probs).sum(dim=1)[stored_valid_mask].mean()
+                )
+                teacher_top1_prob_mean = stored_probs_norm.max(dim=1).values[stored_valid_mask].mean()
+            else:
+                teacher_topk_mass = torch.tensor(0.0, device=logits.device)
+                teacher_entropy_mean = torch.tensor(0.0, device=logits.device)
+                teacher_top1_prob_mean = torch.tensor(0.0, device=logits.device)
+
             # Student's top-1 prediction
             student_top1 = masked_logits.argmax(dim=-1)  # [B]
             # Teacher's top-1 legal entry after legality filtering + renormalization.
@@ -320,6 +337,9 @@ class DistillChessTransformer(pl.LightningModule):
             "top5_match": top5_match,
             "entropy": entropy,
             "kl_divergence": kl_divergence,
+            "teacher_topk_mass": teacher_topk_mass,
+            "teacher_entropy_mean": teacher_entropy_mean,
+            "teacher_top1_prob_mean": teacher_top1_prob_mean,
             "teacher_legal_fraction": teacher_legal_fraction,
             "teacher_valid_sample_fraction": teacher_valid_sample_fraction,
             "target_entropy": target_entropy,
@@ -367,6 +387,9 @@ class DistillChessTransformer(pl.LightningModule):
         self.log("train/teacher_top5_match", metrics["top5_match"])
         self.log("train/entropy", metrics["entropy"])
         self.log("train/kl_divergence", metrics["kl_divergence"])
+        self.log("train/teacher_topk_mass", metrics["teacher_topk_mass"])
+        self.log("train/teacher_entropy_mean", metrics["teacher_entropy_mean"])
+        self.log("train/teacher_top1_prob_mean", metrics["teacher_top1_prob_mean"])
         self.log("train/teacher_legal_fraction", metrics["teacher_legal_fraction"])
         self.log("train/teacher_valid_sample_fraction", metrics["teacher_valid_sample_fraction"])
         self.log("train/target_entropy", metrics["target_entropy"])
@@ -401,6 +424,9 @@ class DistillChessTransformer(pl.LightningModule):
         self.log("val/teacher_top5_match", metrics["top5_match"], sync_dist=True)
         self.log("val/entropy", metrics["entropy"], sync_dist=True)
         self.log("val/kl_divergence", metrics["kl_divergence"], sync_dist=True)
+        self.log("val/teacher_topk_mass", metrics["teacher_topk_mass"], sync_dist=True)
+        self.log("val/teacher_entropy_mean", metrics["teacher_entropy_mean"], sync_dist=True)
+        self.log("val/teacher_top1_prob_mean", metrics["teacher_top1_prob_mean"], sync_dist=True)
         self.log("val/teacher_legal_fraction", metrics["teacher_legal_fraction"], sync_dist=True)
         self.log("val/teacher_valid_sample_fraction", metrics["teacher_valid_sample_fraction"], sync_dist=True)
         self.log("val/target_entropy", metrics["target_entropy"], sync_dist=True)

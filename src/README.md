@@ -312,6 +312,10 @@ All hyperparameters are defined in YAML files. Key settings include:
 - `transformer.num_heads`: Number of attention heads
 - `transformer.vocab_size`: Token vocabulary size
 - `transformer.action_dim`: Action space size (1968 for chess)
+- `transformer.readout`: Sequence readout mode (`"mean"`, `"last"`, `"cls"`)
+- `transformer.ffn_mult`: FFN width multiplier (`dim_feedforward = ffn_mult * embed_dim`)
+- `transformer.head_mult`: Policy-head hidden width multiplier (`head_mult * embed_dim`)
+- `transformer.activation`: Transformer/head activation (`"relu"` or `"gelu"`)
 
 **Training:**
 - `training.num_epochs`: Total number of training epochs
@@ -319,6 +323,17 @@ All hyperparameters are defined in YAML files. Key settings include:
 - `training.steps_per_epoch`: Number of training steps per epoch
 
 See `configs/default.yaml` for the complete list of all hyperparameters and their default values.
+
+### Distillation v2 Notes
+
+- Config: `configs/distill_labelsafe_v2.yaml`
+- Default v2 student readout: `transformer.readout: "last"`
+- Distillation diagnostics include:
+  - `teacher_topk_mass`
+  - `teacher_entropy_mean`
+  - `teacher_top1_prob_mean`
+  - `teacher_legal_fraction`
+  - `teacher_valid_sample_fraction`
 
 ## Advanced Usage
 
@@ -425,4 +440,3 @@ If you use this code in your research, please cite:
 ## Contact
 
 For questions or contributions, please open an issue or contact [your email].
-

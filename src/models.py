@@ -18,12 +18,26 @@ class ChessTransformerConfig:
         num_layers: Number of transformer encoder layers
         num_heads: Number of attention heads
         action_dim: Dimension of action space (number of possible moves)
+        pad_idx: Padding token id
+        readout: Sequence readout mode ("mean", "last", or "cls")
+        cls_token_id: Optional CLS token id (used when readout="cls")
+        ffn_mult: Optional transformer FFN width multiplier (dim_feedforward = ffn_mult * embed_dim)
+        head_mult: Policy head hidden width multiplier (hidden = head_mult * embed_dim)
+        activation: Transformer/head activation ("relu" or "gelu")
+        dropout: Transformer dropout
     """
     vocab_size: int = 300
     embed_dim: int = 256
     num_layers: int = 4
     num_heads: int = 8
     action_dim: int = 1968
+    pad_idx: int = 0
+    readout: str = "mean"
+    cls_token_id: Optional[int] = None
+    ffn_mult: Optional[int] = None
+    head_mult: int = 1
+    activation: str = "relu"
+    dropout: float = 0.1
 
 
 # Register as safe for torch.load with weights_only=True (PyTorch 2.6+ compatibility)
@@ -49,21 +63,60 @@ class ChessTransformer(nn.Module):
         num_layers = transformer_config.num_layers
         num_heads = transformer_config.num_heads
         action_dim = transformer_config.action_dim
+        pad_idx = transformer_config.pad_idx
+        readout = transformer_config.readout.lower()
+        activation = transformer_config.activation.lower()
+        dropout = transformer_config.dropout
+        head_mult = max(1, int(transformer_config.head_mult))
 
-        self.embedding = nn.Embedding(vocab_size, embed_dim)
+        if readout not in {"mean", "last", "cls"}:
+            raise ValueError(f"Unsupported readout mode: {readout!r}. Expected one of: 'mean', 'last', 'cls'.")
+        if activation not in {"relu", "gelu"}:
+            raise ValueError(f"Unsupported activation: {activation!r}. Expected 'relu' or 'gelu'.")
+
+        self.pad_idx = int(pad_idx)
+        self.readout = readout
+        self.cls_token_id: Optional[int] = None
+
+        embedding_vocab_size = vocab_size
+        if readout == "cls":
+            cls_token_id = transformer_config.cls_token_id
+            if cls_token_id is None:
+                cls_token_id = vocab_size
+            cls_token_id = int(cls_token_id)
+            if cls_token_id == self.pad_idx:
+                raise ValueError("cls_token_id cannot be equal to pad_idx.")
+            embedding_vocab_size = max(vocab_size, cls_token_id + 1)
+            self.cls_token_id = cls_token_id
+
+        self.embedding = nn.Embedding(embedding_vocab_size, embed_dim)
 
         # DeepMind uses absolute or relative pos encoding.
         # For simplicity, we use learnable absolute encoding for FEN length (~80 chars)
         self.pos_encoding = nn.Parameter(torch.randn(1, 128, embed_dim))
 
-        encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads, batch_first=True)
+        if transformer_config.ffn_mult is None:
+            dim_feedforward = 2048
+        else:
+            dim_feedforward = max(1, int(transformer_config.ffn_mult)) * embed_dim
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim,
+            nhead=num_heads,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            activation=activation,
+            batch_first=True,
+        )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
         # Head outputs 1968 logits (one for each possible unique move type)
+        head_hidden_dim = head_mult * embed_dim
+        head_activation: nn.Module = nn.GELU() if activation == "gelu" else nn.ReLU()
         self.policy_head = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim),
-            nn.ReLU(),
-            nn.Linear(embed_dim, action_dim)
+            nn.Linear(embed_dim, head_hidden_dim),
+            head_activation,
+            nn.Linear(head_hidden_dim, action_dim)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -75,19 +128,45 @@ class ChessTransformer(nn.Module):
         Returns:
             Action logits [batch, action_dim]
         """
-        batch, seq = x.shape
+        batch, _ = x.shape
+        token_ids = x
 
-        # Create padding mask: True indicates a masked position (padding token 0)
-        src_key_padding_mask = (x == 0)
-        x = self.embedding(x) + self.pos_encoding[:, :seq, :]
+        if self.readout == "cls":
+            assert self.cls_token_id is not None
+            cls_tokens = torch.full(
+                (batch, 1),
+                self.cls_token_id,
+                dtype=token_ids.dtype,
+                device=token_ids.device,
+            )
+            token_ids = torch.cat([cls_tokens, token_ids], dim=1)
+
+        seq = token_ids.shape[1]
+        if seq > self.pos_encoding.shape[1]:
+            raise ValueError(
+                f"Input sequence length ({seq}) exceeds positional encoding limit ({self.pos_encoding.shape[1]})."
+            )
+
+        # Create padding mask: True indicates a masked position.
+        src_key_padding_mask = token_ids == self.pad_idx
+        x = self.embedding(token_ids) + self.pos_encoding[:, :seq, :]
 
         # Pass the padding mask to the transformer
         out = self.transformer(x, src_key_padding_mask=src_key_padding_mask)
 
-        # Pool: Mean of the non-masked tokens
-        mask = ~src_key_padding_mask
-        mask_expanded = mask.unsqueeze(-1).float()  # [B, SEQ, 1]
-        pooled = (out * mask_expanded).sum(dim=1) / mask_expanded.sum(dim=1).clamp_min(1)
+        if self.readout == "mean":
+            # Mean pool over non-padding tokens.
+            mask = ~src_key_padding_mask
+            mask_expanded = mask.unsqueeze(-1).float()  # [B, SEQ, 1]
+            pooled = (out * mask_expanded).sum(dim=1) / mask_expanded.sum(dim=1).clamp_min(1.0)
+        elif self.readout == "last":
+            # Readout from final non-padding token.
+            nonpad_mask = ~src_key_padding_mask
+            lengths = nonpad_mask.sum(dim=1)  # [B]
+            last_idx = (lengths - 1).clamp_min(0)
+            pooled = out[torch.arange(batch, device=out.device), last_idx]
+        else:  # self.readout == "cls"
+            pooled = out[:, 0, :]
 
         return self.policy_head(pooled)
     
