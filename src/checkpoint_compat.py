@@ -17,19 +17,35 @@ def register_legacy_checkpoint_aliases() -> None:
 
 def _register_legacy_dataclass_aliases() -> None:
     """Register legacy dataclass symbols expected by older pickled checkpoints."""
+    pretrain_config_cls = None
     try:
         pretrain_module = importlib.import_module("src.pretrain.pretrain")
         pretrain_config_cls = getattr(pretrain_module, "PretrainConfig", None)
-        if pretrain_config_cls is None:
-            return
-
-        # Older checkpoints can reference PretrainConfig from src.distill.distill.
-        distill_module = importlib.import_module("src.distill.distill")
-        if not hasattr(distill_module, "PretrainConfig"):
-            setattr(distill_module, "PretrainConfig", pretrain_config_cls)
     except Exception:
-        # Best-effort aliasing for backward compatibility; ignore import-time failures.
-        return
+        pretrain_config_cls = None
+
+    # Fallback lightweight placeholder so unpickling can proceed even if imports fail.
+    if pretrain_config_cls is None:
+        pretrain_config_cls = type("PretrainConfig", (), {})
+        pretrain_config_cls.__module__ = "src.distill.distill"
+
+    # Prefer the already-running distill module when executed as: python -m src.distill.distill
+    distill_module = sys.modules.get("src.distill.distill")
+    if distill_module is None:
+        main_module = sys.modules.get("__main__")
+        main_file = getattr(main_module, "__file__", "")
+        if isinstance(main_file, str) and main_file.endswith("src/distill/distill.py"):
+            distill_module = main_module
+            sys.modules["src.distill.distill"] = main_module
+
+    if distill_module is None:
+        try:
+            distill_module = importlib.import_module("src.distill.distill")
+        except Exception:
+            distill_module = None
+
+    if distill_module is not None and not hasattr(distill_module, "PretrainConfig"):
+        setattr(distill_module, "PretrainConfig", pretrain_config_cls)
 
 
 def load_checkpoint_with_compat(
@@ -44,7 +60,8 @@ def load_checkpoint_with_compat(
         return torch.load(checkpoint_path, map_location=map_location, weights_only=weights_only)
     except AttributeError as exc:
         message = str(exc)
-        if "Can't get attribute 'PretrainConfig'" not in message:
+        legacy_pretrain_alias_error = "PretrainConfig" in message and "distill" in message
+        if not legacy_pretrain_alias_error:
             raise
         _register_legacy_dataclass_aliases()
         return torch.load(checkpoint_path, map_location=map_location, weights_only=weights_only)

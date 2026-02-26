@@ -1,7 +1,9 @@
 import sys
+import types
 
 import pytest
 
+import src.checkpoint_compat as checkpoint_compat
 from src.checkpoint_compat import (
     load_checkpoint_with_compat,
     load_state_dict_with_checkpoint_compat,
@@ -85,6 +87,31 @@ def test_load_checkpoint_with_compat_retries_pretrainconfig_alias(monkeypatch: p
     assert alias_count["n"] == 1
 
 
+def test_load_checkpoint_with_compat_retries_module_has_no_attribute_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    call_count = {"n": 0}
+
+    def fake_load(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise AttributeError("module 'src.distill.distill' has no attribute 'PretrainConfig'")
+        return {"model_state_dict": {"x": 1}}
+
+    alias_count = {"n": 0}
+
+    def fake_register_aliases() -> None:
+        alias_count["n"] += 1
+
+    monkeypatch.setattr("src.checkpoint_compat.torch.load", fake_load)
+    monkeypatch.setattr("src.checkpoint_compat._register_legacy_dataclass_aliases", fake_register_aliases)
+
+    ckpt = load_checkpoint_with_compat("legacy.pt", map_location="cpu", weights_only=False)
+    assert ckpt == {"model_state_dict": {"x": 1}}
+    assert call_count["n"] == 2
+    assert alias_count["n"] == 1
+
+
 def test_load_checkpoint_with_compat_preserves_unrelated_attribute_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_load(*args, **kwargs):
         raise AttributeError("Can't get attribute 'SomethingElse' on <module 'x'>")
@@ -93,3 +120,21 @@ def test_load_checkpoint_with_compat_preserves_unrelated_attribute_error(monkeyp
 
     with pytest.raises(AttributeError, match="SomethingElse"):
         load_checkpoint_with_compat("legacy.pt", map_location="cpu", weights_only=False)
+
+
+def test_register_legacy_dataclass_aliases_uses_distill_main_module(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Simulate `python -m src.distill.distill` where code runs under __main__.
+    main_module = types.ModuleType("__main__")
+    main_module.__file__ = "/content/grpo_chess/src/distill/distill.py"
+    monkeypatch.setitem(sys.modules, "__main__", main_module)
+    sys.modules.pop("src.distill.distill", None)
+
+    # Force import fallback path.
+    def fake_import(name: str):
+        raise ImportError(name)
+
+    monkeypatch.setattr(checkpoint_compat.importlib, "import_module", fake_import)
+
+    checkpoint_compat._register_legacy_dataclass_aliases()
+    assert "src.distill.distill" in sys.modules
+    assert hasattr(sys.modules["src.distill.distill"], "PretrainConfig")
