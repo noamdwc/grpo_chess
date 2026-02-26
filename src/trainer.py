@@ -42,7 +42,8 @@ def get_trainer(num_epochs: int = 5000,
                 checkpoint_every_n_epochs: int = 5,
                 keep_n_checkpoints: int = 3,
                 use_wandb: bool = True,
-                wandb_project: str = "Chess-GRPO-Bot") -> pl.Trainer:
+                wandb_project: str = "Chess-GRPO-Bot",
+                wandb_log_model: bool = False) -> pl.Trainer:
     """Create a PyTorch Lightning trainer with WandB logging and checkpointing.
 
     Args:
@@ -50,6 +51,7 @@ def get_trainer(num_epochs: int = 5000,
         checkpoint_dir: Directory to save model checkpoints
         checkpoint_every_n_epochs: Save periodic checkpoint every N epochs
         keep_n_checkpoints: Keep last N periodic checkpoints per run
+        wandb_log_model: Whether to upload model checkpoint artifacts to WandB
 
     Returns:
         Configured PyTorch Lightning trainer
@@ -58,7 +60,7 @@ def get_trainer(num_epochs: int = 5000,
     print(f"Generated run name: {run_name}")
 
     logger = (
-        WandbLogger(project=wandb_project, log_model=True, name=run_name)
+        WandbLogger(project=wandb_project, log_model=wandb_log_model, name=run_name)
         if use_wandb
         else CSVLogger(save_dir=checkpoint_dir, name=run_name)
     )
