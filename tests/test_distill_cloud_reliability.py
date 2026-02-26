@@ -214,7 +214,7 @@ def test_masked_logits_do_not_affect_loss() -> None:
 
     loss_perturbed, _ = model._compute_loss(perturbed, legal_masks, teacher_indices, teacher_probs, k_mask)
 
-    assert abs(loss_baseline.item() - loss_perturbed.item()) < 1e-5, (
+    assert abs(loss_baseline.item() - loss_perturbed.item()) < 1e-6, (
         f"Masked logit perturbation changed loss: "
         f"{loss_baseline.item():.6f} -> {loss_perturbed.item():.6f}"
     )

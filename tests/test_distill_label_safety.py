@@ -156,6 +156,10 @@ _SAMPLE_FENS = [
 ]
 
 
+def _sample_fens() -> list[str]:
+    return _SAMPLE_FENS
+
+
 def test_mapping_consistency_teacher_equals_eval() -> None:
     """Single canonical MOVE_TO_ACTION must be shared by teacher pipeline, legal mask
     builder, and eval-time policy decoder. A divergence would corrupt training data
@@ -259,3 +263,36 @@ def test_collated_teacher_targets_are_legal() -> None:
         f"Some valid teacher targets point to illegal actions: "
         f"{valid_is_legal.float().mean():.3f} legal fraction (expected 1.0)"
     )
+
+
+def test_side_to_move_alignment_action_round_trip() -> None:
+    """Every True entry in a legal mask must correspond to a move whose from-square
+    carries a piece whose color matches the side-to-move in the FEN.
+
+    A ply-shift bug (board encoded one move early/late) would make the mask contain
+    moves for the wrong side; this test catches that without requiring a full game.
+    """
+    import chess
+    from src.chess.chess_logic import build_legal_mask_from_fen
+    from src.searchless_chess_imports import ACTION_TO_MOVE
+
+    for fen in _sample_fens():
+        board = chess.Board(fen)
+        if not list(board.legal_moves):
+            continue  # skip terminal positions
+
+        mask = build_legal_mask_from_fen(fen)
+        true_indices = mask.nonzero(as_tuple=True)[0].tolist()
+
+        for idx in true_indices:
+            uci = ACTION_TO_MOVE[idx]
+            move = chess.Move.from_uci(uci)
+            piece = board.piece_at(move.from_square)
+            assert piece is not None, (
+                f"FEN={fen!r}: action {idx} ({uci!r}) from-square {move.from_square} is empty"
+            )
+            assert piece.color == board.turn, (
+                f"FEN={fen!r}: action {idx} ({uci!r}) moves a "
+                f"{'white' if piece.color else 'black'} piece but it is "
+                f"{'white' if board.turn else 'black'}'s turn — ply-shift detected"
+            )

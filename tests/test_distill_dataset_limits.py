@@ -2,6 +2,8 @@ import pytest
 import torch
 
 from src.distill.distill_dataset import DistillDataset
+from src.distill.distill import DistillChessTransformer, DistillConfig
+from src.models import ChessTransformerConfig
 
 
 def _write_shard(path, n_samples: int, token_value: int) -> None:
@@ -105,4 +107,47 @@ def test_padded_entries_have_zero_probs(tmp_path) -> None:
     padded_indices = teacher_indices[~k_masks]
     assert (padded_indices == 0).all(), (
         f"Padded entries carry non-zero teacher_indices; max = {padded_indices.max()}"
+    )
+
+
+def test_padded_illegal_indices_do_not_contaminate_legal_fraction() -> None:
+    """Slots where k_mask=False must not contribute to teacher_legal_fraction even
+    if their teacher_indices happen to point to illegal actions.
+
+    Catches a masking bug where the k_mask is applied after (rather than before)
+    the legality check, which would silently lower the reported legal fraction and
+    potentially let garbage indices influence the loss.
+    """
+    A = 16
+    cfg = ChessTransformerConfig(
+        vocab_size=300, embed_dim=32, num_layers=1, num_heads=4, action_dim=A
+    )
+    model = DistillChessTransformer(cfg, DistillConfig())
+    model.log = lambda *a, **kw: None  # type: ignore[method-assign]
+
+    B, K = 4, 3
+    logits = torch.zeros(B, A)
+    legal_masks = torch.zeros(B, A, dtype=torch.bool)
+    legal_masks[:, :4] = True  # only actions 0-3 are legal
+
+    # Valid (k_mask=True) slots all point to legal actions.
+    teacher_indices = torch.zeros(B, K, dtype=torch.long)
+    teacher_indices[:, 0] = 0  # legal
+    teacher_indices[:, 1] = 1  # legal
+    # Padded slot: k_mask=False; index points to an ILLEGAL action (index 10).
+    teacher_indices[:, 2] = 10
+
+    teacher_probs = torch.zeros(B, K, dtype=torch.float32)
+    teacher_probs[:, 0] = 0.6
+    teacher_probs[:, 1] = 0.4
+    # padded slot has 0 prob (as guaranteed by dataset)
+
+    k_mask = torch.ones(B, K, dtype=torch.bool)
+    k_mask[:, 2] = False  # mark the third slot as padding
+
+    _, metrics = model._compute_loss(logits, legal_masks, teacher_indices, teacher_probs, k_mask)
+
+    assert metrics["teacher_legal_fraction"].item() == pytest.approx(1.0, rel=1e-6), (
+        f"Padded illegal indices bled into teacher_legal_fraction: "
+        f"{metrics['teacher_legal_fraction'].item():.4f} (expected 1.0)"
     )
