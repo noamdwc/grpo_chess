@@ -80,7 +80,15 @@ def _lin(i: int) -> str:
 # Main conversion
 # ---------------------------------------------------------------------------
 
-def convert(checkpoint_dir: str, step: int, output: str, model_name: str = "9M") -> None:
+def convert(
+    checkpoint_dir: str,
+    step: int,
+    output: str,
+    model_name: str = "9M",
+    wandb_project: str = "chess-grpo-pretrain",
+    wandb_tags: list = None,
+    wandb_run_name: str = None,
+) -> None:
     import jax
     import jax.numpy as jnp
 
@@ -230,6 +238,44 @@ def convert(checkpoint_dir: str, step: int, output: str, model_name: str = "9M")
         out = model(dummy_input)
     print(f"Forward pass OK — output shape: {out.shape}")  # expect [1, 79, 128]
 
+    n_params = sum(p.numel() for p in model.parameters())
+    summary = {
+        "model_name": model_name,
+        "step": step,
+        "output_path": output,
+        "n_params": n_params,
+        "n_state_dict_keys": len(sd),
+        "missing_keys": len(missing),
+        "unexpected_keys": len(unexpected),
+        "forward_pass_output_shape": list(out.shape),
+        "load_strict": True,
+    }
+
+    # Log to WandB if API key is available
+    wandb_key = os.environ.get("WANDB_API_KEY") or os.environ.get("WANDB_KEY")
+    if wandb_key:
+        try:
+            import wandb
+            run = wandb.init(
+                project=wandb_project,
+                name=wandb_run_name or f"convert-jax-{model_name.lower()}-{step}",
+                tags=(wandb_tags or []) + ["jax-conversion", model_name],
+                config={
+                    "model_name": model_name,
+                    "checkpoint_step": step,
+                    "checkpoint_dir": checkpoint_dir,
+                    "output_path": output,
+                    "n_params": n_params,
+                },
+            )
+            wandb.summary.update(summary)
+            wandb.finish()
+            print(f"WandB run logged → {run.url}")
+        except Exception as e:
+            print(f"WandB logging skipped: {e}")
+    else:
+        print("No WANDB_API_KEY found — skipping WandB logging.")
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -243,6 +289,9 @@ def main():
     parser.add_argument("--step", type=int, default=6400000)
     parser.add_argument("--output", default="checkpoints/jax_9m_converted.pt")
     parser.add_argument("--model_name", default="9M")
+    parser.add_argument("--wandb_project", default="chess-grpo-pretrain")
+    parser.add_argument("--wandb_tags", default="", help="Comma-separated WandB tags")
+    parser.add_argument("--wandb_run_name", default="")
     args = parser.parse_args()
 
     convert(
@@ -250,6 +299,9 @@ def main():
         step=args.step,
         output=args.output,
         model_name=args.model_name,
+        wandb_project=args.wandb_project,
+        wandb_tags=[t for t in args.wandb_tags.split(",") if t],
+        wandb_run_name=args.wandb_run_name or None,
     )
 
 
