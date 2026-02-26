@@ -22,7 +22,7 @@ from pytorch_lightning.callbacks import Callback, ModelCheckpoint, LearningRateM
 from torch.utils.data import DataLoader
 
 from src.models import ChessTransformer, ChessTransformerConfig
-from src.checkpoint_compat import register_legacy_checkpoint_aliases
+from src.checkpoint_compat import load_state_dict_with_checkpoint_compat, register_legacy_checkpoint_aliases
 from src.distill.distill_dataset import DistillDataset, collate_distill_batch
 from src.configs.config_loader import load_yaml_file, dict_to_dataclass
 from src.evaluator import Evaluator, StockfishEvalCallback
@@ -174,7 +174,12 @@ class DistillChessTransformer(pl.LightningModule):
         else:
             state_dict = checkpoint
 
-        missing, unexpected = self.model.load_state_dict(state_dict, strict=False)
+        missing, unexpected = load_state_dict_with_checkpoint_compat(
+            self.model,
+            state_dict,
+            checkpoint_path=checkpoint_path,
+            strict=False,
+        )
         if missing:
             print(f"Warning: missing keys: {missing}")
         if unexpected:

@@ -30,6 +30,7 @@ The policy model in `src/models.py` is an encoder-only transformer that maps tok
 Notes:
 - Legal-move masking is applied outside the base forward pass during training/eval loss and action selection.
 - The same core architecture is used across GRPO, pretraining, and distillation entry points, configured from YAML (`src/configs/*.yaml`).
+- Warm-start compatibility: `transformer.readout: "cls"` can increase `embedding.weight` rows (default `cls_token_id=vocab_size`), so loading older non-CLS checkpoints will fail with an explicit compatibility error.
 
 ## Quick Start
 
@@ -201,6 +202,7 @@ The focused v2 distillation upgrade is captured in:
   - `"mean"`: legacy masked mean pooling
   - `"last"`: last non-pad token readout (v2 default)
   - `"cls"`: prepends CLS token and reads position 0
+  - Note: warm-starting CLS models from legacy non-CLS checkpoints is not shape-compatible unless `cls_token_id` keeps embedding size unchanged.
 - Added configurable transformer FFN width/activation:
   - `transformer.ffn_mult` controls `dim_feedforward = ffn_mult * embed_dim`
   - `transformer.activation` supports `"relu"` and `"gelu"`

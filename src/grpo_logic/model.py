@@ -14,7 +14,7 @@ from src.chess.policy_player import PolicyConfig
 from src.chess.searcher import SearchConfig
 from src.chess.stockfish import StockfishConfig
 from src.pretrain.pretrain_load_config import PretrainLoadConfig
-from src.checkpoint_compat import register_legacy_checkpoint_aliases
+from src.checkpoint_compat import load_state_dict_with_checkpoint_compat, register_legacy_checkpoint_aliases
 
 
 @dataclass
@@ -149,7 +149,12 @@ class GRPOChessTransformer(pl.LightningModule):
             state_dict = checkpoint
 
         # Load into policy model
-        missing, unexpected = self.policy_model.load_state_dict(state_dict, strict=False)
+        missing, unexpected = load_state_dict_with_checkpoint_compat(
+            self.policy_model,
+            state_dict,
+            checkpoint_path=checkpoint_path,
+            strict=False,
+        )
         if missing:
             print(f"Warning: Missing keys in pretrained checkpoint: {missing}")
         if unexpected:
