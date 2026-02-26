@@ -253,6 +253,8 @@ def convert(
 
     # Log to WandB if API key is available
     wandb_key = os.environ.get("WANDB_API_KEY") or os.environ.get("WANDB_KEY")
+    if wandb_key and not os.environ.get("WANDB_API_KEY"):
+        os.environ["WANDB_API_KEY"] = wandb_key
     if wandb_key:
         try:
             import wandb
