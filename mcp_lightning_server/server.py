@@ -4,7 +4,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
-from .tools import submit_job, list_jobs, cancel_job, get_logs, get_credits
+from .tools import submit_job, list_jobs, cancel_job, get_logs, get_live_logs, get_credits
 
 
 server = Server("lightning-mcp-server")
@@ -60,6 +60,22 @@ async def handle_list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="get_live_logs",
+            description="Retrieve live tail logs from a running Lightning.ai job",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "job_name": {"type": "string", "description": "Name of the job"},
+                    "tail_lines": {
+                        "type": "integer",
+                        "description": "How many trailing lines to return (default: 200, max: 5000)",
+                        "default": 200,
+                    },
+                },
+                "required": ["job_name"],
+            },
+        ),
+        Tool(
             name="get_credits",
             description="Check remaining Lightning.ai credits and total spent",
             inputSchema={"type": "object", "properties": {}},
@@ -85,6 +101,11 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await cancel_job(job_name=arguments["job_name"])
         elif name == "get_logs":
             result = await get_logs(job_name=arguments["job_name"])
+        elif name == "get_live_logs":
+            result = await get_live_logs(
+                job_name=arguments["job_name"],
+                tail_lines=arguments.get("tail_lines", 200),
+            )
         elif name == "get_credits":
             result = await get_credits()
         else:
