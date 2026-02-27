@@ -112,7 +112,7 @@ if _STOCKFISH_BIN="$(_find_stockfish)"; then
   export STOCKFISH_PATH="${_STOCKFISH_BIN}"
 elif [[ "${INSTALL_STOCKFISH}" == "1" ]]; then
   echo "[setup] Installing Stockfish via apt-get..."
-  apt-get update -qq && apt-get install -y --no-install-recommends stockfish
+  sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends stockfish
   export STOCKFISH_PATH="$(command -v stockfish)"
   echo "[setup] Stockfish installed: ${STOCKFISH_PATH}"
 else
