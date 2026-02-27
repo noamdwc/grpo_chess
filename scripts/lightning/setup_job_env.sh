@@ -9,13 +9,17 @@
 # Do NOT run as: bash scripts/lightning/setup_job_env.sh  (exports are lost)
 #
 # Controls (env vars):
-#   REPO_BRANCH        Branch to checkout (default: feature/lightning_training)
-#   REPO_URL           Git remote (default: https://github.com/noamdwc/grpo_chess.git)
-#   REPO_DIR           Where to clone (default: /teamspace/studios/this_studio/repo)
-#   INSTALL_JAX        1|0 — install JAX + dm-haiku ecosystem (default: 1)
-#   INSTALL_STOCKFISH  1|0 — apt-get install stockfish if missing (default: 1)
-#   DOWNLOAD_9M_CKPT   1|0 — download 9M JAX checkpoint (default: 0)
-#   WANDB_KEY          WandB API key (propagated to WANDB_API_KEY automatically)
+#   REPO_BRANCH           Branch to checkout (default: feature/lightning_training)
+#   REPO_URL              Git remote (default: https://github.com/noamdwc/grpo_chess.git)
+#   REPO_DIR              Where to clone (default: /teamspace/studios/this_studio/repo)
+#   INSTALL_JAX           1|0 — install JAX + dm-haiku ecosystem (default: 1)
+#   INSTALL_STOCKFISH     1|0 — apt-get install stockfish if missing (default: 1)
+#   DOWNLOAD_9M_CKPT      1|0 — download 9M JAX checkpoint (default: 0)
+#   RESTORE_NUMPY_VERSION numpy version to pin AFTER JAX install, e.g. "1.26.4"
+#                         Leave unset to keep JAX's numpy (2.x). Set when JAX is
+#                         only needed for a pre-processing step before PyTorch training,
+#                         since torchmetrics/matplotlib are compiled against numpy 1.x.
+#   WANDB_KEY             WandB API key (propagated to WANDB_API_KEY automatically)
 
 set -euo pipefail
 
@@ -130,6 +134,16 @@ if [[ "${DOWNLOAD_9M_CKPT}" == "1" ]]; then
     cd "${REPO_DIR}"
     echo "[setup] 9M checkpoint ready at ${_9M_CKPT_DIR}/9M"
   fi
+fi
+
+# ── 7. Optionally restore numpy for PyTorch ecosystem ─────────────────────────
+# JAX 0.8.2 upgrades numpy to 2.x, but torchmetrics/matplotlib need numpy 1.x.
+# Set RESTORE_NUMPY_VERSION=1.26.4 when JAX is only used for a pre-processing step.
+RESTORE_NUMPY_VERSION="${RESTORE_NUMPY_VERSION:-}"
+if [[ -n "${RESTORE_NUMPY_VERSION}" ]]; then
+  echo "[setup] Restoring numpy==${RESTORE_NUMPY_VERSION} for PyTorch compatibility..."
+  pip install -q "numpy==${RESTORE_NUMPY_VERSION}"
+  python -c "import numpy; print(f'[setup] numpy restored to {numpy.__version__}')"
 fi
 
 echo "[setup] Environment setup complete. Working directory: ${REPO_DIR}"
