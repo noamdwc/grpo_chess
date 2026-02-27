@@ -6,7 +6,7 @@
 
 training:
   num_epochs: 400
-  batch_size: 16
+  batch_size: 4
   steps_per_epoch: 512
   checkpoint_dir: "checkpoints"
   checkpoint_every_n_epochs: 5
@@ -16,8 +16,8 @@ training:
 
 grpo:
   lr: 0.000001  # 1e-6
-  num_trajectories: 8
-  trajectory_depth: 16
+  num_trajectories: 4
+  trajectory_depth: 8
   clip_ratio: 0.20
   kl_coef: 0.001
   eval_every_n_epochs: 10
