@@ -63,7 +63,7 @@ echo "[setup] Installing core Python packages..."
 pip install -q \
   torch torchvision pytorch-lightning \
   wandb chess stockfish \
-  pyyaml numpy
+  pyyaml numpy datasets
 
 INSTALL_JAX="${INSTALL_JAX:-1}"
 if [[ "${INSTALL_JAX}" == "1" ]]; then
