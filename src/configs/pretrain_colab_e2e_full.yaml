@@ -1,0 +1,57 @@
+# Colab end-to-end full profile for pretraining stage.
+
+pretrain:
+  lr: 0.0001
+  batch_size: 512
+  val_batch_size: 256
+  num_epochs: 22
+  warmup_steps: 1000
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  checkpoint_dir: "/content/drive/MyDrive/data/grpo-chess/colab_e2e_full/checkpoints/pretrain"
+  resume_from: null
+  use_wandb: true
+  wandb_project: "chess-grpo-pretrain"
+  label_smoothing: 0.1
+  num_workers: 4
+  val_check_interval: 0.1
+  eval_every_n_epochs: 1
+  precision: "bf16-mixed"
+  accumulate_grad_batches: 4
+
+eval:
+  games: 32
+  seed: 0
+  max_plies: 400
+  randomize_opening: true
+  opening_plies: 6
+
+stockfish:
+  path: "/usr/games/stockfish"
+  skill_level: 2
+  movetime_ms: 50
+
+policy:
+  greedy: true
+
+dataset:
+  min_elo: 1800
+  max_samples: 5000000
+  skip_first_n_moves: 5
+  skip_last_n_moves: 5
+  sample_positions_per_game: 3
+  buffer_size: 10000
+  filter_abandoned: true
+  dataset_name: "Lichess/standard-chess-games"
+  split: "train"
+  is_eval: false
+  eval_fraction: 0.05
+  cache_path: "/content/drive/MyDrive/data/grpo-chess/hf_cache/pretrain_processed"
+  hf_cache_dir: "/content/drive/MyDrive/data/grpo-chess/hf_cache/datasets"
+
+transformer:
+  vocab_size: 300
+  embed_dim: 256
+  num_layers: 4
+  num_heads: 8
+  action_dim: 1968
