@@ -56,7 +56,10 @@ class PretrainConfig:
         wandb_project: WandB project name
         label_smoothing: Label smoothing factor for cross-entropy
         num_workers: Number of DataLoader workers
+        val_batch_size: Optional validation batch size (defaults to batch_size)
         val_check_interval: Validation check interval (fraction of epoch or int steps)
+        precision: Lightning precision setting (e.g., "32-true", "bf16-mixed")
+        accumulate_grad_batches: Number of gradient accumulation steps
     """
     lr: float = 1e-4
     batch_size: int = 256
@@ -70,8 +73,11 @@ class PretrainConfig:
     wandb_project: str = "chess-grpo-pretrain"
     label_smoothing: float = 0.1
     num_workers: int = 4
+    val_batch_size: Optional[int] = None
     val_check_interval: float = 0.1
     eval_every_n_epochs: int = 1
+    precision: str = "32-true"
+    accumulate_grad_batches: int = 1
 
 
 # Register as safe for torch.load with weights_only=True (PyTorch 2.6+ compatibility)
@@ -413,6 +419,8 @@ def get_pretrain_trainer(
         logger=logger,
         callbacks=callbacks,
         gradient_clip_val=pretrain_config.max_grad_norm,
+        accumulate_grad_batches=max(1, int(pretrain_config.accumulate_grad_batches)),
+        precision=pretrain_config.precision,
         log_every_n_steps=50,
         val_check_interval=pretrain_config.val_check_interval,
     )
@@ -515,9 +523,10 @@ def train(
         pin_memory=True,
     )
 
+    val_batch_size = int(pretrain_config.val_batch_size or pretrain_config.batch_size)
     val_dataloader = DataLoader(
         val_dataset,
-        batch_size=pretrain_config.batch_size,
+        batch_size=max(1, val_batch_size),
         shuffle=False,
         num_workers=max(1, pretrain_config.num_workers // 2),
         collate_fn=collate_pretrain_batch,
@@ -566,7 +575,10 @@ def main():
     # Allow command-line overrides for common parameters
     parser.add_argument("--lr", type=float, help="Learning rate")
     parser.add_argument("--batch_size", type=int, help="Batch size")
+    parser.add_argument("--val_batch_size", type=int, help="Validation batch size")
     parser.add_argument("--num_epochs", type=int, help="Number of epochs")
+    parser.add_argument("--precision", type=str, help="Lightning precision setting (e.g., 32-true, bf16-mixed)")
+    parser.add_argument("--accumulate_grad_batches", type=int, help="Gradient accumulation steps")
     parser.add_argument("--min_elo", type=int, help="Minimum player ELO")
     parser.add_argument("--max_samples", type=int, help="Max samples per epoch")
     parser.add_argument("--resume_from", type=str, help="Resume from checkpoint")
@@ -581,8 +593,14 @@ def main():
         overrides['pretrain']['lr'] = args.lr
     if args.batch_size:
         overrides['pretrain']['batch_size'] = args.batch_size
+    if args.val_batch_size:
+        overrides['pretrain']['val_batch_size'] = args.val_batch_size
     if args.num_epochs:
         overrides['pretrain']['num_epochs'] = args.num_epochs
+    if args.precision:
+        overrides['pretrain']['precision'] = args.precision
+    if args.accumulate_grad_batches:
+        overrides['pretrain']['accumulate_grad_batches'] = args.accumulate_grad_batches
     if args.resume_from:
         overrides['pretrain']['resume_from'] = args.resume_from
     if args.no_wandb:

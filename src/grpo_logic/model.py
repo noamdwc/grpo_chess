@@ -6,6 +6,7 @@ import chess
 from dataclasses import dataclass
 
 from src.models import ChessTransformer, ChessTransformerConfig
+from src.models_9m import Searchless9MGRPOPolicy
 from src.grpo_logic.loss import GRPOLossInfo, grpo_ppo_loss
 from src.grpo_logic.mode_utils import temporary_eval
 from src.grpo_logic.sampling import sample_trajectories_batched
@@ -82,12 +83,19 @@ class GRPOChessTransformer(pl.LightningModule):
                  pretrain_cfg: PretrainLoadConfig | None = None):
         super().__init__()
         self.save_hyperparameters()
-        self.policy_model = ChessTransformer(transformer_config)
-        self.old_policy_model = ChessTransformer(transformer_config)
 
-        # Load pretrained weights if specified
-        if pretrain_cfg and pretrain_cfg.checkpoint_path:
-            self._load_pretrained_weights(pretrain_cfg)
+        if pretrain_cfg and getattr(pretrain_cfg, 'use_9m_direct', False):
+            # Use 9M body + new action head as the GRPO policy
+            self.policy_model = Searchless9MGRPOPolicy(
+                checkpoint_path=pretrain_cfg.checkpoint_path,
+                freeze_body=pretrain_cfg.freeze_layers > 0,
+            )
+            self.old_policy_model = Searchless9MGRPOPolicy()
+        else:
+            self.policy_model = ChessTransformer(transformer_config)
+            self.old_policy_model = ChessTransformer(transformer_config)
+            if pretrain_cfg and pretrain_cfg.checkpoint_path:
+                self._load_pretrained_weights(pretrain_cfg)
 
         self._sync_old_policy()
 
