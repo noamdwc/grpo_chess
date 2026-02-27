@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # setup_job_env.sh — Standard Lightning.ai job environment setup for grpo_chess.
 #
-# Usage (source or run):
+# IMPORTANT: Must be SOURCED (not executed as a subshell) so that PYTHONPATH
+# and other exports persist in the calling shell:
+#
 #   source scripts/lightning/setup_job_env.sh
-#   # or
-#   bash scripts/lightning/setup_job_env.sh && cd /teamspace/studios/this_studio/repo
+#
+# Do NOT run as: bash scripts/lightning/setup_job_env.sh  (exports are lost)
 #
 # Controls (env vars):
 #   REPO_BRANCH        Branch to checkout (default: feature/lightning_training)
@@ -68,10 +70,11 @@ if [[ "${INSTALL_JAX}" == "1" ]]; then
     pip install -q \
       "jax[cuda12]==0.8.2" \
       "dm-haiku==0.0.16" \
-      "optax==0.2.4" \
-      "orbax-checkpoint==0.10.2" \
+      "optax==0.2.7" \
+      "orbax-checkpoint==0.11.32" \
       "grain==0.2.15" \
       "jaxtyping==0.3.4" \
+      "chex==0.1.91" \
       "ml-collections" \
       "tensorflow-cpu"
   else
@@ -79,10 +82,11 @@ if [[ "${INSTALL_JAX}" == "1" ]]; then
     pip install -q \
       "jax==0.8.2" "jaxlib==0.8.2" \
       "dm-haiku==0.0.16" \
-      "optax==0.2.4" \
-      "orbax-checkpoint==0.10.2" \
+      "optax==0.2.7" \
+      "orbax-checkpoint==0.11.32" \
       "grain==0.2.15" \
       "jaxtyping==0.3.4" \
+      "chex==0.1.91" \
       "ml-collections" \
       "tensorflow-cpu"
   fi
