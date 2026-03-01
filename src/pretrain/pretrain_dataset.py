@@ -121,7 +121,9 @@ class ChessPretrainDataset(Dataset):
         """Initialize the dataset - downloads and processes all games."""
         self.config = config
         self._action_space_size = max(MOVE_TO_ACTION.values()) + 1
-        self._samples: list[tuple[torch.Tensor, int, torch.Tensor]] = []
+        self._boards: torch.Tensor = torch.empty(0)
+        self._actions: torch.Tensor = torch.empty(0)
+        self._masks: torch.Tensor = torch.empty(0)
 
         self._load_and_process()
 
@@ -132,8 +134,23 @@ class ChessPretrainDataset(Dataset):
             cache_file = self._get_cache_filename()
             if os.path.exists(cache_file):
                 print(f"Loading processed samples from {cache_file}...")
-                self._samples = torch.load(cache_file)
-                print(f"Loaded {len(self._samples):,} samples from cache")
+                data = torch.load(cache_file)
+                if isinstance(data, dict) and 'boards' in data:
+                    self._boards = data['boards']
+                    self._actions = data['actions']
+                    self._masks = data['masks']
+                else:
+                    # Legacy format: list of (board, action, mask) tuples
+                    print("Converting legacy cache to stacked format...")
+                    boards, actions, masks = zip(*data)
+                    self._boards = torch.stack(boards)
+                    self._actions = torch.tensor(actions, dtype=torch.long)
+                    self._masks = torch.stack(masks)
+                    # Re-save in fast format
+                    torch.save({'boards': self._boards, 'actions': self._actions, 'masks': self._masks}, cache_file)
+                    print("Re-saved cache in stacked format")
+                    del data
+                print(f"Loaded {len(self._boards):,} samples from cache")
                 return
 
         # Download, filter, and process
@@ -196,23 +213,23 @@ class ChessPretrainDataset(Dataset):
             desc="Processing"
         )
 
-        # Convert to tensors  (HF map flattens the lists)  
+        # Convert to stacked tensors (HF map flattens the lists)
         print("Converting to tensors...")
-        for i in tqdm(range(len(processed)), desc="Tensorizing"):
-            board_tensor = torch.tensor(processed[i]['boards'], dtype=torch.long)
-            legal_mask = torch.tensor(processed[i]['masks'], dtype=torch.bool)
-            self._samples.append((board_tensor, processed[i]['actions'], legal_mask))
-            if self.config.max_samples and len(self._samples) >= self.config.max_samples:
-                break
-          
-        print(f"Done: {len(self._samples):,} samples")
+        n = len(processed)
+        if self.config.max_samples and n > self.config.max_samples:
+            n = self.config.max_samples
+        self._boards = torch.tensor(processed[:n]['boards'], dtype=torch.long)
+        self._actions = torch.tensor(processed[:n]['actions'], dtype=torch.long)
+        self._masks = torch.tensor(processed[:n]['masks'], dtype=torch.bool)
+
+        print(f"Done: {len(self._boards):,} samples")
 
         # Save processed samples to cache
         if self.config.cache_path:
             cache_file = self._get_cache_filename()
             print(f"Saving processed samples to {cache_file}...")
             os.makedirs(self.config.cache_path, exist_ok=True)
-            torch.save(self._samples, cache_file)
+            torch.save({'boards': self._boards, 'actions': self._actions, 'masks': self._masks}, cache_file)
             print("Saved to cache")
 
     def _get_cache_filename(self) -> str:
@@ -307,10 +324,10 @@ class ChessPretrainDataset(Dataset):
             yield board_tensor, action_idx, legal_mask
 
     def __len__(self) -> int:
-        return len(self._samples)
+        return len(self._boards)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int, torch.Tensor]:
-        return self._samples[idx]
+        return self._boards[idx], self._actions[idx], self._masks[idx]
 
 
 def collate_pretrain_batch(
