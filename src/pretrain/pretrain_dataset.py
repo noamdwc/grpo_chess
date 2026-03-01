@@ -205,13 +205,15 @@ class ChessPretrainDataset(Dataset):
 
             return {'boards': all_boards, 'actions': all_actions, 'masks': all_masks}
 
+        from datasets.utils.logging import set_verbosity_info, disable_progress_bar, enable_progress_bar
+        enable_progress_bar()
         processed = dataset.map(
             process_batch,
             batched=True,
             batch_size=1000,
             num_proc=num_workers,
             remove_columns=dataset.column_names,
-            desc="Processing"
+            desc="Processing games"
         )
 
         # Convert to stacked tensors (HF map flattens the lists)
