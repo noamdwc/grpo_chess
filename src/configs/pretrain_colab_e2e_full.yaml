@@ -36,7 +36,7 @@ policy:
 
 dataset:
   min_elo: 1800
-  max_samples: 5000000
+  max_samples: 2000000
   skip_first_n_moves: 5
   skip_last_n_moves: 5
   sample_positions_per_game: 3
@@ -49,6 +49,7 @@ dataset:
   cache_path: "/content/drive/MyDrive/data/grpo-chess/hf_cache/pretrain_processed"
   hf_cache_dir: "/content/drive/MyDrive/data/grpo-chess/hf_cache/datasets"
   force_reprocess: true
+  num_proc: 1
 
 transformer:
   vocab_size: 300

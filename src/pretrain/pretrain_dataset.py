@@ -51,6 +51,7 @@ class PretrainDatasetConfig:
     cache_path: Optional[str] = None
     hf_cache_dir: Optional[str] = None
     force_reprocess: bool = False
+    num_proc: Optional[int] = None  # Workers for dataset.map(); None=auto, 1=safe for Colab
 
 
 def uci_to_action(uci_move: str) -> Optional[int]:
@@ -165,7 +166,7 @@ class ChessPretrainDataset(Dataset):
                 print(f"Limited to {len(dataset):,} games")
 
         # Process games using HuggingFace's optimized map
-        num_workers = min(8, cpu_count() or 4)
+        num_workers = self.config.num_proc if self.config.num_proc is not None else min(8, cpu_count() or 4)
         print(f"Processing games into samples with {num_workers} workers...")
 
         skip_first = self.config.skip_first_n_moves
