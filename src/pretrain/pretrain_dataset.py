@@ -50,6 +50,7 @@ class PretrainDatasetConfig:
     eval_fraction: float = 0.05
     cache_path: Optional[str] = None
     hf_cache_dir: Optional[str] = None
+    force_reprocess: bool = False
 
 
 def uci_to_action(uci_move: str) -> Optional[int]:
@@ -130,7 +131,7 @@ class ChessPretrainDataset(Dataset):
     def _load_and_process(self):
         """Download dataset and process all games into samples."""
         # Try loading processed samples from cache
-        if self.config.cache_path:
+        if self.config.cache_path and not self.config.force_reprocess:
             cache_file = self._get_cache_filename()
             if os.path.exists(cache_file):
                 print(f"Loading processed samples from {cache_file}...")
