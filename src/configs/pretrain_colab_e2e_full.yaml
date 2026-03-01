@@ -48,6 +48,7 @@ dataset:
   eval_fraction: 0.05
   cache_path: "/content/drive/MyDrive/data/grpo-chess/hf_cache/pretrain_processed"
   hf_cache_dir: "/content/drive/MyDrive/data/grpo-chess/hf_cache/datasets"
+  force_reprocess: true
 
 transformer:
   vocab_size: 300
