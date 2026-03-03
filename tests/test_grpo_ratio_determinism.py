@@ -247,7 +247,10 @@ def test_ppo_step_skips_when_loss_has_no_grad(monkeypatch):
         )
         return zero, info
 
-    monkeypatch.setattr("src.grpo_logic.model.grpo_ppo_loss", fake_grpo_ppo_loss)
+    # Patch the exact global symbol used by _ppo_step to avoid module-alias
+    # mismatches in notebook/reload-heavy environments.
+    monkeypatch.setitem(model._ppo_step.__globals__, "grpo_ppo_loss", fake_grpo_ppo_loss)
+    assert model._ppo_step.__globals__["grpo_ppo_loss"] is fake_grpo_ppo_loss
 
     loss, loss_info = model._ppo_step(
         states,

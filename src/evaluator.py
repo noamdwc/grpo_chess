@@ -61,6 +61,25 @@ class Evaluator:
         # Keep eval engine separate from reward/teacher-forcing engines.
         return StockfishPlayer(self.default_stockfish_cfg, engine_name=f"eval_engine_{os.getpid()}")
 
+    @staticmethod
+    def _safe_exception_message(exc: BaseException) -> str:
+        """Best-effort stringification that won't raise during error handling."""
+        try:
+            return str(exc)
+        except Exception:
+            return f"<unprintable {type(exc).__name__}>"
+
+    @staticmethod
+    def _safe_traceback_text(exc: BaseException) -> str:
+        """Best-effort traceback rendering that avoids recursive crash loops."""
+        if isinstance(exc, RecursionError):
+            return "RecursionError during Stockfish evaluation; skipping traceback rendering."
+        try:
+            return traceback.format_exc()
+        except Exception as traceback_exc:
+            traceback_msg = Evaluator._safe_exception_message(traceback_exc)
+            return f"Failed to render traceback safely: {traceback_msg}"
+
     def single_evaluation(self, model: nn.Module) -> Tuple[Dict, PolicyPlayer | TrajectorySearcher, List[str]]:
         """Evaluate the model by playing games against Stockfish.
 
@@ -102,10 +121,15 @@ class Evaluator:
                         results, _, pgns = self.single_evaluation(model)
                     break
                 except Exception as e:
-                    print(f"Stockfish eval attempt {attempt}/{max_attempts} failed: {e}")
-                    print(traceback.format_exc())
+                    err_msg = self._safe_exception_message(e)
+                    print(f"Stockfish eval attempt {attempt}/{max_attempts} failed: {err_msg}")
+                    print(self._safe_traceback_text(e))
                     # Reset eval engine and retry on transient engine failures.
                     StockfishManager.close(f"eval_engine_{os.getpid()}")
+                    # RecursionError tends to cascade in traceback/rendering stacks.
+                    # Treat it as non-transient and fail this eval cycle quickly.
+                    if isinstance(e, RecursionError):
+                        break
             if results is None:
                 return None
         finally:
