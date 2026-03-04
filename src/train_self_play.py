@@ -77,8 +77,16 @@ def train(
         stockfish_cfg=config.stockfish,
         searcher_cfg=config.searcher,
     )
+    run_baseline_eval = bool(
+        getattr(config.pretrain, "use_9m_direct", False)
+        and getattr(config.pretrain, "exact_9m_warmstart", True)
+    )
     trainer.callbacks.append(StockfishEvalCallback(
-        evaluator, every_n_epochs=config.grpo.eval_every_n_epochs, model_attr="policy_model",
+        evaluator,
+        every_n_epochs=config.grpo.eval_every_n_epochs,
+        model_attr="policy_model",
+        run_on_fit_start=run_baseline_eval,
+        init_metric_prefix="eval_stockfish_init",
     ))
 
     if config.training.use_wandb:

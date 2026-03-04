@@ -6,7 +6,7 @@ import chess
 from dataclasses import dataclass
 
 from src.models import ChessTransformer, ChessTransformerConfig
-from src.models_9m import Searchless9MGRPOPolicy
+from src.models_9m import Searchless9MActionValuePolicy, Searchless9MGRPOPolicy
 from src.grpo_logic.loss import GRPOLossInfo, grpo_ppo_loss
 from src.grpo_logic.mode_utils import temporary_eval
 from src.grpo_logic.sampling import sample_trajectories_batched
@@ -85,12 +85,20 @@ class GRPOChessTransformer(pl.LightningModule):
         self.save_hyperparameters()
 
         if pretrain_cfg and getattr(pretrain_cfg, 'use_9m_direct', False):
-            # Use 9M body + new action head as the GRPO policy
-            self.policy_model = Searchless9MGRPOPolicy(
-                checkpoint_path=pretrain_cfg.checkpoint_path,
-                freeze_body=pretrain_cfg.freeze_layers > 0,
-            )
-            self.old_policy_model = Searchless9MGRPOPolicy()
+            use_exact_warmstart = bool(getattr(pretrain_cfg, "exact_9m_warmstart", True))
+            if use_exact_warmstart:
+                # Use exact 9M action-value scoring path for checkpoint-faithful startup.
+                self.policy_model = Searchless9MActionValuePolicy(
+                    checkpoint_path=pretrain_cfg.checkpoint_path,
+                )
+                self.old_policy_model = Searchless9MActionValuePolicy()
+            else:
+                # Legacy path: 9M body + random action head.
+                self.policy_model = Searchless9MGRPOPolicy(
+                    checkpoint_path=pretrain_cfg.checkpoint_path,
+                    freeze_body=pretrain_cfg.freeze_layers > 0,
+                )
+                self.old_policy_model = Searchless9MGRPOPolicy()
         else:
             self.policy_model = ChessTransformer(transformer_config)
             self.old_policy_model = ChessTransformer(transformer_config)

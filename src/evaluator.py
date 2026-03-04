@@ -220,6 +220,8 @@ class StockfishEvalCallback(Callback):
         every_n_epochs: int = 1,
         model_attr: str = "model",
         metric_prefix: str = "eval_stockfish",
+        run_on_fit_start: bool = False,
+        init_metric_prefix: str = "eval_stockfish_init",
     ):
         if every_n_epochs < 1:
             raise ValueError(f"every_n_epochs must be >= 1, got {every_n_epochs}")
@@ -227,9 +229,40 @@ class StockfishEvalCallback(Callback):
         self.every_n_epochs = every_n_epochs
         self.model_attr = model_attr
         self.metric_prefix = metric_prefix
+        self.run_on_fit_start = run_on_fit_start
+        self.init_metric_prefix = init_metric_prefix
         self._attempts = 0
         self._successes = 0
         self._failures = 0
+
+    def _log_failure_fallback(self, pl_module: pl.LightningModule, metric_prefix: str) -> None:
+        """Log fallback values so monitored metrics always exist."""
+        pl_module.log(f"{metric_prefix}/score", -1.0, prog_bar=True)
+        pl_module.log(f"{metric_prefix}/elo_diff", -10_000.0, prog_bar=False)
+        pl_module.log(f"{metric_prefix}/games", 0.0)
+        pl_module.log(f"{metric_prefix}/wins", 0.0)
+        pl_module.log(f"{metric_prefix}/draws", 0.0)
+        pl_module.log(f"{metric_prefix}/losses", 0.0)
+        pl_module.log(f"{metric_prefix}/win_rate", 0.0)
+        pl_module.log(f"{metric_prefix}/draw_rate", 0.0)
+        pl_module.log(f"{metric_prefix}/loss_rate", 1.0)
+
+    def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        if not self.run_on_fit_start:
+            return
+        print(
+            f"[StockfishEvalCallback:{self.init_metric_prefix}] Running baseline evaluation at fit start",
+            flush=True,
+        )
+        model = getattr(pl_module, self.model_attr)
+        results = self.evaluator.evaluate_and_log(pl_module, model, metric_prefix=self.init_metric_prefix)
+        if results is None:
+            self._log_failure_fallback(pl_module, self.init_metric_prefix)
+            print(
+                f"[StockfishEvalCallback:{self.init_metric_prefix}] Baseline evaluation failed; "
+                "logged fallback metrics.",
+                flush=True,
+            )
 
     def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule):
         if (trainer.current_epoch + 1) % self.every_n_epochs != 0:
@@ -245,15 +278,7 @@ class StockfishEvalCallback(Callback):
             self._failures += 1
             # Keep monitored metrics present even when eval fails, so
             # ModelCheckpoint(monitor=...) does not crash on missing keys.
-            pl_module.log(f"{self.metric_prefix}/score", -1.0, prog_bar=True)
-            pl_module.log(f"{self.metric_prefix}/elo_diff", -10_000.0, prog_bar=False)
-            pl_module.log(f"{self.metric_prefix}/games", 0.0)
-            pl_module.log(f"{self.metric_prefix}/wins", 0.0)
-            pl_module.log(f"{self.metric_prefix}/draws", 0.0)
-            pl_module.log(f"{self.metric_prefix}/losses", 0.0)
-            pl_module.log(f"{self.metric_prefix}/win_rate", 0.0)
-            pl_module.log(f"{self.metric_prefix}/draw_rate", 0.0)
-            pl_module.log(f"{self.metric_prefix}/loss_rate", 1.0)
+            self._log_failure_fallback(pl_module, self.metric_prefix)
             print(
                 f"[StockfishEvalCallback:{self.metric_prefix}] Evaluation failed; "
                 "logged fallback metrics for checkpoint compatibility.",

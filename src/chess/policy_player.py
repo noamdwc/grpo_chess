@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 from src.chess.chess_logic import (board_to_tensor, 
                                                   get_legal_moves_indices,
+                                                  get_legal_moves_mask,
                                                   action_to_move,
                                                   ChessPlayer)
 
@@ -47,17 +48,26 @@ class PolicyPlayer(ChessPlayer):
             self.stats["random_fallback"] += 1
             return random.choice(list(board.legal_moves))
         board_tensor = board_to_tensor(board, self.device)
-        logits = self.model(board_tensor) # [1, A]
-
-        A = logits.size(-1)
-        masked = torch.full(
-            (A,),
-            -float("inf"),
-            device=self.device,
-            dtype=logits.dtype,
-        )
-        li = torch.tensor(legal_moves_indices, device=self.device, dtype=torch.long)
-        masked[li] = logits[0, li]
+        if hasattr(self.model, "get_legal_moves_logits"):
+            legal_mask = get_legal_moves_mask(board, self.device)
+            if legal_mask.ndim == 1:
+                legal_mask = legal_mask.unsqueeze(0)
+            masked = self.model.get_legal_moves_logits(
+                board_tensor,
+                legal_mask,
+                temperature=max(1e-6, self.cfg.temperature),
+            ).squeeze(0)
+        else:
+            logits = self.model(board_tensor) # [1, A]
+            A = logits.size(-1)
+            masked = torch.full(
+                (A,),
+                -float("inf"),
+                device=self.device,
+                dtype=logits.dtype,
+            )
+            li = torch.tensor(legal_moves_indices, device=self.device, dtype=torch.long)
+            masked[li] = logits[0, li]
 
         if self.cfg.greedy:
             action_idx = int(torch.argmax(masked).item())
@@ -84,15 +94,25 @@ class PolicyPlayer(ChessPlayer):
                      return 0.0
                  return 1.0 if outcome.winner == root_color else -1.0
         
-        logits = self.model(board_tensor) # [1, A]
-        A = logits.size(-1)
-        masked = torch.full(
-            (A,),
-            -float("inf"),
-            device=self.device,
-            dtype=logits.dtype,
-        )
-        li = torch.tensor(legal_moves_indices, device=self.device, dtype=torch.long)
-        masked[li] = logits[-1, li]
+        if hasattr(self.model, "get_legal_moves_logits"):
+            legal_mask = get_legal_moves_mask(board, self.device)
+            if legal_mask.ndim == 1:
+                legal_mask = legal_mask.unsqueeze(0)
+            masked = self.model.get_legal_moves_logits(
+                board_tensor,
+                legal_mask,
+                temperature=max(1e-6, self.cfg.temperature),
+            ).squeeze(0)
+        else:
+            logits = self.model(board_tensor) # [1, A]
+            A = logits.size(-1)
+            masked = torch.full(
+                (A,),
+                -float("inf"),
+                device=self.device,
+                dtype=logits.dtype,
+            )
+            li = torch.tensor(legal_moves_indices, device=self.device, dtype=torch.long)
+            masked[li] = logits[-1, li]
         best_logit = float(torch.max(F.tanh(masked)).item())
         return best_logit if board.turn == root_color else -best_logit

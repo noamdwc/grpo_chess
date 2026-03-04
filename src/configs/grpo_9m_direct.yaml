@@ -1,8 +1,7 @@
 # GRPO training using 9M searchless_chess body as initialization.
-# Replaces ChessTransformer with Searchless9MGRPOPolicy:
-#   - 9M body (embed + 8 transformer layers + final_norm) loaded from JAX checkpoint
-#   - New Linear(256, 1968) action head, randomly initialized
-#   - FEN input (len=77) → mean-pooled → action logits
+# Replaces ChessTransformer with 9M-direct policy paths:
+#   - exact_9m_warmstart=true (default): exact 9M action-value scorer, checkpoint-faithful startup
+#   - exact_9m_warmstart=false: legacy random action-head warmstart
 
 training:
   num_epochs: 400
@@ -41,15 +40,15 @@ eval:
   games: 64
   seed: 0
   max_plies: 400
-  randomize_opening: true
-  opening_plies: 6
+  randomize_opening: false
+  opening_plies: 0
 
 stockfish:
   path: "/usr/games/stockfish"
   skill_level: 2
   use_elo_limit: false
   elo: 2500
-  movetime_ms: 50
+  movetime_ms: 20
   threads: 1
   hash_mb: 128
 
@@ -65,6 +64,7 @@ pretrain:
   checkpoint_path: "checkpoints/jax_9m_converted.pt"
   freeze_layers: 0
   use_9m_direct: true
+  exact_9m_warmstart: true
 
 dataset:
   max_steps: 512

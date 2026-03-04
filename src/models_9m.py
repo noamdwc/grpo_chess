@@ -16,6 +16,7 @@ Input contract: The JAX model applies shift_right (prepend 0, drop last)
   token prepended and the return-bucket token dropped.
 """
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -113,6 +114,157 @@ class Searchless9MTransformer(nn.Module):
         h = self.final_norm(h)
         logits = self.policy_head(h)           # [B, T, 128]
         return F.log_softmax(logits, dim=-1)   # matches JAX jnn.log_softmax
+
+
+class Searchless9MActionValuePolicy(nn.Module):
+    """GRPO policy that preserves exact 9M action-value checkpoint behavior.
+
+    For each legal action a, the model scores Q(s, a) by:
+    1. Building the 9M action-value target sequence [fen_tokens, action, return_dummy]
+    2. Applying shift-right (matching JAX transformer_decoder input convention)
+    3. Predicting return-bucket log-probs at the last position
+    4. Taking expected value over bucket centers.
+    """
+
+    action_size: int = 1968
+    sequence_length: int = 77
+
+    def __init__(self, checkpoint_path: str | None = None, chunk_size: int = 8192):
+        super().__init__()
+        self.value_model = Searchless9MTransformer()
+        self.chunk_size = int(chunk_size)
+        bucket_values = self._make_bucket_values(128)
+        self.register_buffer("bucket_values", bucket_values, persistent=False)
+        if checkpoint_path:
+            self._load_checkpoint(checkpoint_path)
+
+    @staticmethod
+    def _make_bucket_values(num_buckets: int) -> torch.Tensor:
+        full = np.linspace(0.0, 1.0, num_buckets + 1, dtype=np.float32)
+        values = (full[:-1] + full[1:]) / 2.0
+        return torch.from_numpy(values)
+
+    def _load_checkpoint(self, checkpoint_path: str) -> None:
+        ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        sd = ckpt.get("model_state_dict", ckpt)
+        missing, unexpected = self.value_model.load_state_dict(sd, strict=True)
+        if missing or unexpected:
+            raise RuntimeError(
+                "Failed strict load for Searchless9MActionValuePolicy. "
+                f"missing={missing}, unexpected={unexpected}"
+            )
+        print(f"Loaded exact 9M action-value weights from {checkpoint_path}.")
+
+    @staticmethod
+    def _shift_right(targets: torch.Tensor) -> torch.Tensor:
+        # targets: [N, 79] where 79 = 77(fen)+1(action)+1(dummy return bucket)
+        bos = torch.zeros((targets.shape[0], 1), dtype=targets.dtype, device=targets.device)
+        padded = torch.cat([bos, targets], dim=1)
+        return padded[:, :-1]
+
+    def _build_inputs(self, states: torch.Tensor, action_ids: torch.Tensor) -> torch.Tensor:
+        states = states.to(dtype=torch.long)
+        action_ids = action_ids.to(dtype=torch.long).unsqueeze(1)
+        dummy_return_bucket = torch.zeros_like(action_ids)
+        targets = torch.cat([states, action_ids, dummy_return_bucket], dim=1)  # [N, 79]
+        return self._shift_right(targets)  # [N, 79]
+
+    def _score_action_pairs(self, states: torch.Tensor, action_ids: torch.Tensor) -> torch.Tensor:
+        """Compute Q(s,a) expected values for paired states/actions."""
+        if states.numel() == 0:
+            return torch.empty((0,), dtype=torch.float32, device=states.device)
+
+        outputs: list[torch.Tensor] = []
+        bucket_values = self.bucket_values.to(device=states.device)
+        n = states.shape[0]
+        for start in range(0, n, self.chunk_size):
+            end = min(start + self.chunk_size, n)
+            inputs = self._build_inputs(states[start:end], action_ids[start:end])  # [m, 79]
+            log_probs = self.value_model(inputs)[:, -1, :]  # [m, 128]
+            scores = torch.matmul(log_probs.exp(), bucket_values.to(dtype=log_probs.dtype))  # [m]
+            outputs.append(scores)
+        return torch.cat(outputs, dim=0)
+
+    def _compute_masked_logits(
+        self,
+        states: torch.Tensor,
+        legal_moves_mask: torch.Tensor,
+        temperature: float = 1.0,
+    ) -> torch.Tensor:
+        if legal_moves_mask.dtype != torch.bool:
+            legal_moves_mask = legal_moves_mask.to(dtype=torch.bool)
+        if legal_moves_mask.ndim != 2:
+            raise ValueError(f"legal_moves_mask must be rank-2 [B,A], got {tuple(legal_moves_mask.shape)}")
+        if states.ndim != 2:
+            raise ValueError(f"states must be rank-2 [B,T], got {tuple(states.shape)}")
+        if states.shape[0] != legal_moves_mask.shape[0]:
+            raise ValueError(
+                f"Batch mismatch between states and legal mask: {states.shape[0]} vs {legal_moves_mask.shape[0]}"
+            )
+        if legal_moves_mask.shape[1] != self.action_size:
+            raise ValueError(
+                f"Action dimension mismatch: legal mask has {legal_moves_mask.shape[1]}, expected {self.action_size}"
+            )
+
+        # Ensure at least one legal action per row to avoid NaNs in softmax/log_softmax.
+        row_has_legal = legal_moves_mask.any(dim=1)
+        if not row_has_legal.all():
+            legal_moves_mask = legal_moves_mask.clone()
+            legal_moves_mask[~row_has_legal, 0] = True
+
+        nz = legal_moves_mask.nonzero(as_tuple=False)  # [N_legal, 2]
+        row_idx = nz[:, 0]
+        action_idx = nz[:, 1]
+        states_rep = states[row_idx]  # [N_legal, 77]
+        scores = self._score_action_pairs(states_rep, action_idx)
+
+        logits = torch.full(
+            (states.shape[0], self.action_size),
+            -float("inf"),
+            dtype=scores.dtype,
+            device=states.device,
+        )
+        temp = max(1e-6, float(temperature))
+        logits[row_idx, action_idx] = scores / temp
+        return logits
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Dense action logits [B, 1968] by scoring all actions (slow; avoid in hot paths)."""
+        all_legal = torch.ones((x.shape[0], self.action_size), dtype=torch.bool, device=x.device)
+        return self._compute_masked_logits(x, all_legal, temperature=1.0)
+
+    def get_legal_moves_logits(
+        self,
+        tensor_state: torch.Tensor,
+        legal_moves_mask: torch.Tensor,
+        temperature: float = 1.0,
+    ) -> torch.Tensor:
+        return self._compute_masked_logits(tensor_state, legal_moves_mask, temperature=temperature)
+
+    def get_legal_moves_probs(
+        self,
+        tensor_state: torch.Tensor,
+        legal_moves_mask: torch.Tensor,
+        temperature: float = 1.0,
+    ) -> torch.Tensor:
+        return F.softmax(self.get_legal_moves_logits(tensor_state, legal_moves_mask, temperature), dim=-1)
+
+    def get_group_log_probs(
+        self,
+        trajectories_states: torch.Tensor,
+        action_idx: torch.Tensor,
+        legal_moves_mask: torch.Tensor,
+        temperature: float = 1.0,
+    ) -> torch.Tensor:
+        if legal_moves_mask is None:
+            raise ValueError("legal_moves_mask is required for Searchless9MActionValuePolicy.")
+        bsz, groups, depth, seq_len = trajectories_states.shape
+        x_flat = trajectories_states.view(bsz * groups * depth, seq_len)
+        lm_flat = legal_moves_mask.view(bsz * groups * depth, -1)
+        masked_logits = self.get_legal_moves_logits(x_flat, lm_flat, temperature)
+        log_probs_all = F.log_softmax(masked_logits, dim=-1)
+        action_flat = action_idx.view(bsz * groups * depth, 1)
+        return log_probs_all.gather(1, action_flat).squeeze(-1).view(bsz, groups, depth)
 
 
 class Searchless9MGRPOPolicy(nn.Module):
