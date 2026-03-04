@@ -247,6 +247,49 @@ class StockfishEvalCallback(Callback):
         pl_module.log(f"{metric_prefix}/draw_rate", 0.0)
         pl_module.log(f"{metric_prefix}/loss_rate", 1.0)
 
+    def _log_metrics_direct(
+        self,
+        trainer: pl.Trainer,
+        metric_prefix: str,
+        results: Optional[Dict],
+    ) -> None:
+        """Log metrics directly via trainer.logger for hooks where pl_module.log is disallowed."""
+        if results is None:
+            metrics = {
+                f"{metric_prefix}/score": -1.0,
+                f"{metric_prefix}/elo_diff": -10_000.0,
+                f"{metric_prefix}/games": 0.0,
+                f"{metric_prefix}/wins": 0.0,
+                f"{metric_prefix}/draws": 0.0,
+                f"{metric_prefix}/losses": 0.0,
+                f"{metric_prefix}/win_rate": 0.0,
+                f"{metric_prefix}/draw_rate": 0.0,
+                f"{metric_prefix}/loss_rate": 1.0,
+            }
+        else:
+            games = max(int(results["games"]), 1)
+            wins = float(results["wins"])
+            draws = float(results["draws"])
+            losses = float(results["losses"])
+            metrics = {
+                f"{metric_prefix}/score": float(results["score"]),
+                f"{metric_prefix}/elo_diff": float(results["elo_diff_vs_stockfish_approx"]),
+                f"{metric_prefix}/games": float(results["games"]),
+                f"{metric_prefix}/wins": wins,
+                f"{metric_prefix}/draws": draws,
+                f"{metric_prefix}/losses": losses,
+                f"{metric_prefix}/win_rate": wins / games,
+                f"{metric_prefix}/draw_rate": draws / games,
+                f"{metric_prefix}/loss_rate": losses / games,
+            }
+            for reason, cnt in results["termination_reasons"].items():
+                metrics[f"{metric_prefix}/term_{reason}"] = float(cnt) / games
+
+        if trainer.logger is not None:
+            trainer.logger.log_metrics(metrics, step=trainer.global_step)
+        else:
+            print(f"[StockfishEvalCallback:{metric_prefix}] No trainer.logger; metrics={metrics}")
+
     def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         if not self.run_on_fit_start:
             return
@@ -255,12 +298,26 @@ class StockfishEvalCallback(Callback):
             flush=True,
         )
         model = getattr(pl_module, self.model_attr)
-        results = self.evaluator.evaluate_and_log(pl_module, model, metric_prefix=self.init_metric_prefix)
+        results = None
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with torch.no_grad():
+                    results, _, _ = self.evaluator.single_evaluation(model)
+                break
+            except Exception as e:
+                err_msg = Evaluator._safe_exception_message(e)
+                print(f"Stockfish baseline eval attempt {attempt}/{max_attempts} failed: {err_msg}")
+                print(Evaluator._safe_traceback_text(e))
+                StockfishManager.close(f"eval_engine_{os.getpid()}")
+                if isinstance(e, RecursionError):
+                    break
+
+        self._log_metrics_direct(trainer, self.init_metric_prefix, results)
         if results is None:
-            self._log_failure_fallback(pl_module, self.init_metric_prefix)
             print(
                 f"[StockfishEvalCallback:{self.init_metric_prefix}] Baseline evaluation failed; "
-                "logged fallback metrics.",
+                "logged fallback metrics via trainer.logger.",
                 flush=True,
             )
 
