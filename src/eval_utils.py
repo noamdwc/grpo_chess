@@ -7,7 +7,10 @@ import chess.engine
 import random
 
 import torch
-from tqdm import tqdm
+try:
+    from tqdm.auto import tqdm as _tqdm_auto
+except ImportError:
+    _tqdm_auto = None
 
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
@@ -29,6 +32,21 @@ class EvalConfig:
 
 # Register as safe for torch.load with weights_only=True (PyTorch 2.6+ compatibility)
 torch.serialization.add_safe_globals([EvalConfig])
+
+
+def _safe_range(n: int):
+    """Wrap range with tqdm if available, falling back to plain range.
+
+    tqdm's Rich/notebook renderer can trigger RecursionError when called
+    from deep within Lightning + Jupyter stacks.  Catch that and
+    degrade gracefully to a plain range.
+    """
+    if _tqdm_auto is not None:
+        try:
+            return _tqdm_auto(range(n), desc="Evaluating", unit="game")
+        except RecursionError:
+            pass
+    return range(n)
 
 
 def debug_legal_coverage(board: chess.Board) -> tuple[int, int, list[str]]:
@@ -172,7 +190,7 @@ def evaluate_policy_vs_stockfish(
     pgns: List[str] = []
 
     try:
-        for g in tqdm(range(eval_cfg.games), desc="Evaluating", unit="game"):
+        for g in _safe_range(eval_cfg.games):
             policy_is_white = (g % 2 == 0)
             res, reason, pgn = play_one_game(policy, sf, policy_is_white, eval_cfg, game_number=g)
             term_reasons[reason] = term_reasons.get(reason, 0) + 1
