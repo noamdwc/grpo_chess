@@ -82,7 +82,9 @@ class GRPOChessTransformer(pl.LightningModule):
                  searcher_cfg: SearchConfig | None = None,
                  pretrain_cfg: PretrainLoadConfig | None = None):
         super().__init__()
-        self.save_hyperparameters()
+        # Lightning 2.6 apply_to_collection rejects frozen dataclasses in hparams.
+        # StockfishConfig is frozen, so keep it out of hparams.
+        self.save_hyperparameters(ignore=["stockfish_cfg"])
 
         if pretrain_cfg and getattr(pretrain_cfg, 'use_9m_direct', False):
             use_exact_warmstart = bool(getattr(pretrain_cfg, "exact_9m_warmstart", True))
