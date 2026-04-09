@@ -2,9 +2,9 @@ generate:
   teacher_model: "136M"
   checkpoint_dir: "searchless_chess/checkpoints"
   checkpoint_step: 6400000
-  teacher_batch_size: 512
-  top_k: 8
-  teacher_temperature: 1.0
+  teacher_batch_size: 256
+  top_k: 64
+  teacher_temperature: 2.0
   output_dir: "data/distill"
   shard_size: 50000
   min_elo: 1800
@@ -15,20 +15,23 @@ generate:
 
 deepmind_data:
   num_shards: 8
-  top_k: 8
-  temperature: 1.0
-  min_win_prob: 0.55
+  top_k: 64
+  temperature: 2.0
+  min_win_prob: 0.50
   output_dir: "data/distill"
   shard_size: 50000
   max_samples: 300000
 
 distill:
   lr: 0.00006
-  batch_size: 1024
+  batch_size: 512
   num_epochs: 10
   warmup_steps: 1000
   weight_decay: 0.01
   max_grad_norm: 0.5
+  distill_lambda_soft: 0.50
+  distill_lambda_hard: 0.50
+  distill_target_top1_mix_alpha: 0.05
   checkpoint_dir: "checkpoints/distill_labelsafe"
   pretrain_checkpoint: "checkpoints/pretrain.ckpt"
   use_wandb: true
@@ -38,7 +41,7 @@ distill:
   fail_on_nonfinite: false
   max_nonfinite_batches: 50
   require_stockfish_eval: true
-  quality_gate_min_val_top1: 0.08
+  quality_gate_min_val_top1: 0.15
   quality_gate_epoch: 3
   num_workers: 4
   val_check_interval: 0.1
@@ -61,7 +64,7 @@ policy:
 
 dataset:
   data_dir: "data/distill"
-  top_k: 8
+  top_k: 64
   eval_fraction: 0.05
   max_shards: 8
 

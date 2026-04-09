@@ -1,43 +1,16 @@
 """
-Convert the DeepMind searchless_chess 9M Orbax checkpoint to a PyTorch state dict.
+Convert DeepMind searchless_chess Orbax checkpoints to PyTorch state dicts.
 
 Usage:
     python -m src.distill.convert_jax_checkpoint \
         --checkpoint_dir searchless_chess/checkpoints \
+        --model_name 136M \
         --step 6400000 \
-        --output checkpoints/jax_9m_converted.pt
+        --output checkpoints/jax_136m_converted.pt
 
 The resulting .pt file contains {"model_state_dict": <state_dict>} and can be
-loaded into src.models_9m.Searchless9MTransformer with strict=True.
-
-JAX Haiku param key structure (9M, 8 layers)
----------------------------------------------
-Haiku auto-numbers top-scope module instantiations in call order within
-transformer_decoder (which is the hk.transform root).
-
-Call order:
-  embed_sequences:
-    embed/embed_lookup:0          [1968, 256]  — token embedding
-    embed_1/embed_lookup:0        [79,   256]  — learned positional encoding
-
-  For layer i = 0..7:
-    layer_norm_{2i}/scale|offset  [256]        — pre-attention LayerNorm
-    # Haiku stores nested-module params with "/" in the top-level dict key:
-    multi_head_dot_product_attention_{i}/linear   → {"w": [256, 256]}  Q
-    multi_head_dot_product_attention_{i}/linear_1 → {"w": [256, 256]}  K
-    multi_head_dot_product_attention_{i}/linear_2 → {"w": [256, 256]}  V
-    multi_head_dot_product_attention_{i}/linear_3 → {"w": [256, 256]}  O
-    layer_norm_{2i+1}/scale|offset [256]       — pre-MLP LayerNorm
-    linear_{3i}/w                 [256, 1024]  — gate_proj  (MLP)
-    linear_{3i+1}/w               [256, 1024]  — up_proj    (MLP)
-    linear_{3i+2}/w               [1024, 256]  — down_proj  (MLP)
-
-  After all layers:
-    layer_norm_16/scale|offset    [256]        — final post-LayerNorm
-    linear_24/w                   [256, 128]   — output head weight
-    linear_24/b                   [128]        — output head bias
-
-  (layer_norm_0 is accessed as "layer_norm", linear_0 as "linear", etc.)
+loaded into src.models_9m.Searchless9MTransformer with strict=True by passing
+the matching Searchless9MConfig for the selected model size.
 """
 
 import argparse
@@ -51,6 +24,13 @@ import torch
 # Ensure repo root is on sys.path so src.* imports work
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
+
+MODEL_CONFIGS = {
+    "9M": {"num_layers": 8, "embedding_dim": 256, "num_heads": 8},
+    "136M": {"num_layers": 8, "embedding_dim": 1024, "num_heads": 8},
+    "270M": {"num_layers": 16, "embedding_dim": 1024, "num_heads": 8},
+    "local": {"num_layers": 4, "embedding_dim": 64, "num_heads": 4},
+}
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +54,19 @@ def _attn(i: int) -> str:
 def _lin(i: int) -> str:
     """Return the Haiku name for the i-th top-scope Linear."""
     return "linear" if i == 0 else f"linear_{i}"
+
+
+def _resolve_model_config(model_name: str) -> dict[str, int]:
+    if model_name not in MODEL_CONFIGS:
+        raise ValueError(f"Unknown model_name {model_name!r}. Expected one of: {sorted(MODEL_CONFIGS)}")
+    cfg = MODEL_CONFIGS[model_name]
+    embed_dim = int(cfg["embedding_dim"])
+    return {
+        "num_layers": int(cfg["num_layers"]),
+        "embed_dim": embed_dim,
+        "num_heads": int(cfg["num_heads"]),
+        "ffn_dim": 4 * embed_dim,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -128,13 +121,15 @@ def convert(
     from searchless_chess.src import utils as sc_utils
     from searchless_chess.src import tokenizer as sc_tokenizer
 
-    # Replicate the 9M config used in teacher.py
+    model_cfg = _resolve_model_config(model_name)
+
+    # Replicate the teacher TransformerConfig for the selected model size.
     config = sc_transformer.TransformerConfig(
         vocab_size=sc_utils.NUM_ACTIONS,      # 1968
         output_size=128,
-        embedding_dim=256,
-        num_layers=8,
-        num_heads=8,
+        embedding_dim=model_cfg["embed_dim"],
+        num_layers=model_cfg["num_layers"],
+        num_heads=model_cfg["num_heads"],
         pos_encodings=sc_transformer.PositionalEncodings.LEARNED,
         max_sequence_length=sc_tokenizer.SEQUENCE_LENGTH + 2,  # 79
         apply_post_ln=True,
@@ -155,7 +150,7 @@ def convert(
     )
 
     # Print all JAX keys for verification
-    print("\n=== JAX 9M param keys ===")
+    print(f"\n=== JAX {model_name} param keys ===")
     flat = {}
     for path, leaf in jax.tree_util.tree_leaves_with_path(params):
         key = "/".join(str(p.key) for p in path)
@@ -186,7 +181,8 @@ def convert(
     sd["embedding.weight"]    = t(get("embed",   "embeddings"))   # [1968, 256]
     sd["pos_encoding.weight"] = t(get("embed_1", "embeddings"))   # [79,   256]
 
-    for i in range(8):
+    num_layers = model_cfg["num_layers"]
+    for i in range(num_layers):
         # --- Layer norms ---
         sd[f"layers.{i}.norm1.weight"] = t(get(_ln(2 * i),     "scale"))
         sd[f"layers.{i}.norm1.bias"]   = t(get(_ln(2 * i),     "offset"))
@@ -213,18 +209,27 @@ def convert(
         sd[f"layers.{i}.ffn.down_proj.weight"] = t(get(_lin(b + 2), "w")).T  # [256, 1024]
 
     # --- Final norm and output head ---
-    sd["final_norm.weight"]  = t(get(_ln(16), "scale"))
-    sd["final_norm.bias"]    = t(get(_ln(16), "offset"))
-    sd["policy_head.weight"] = t(get(_lin(24), "w")).T  # [256, 128].T → [128, 256]
-    sd["policy_head.bias"]   = t(get(_lin(24), "b"))    # [128]
+    final_ln_idx = 2 * num_layers
+    head_lin_idx = 3 * num_layers
+    sd["final_norm.weight"]  = t(get(_ln(final_ln_idx), "scale"))
+    sd["final_norm.bias"]    = t(get(_ln(final_ln_idx), "offset"))
+    sd["policy_head.weight"] = t(get(_lin(head_lin_idx), "w")).T
+    sd["policy_head.bias"]   = t(get(_lin(head_lin_idx), "b"))
 
     os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
     torch.save({"model_state_dict": sd}, output)
     print(f"\nSaved {len(sd)} tensors → {output}")
 
-    # --- Verification: load into Searchless9MTransformer ---
-    from src.models_9m import Searchless9MTransformer
-    model = Searchless9MTransformer()
+    # --- Verification: load into Searchless9MTransformer with matching size ---
+    from src.models_9m import Searchless9MConfig, Searchless9MTransformer
+    model = Searchless9MTransformer(
+        Searchless9MConfig(
+            embed_dim=model_cfg["embed_dim"],
+            num_layers=model_cfg["num_layers"],
+            num_heads=model_cfg["num_heads"],
+            ffn_dim=model_cfg["ffn_dim"],
+        )
+    )
     missing, unexpected = model.load_state_dict(sd, strict=True)
     if missing or unexpected:
         print(f"WARNING — missing keys: {missing}")
@@ -241,6 +246,10 @@ def convert(
     n_params = sum(p.numel() for p in model.parameters())
     summary = {
         "model_name": model_name,
+        "embed_dim": model_cfg["embed_dim"],
+        "num_layers": model_cfg["num_layers"],
+        "num_heads": model_cfg["num_heads"],
+        "ffn_dim": model_cfg["ffn_dim"],
         "step": step,
         "output_path": output,
         "n_params": n_params,
@@ -281,7 +290,7 @@ def convert(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Convert 9M JAX Orbax checkpoint → PyTorch state dict"
+        description="Convert JAX Orbax checkpoint (9M/136M/270M/local) → PyTorch state dict"
     )
     parser.add_argument(
         "--checkpoint_dir",
@@ -290,7 +299,7 @@ def main():
     )
     parser.add_argument("--step", type=int, default=6400000)
     parser.add_argument("--output", default="checkpoints/jax_9m_converted.pt")
-    parser.add_argument("--model_name", default="9M")
+    parser.add_argument("--model_name", default="9M", choices=sorted(MODEL_CONFIGS.keys()))
     parser.add_argument("--wandb_project", default="chess-grpo-pretrain")
     parser.add_argument("--wandb_tags", default="", help="Comma-separated WandB tags")
     parser.add_argument("--wandb_run_name", default="")
