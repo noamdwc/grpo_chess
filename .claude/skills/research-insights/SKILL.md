@@ -115,6 +115,24 @@ After user approval, write the final document to `research_docs/` following the 
 - [ ] Prioritized recommendations
 - [ ] Open questions for future work
 
+## Pipeline Output
+
+When invoked as part of `/experiment-cycle`, end your session by appending a
+`## → Handoff to /plan-experiment` block to the research document:
+
+```markdown
+## → Handoff to /plan-experiment
+
+**Recommended experiment direction:**
+- [1–3 concrete, actionable hypotheses to test next]
+
+**Key metrics to beat:**
+- [e.g., eval_stockfish/score > 0.35 in run XYZ]
+
+**Relevant prior run(s):**
+- [WandB run IDs to use as baselines]
+```
+
 ## Boundaries
 
 ### DO

@@ -33,11 +33,14 @@ Configuration is in `src/configs/pretrain.yaml`:
 pretrain:
   lr: 0.0001                    # Learning rate
   batch_size: 256               # Batch size
+  val_batch_size: 256           # Validation batch size (optional; defaults to batch_size)
   num_epochs: 1                 # Number of epochs
   warmup_steps: 1000            # Linear warmup steps
   weight_decay: 0.01            # AdamW weight decay
   max_grad_norm: 1.0            # Gradient clipping
   label_smoothing: 0.1          # Prevents overconfidence
+  precision: "32-true"          # Lightning precision; use "bf16-mixed" on L4/A100
+  accumulate_grad_batches: 1    # Gradient accumulation steps
   val_check_interval: 0.1       # Validate every 10% of epoch
 
 dataset:

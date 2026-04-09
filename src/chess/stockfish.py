@@ -1,10 +1,11 @@
 import os
+import shutil
 import threading
 import chess
 import chess.engine
 import torch
 from typing import Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from src.chess.chess_logic import ChessPlayer
 from src.logging_utils import get_logger
@@ -94,6 +95,17 @@ class StockfishManager:
           return cls._locks[name]
 
   @classmethod
+  def _resolve_engine_cfg(cls, cfg: StockfishConfig) -> StockfishConfig:
+      """Resolve a valid Stockfish binary path from config and common fallbacks."""
+      resolved_path = resolve_stockfish_path(cfg.path)
+      if resolved_path != cfg.path:
+          logger.warning(
+              f"Configured Stockfish path '{cfg.path}' not found; using '{resolved_path}' instead"
+          )
+          return replace(cfg, path=resolved_path)
+      return cfg
+
+  @classmethod
   def get_engine(cls, name: str, cfg: StockfishConfig | None = None) -> chess.engine.SimpleEngine:
       """
       Get (or create) a named engine instance.
@@ -105,11 +117,13 @@ class StockfishManager:
           if not cls.is_name_registered(name):
               if cfg is None:
                   cfg = StockfishConfig()
-              engine = chess.engine.SimpleEngine.popen_uci(cfg.path)
-              cls._configure_engine(engine, cfg)
+              resolved_cfg = cls._resolve_engine_cfg(cfg)
+              engine = chess.engine.SimpleEngine.popen_uci(resolved_cfg.path)
+              cls._configure_engine(engine, resolved_cfg)
               cls._engines[name] = engine
-              cls._cfgs[name] = cfg
-              cls._locks[name] = threading.Lock()
+              cls._cfgs[name] = resolved_cfg
+              if name not in cls._locks:
+                  cls._locks[name] = threading.Lock()
           return cls._engines[name]
 
 
@@ -125,7 +139,6 @@ class StockfishManager:
               finally:
                   cls._engines.pop(name, None)
                   cls._cfgs.pop(name, None)
-                  cls._locks.pop(name, None)
 
 
   @classmethod
@@ -137,6 +150,52 @@ class StockfishManager:
 
 # Default timeout for Stockfish operations (seconds)
 DEFAULT_STOCKFISH_TIMEOUT = 10.0
+
+
+def resolve_stockfish_path(configured_path: str | None = None) -> str:
+    """Find an executable Stockfish binary path.
+
+    Resolution order:
+    1. Configured path (absolute or command name)
+    2. STOCKFISH_PATH env var
+    3. stockfish on PATH
+    4. Common install paths for macOS/Linux
+    """
+    candidates: list[str] = []
+    if configured_path:
+        candidates.append(configured_path)
+    env_path = os.environ.get("STOCKFISH_PATH")
+    if env_path:
+        candidates.append(env_path)
+    path_lookup = shutil.which("stockfish")
+    if path_lookup:
+        candidates.append(path_lookup)
+    candidates.extend([
+        "/opt/homebrew/bin/stockfish",
+        "/usr/local/bin/stockfish",
+        "/usr/games/stockfish",
+        "/usr/bin/stockfish",
+    ])
+
+    tried: list[str] = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if os.path.sep not in candidate:
+            resolved = shutil.which(candidate)
+            if resolved:
+                return resolved
+            tried.append(candidate)
+            continue
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+        tried.append(candidate)
+
+    raise FileNotFoundError(
+        "Stockfish binary not found. "
+        f"Tried: {', '.join(dict.fromkeys(tried))}. "
+        "Set stockfish.path in config or STOCKFISH_PATH env var."
+    )
 
 
 def run_with_timeout(func, timeout: float, *args, **kwargs):
@@ -204,15 +263,17 @@ def stockfish_analyse(
             engine = StockfishManager.get_engine(engine_name, cfg)
             lock = StockfishManager.get_lock(engine_name)
             with lock:
-                return run_with_timeout(engine.analyse, timeout, board, limit)
+                try:
+                    return run_with_timeout(engine.analyse, timeout, board, limit)
+                except FuturesTimeoutError:
+                    logger.warning(f"Stockfish analyse timed out after {timeout}s for engine '{engine_name}', resetting engine")
+                    StockfishManager.close(engine_name)
+                    return None
         except chess.engine.EngineTerminatedError:
             logger.error(f"Stockfish engine '{engine_name}' terminated unexpectedly, recreating...")
             StockfishManager.close(engine_name)
             if attempt == 1:
                 return None
-        except FuturesTimeoutError:
-            logger.warning(f"Stockfish analyse timed out after {timeout}s for engine '{engine_name}'")
-            return None
         except Exception as e:
             logger.error(f"Stockfish analyse error: {e}")
             return None
@@ -246,16 +307,18 @@ def stockfish_play(
             engine = StockfishManager.get_engine(engine_name, cfg)
             lock = StockfishManager.get_lock(engine_name)
             with lock:
-                result = run_with_timeout(engine.play, timeout, board, limit)
+                try:
+                    result = run_with_timeout(engine.play, timeout, board, limit)
+                except FuturesTimeoutError:
+                    logger.warning(f"Stockfish play timed out after {timeout}s for engine '{engine_name}', resetting engine")
+                    StockfishManager.close(engine_name)
+                    return None
             return result.move
         except chess.engine.EngineTerminatedError:
             logger.error(f"Stockfish engine '{engine_name}' terminated unexpectedly, recreating...")
             StockfishManager.close(engine_name)
             if attempt == 1:
                 return None
-        except FuturesTimeoutError:
-            logger.warning(f"Stockfish play timed out after {timeout}s for engine '{engine_name}'")
-            return None
         except Exception as e:
             logger.error(f"Stockfish play error: {e}")
             return None

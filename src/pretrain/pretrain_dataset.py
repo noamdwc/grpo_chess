@@ -5,6 +5,7 @@ Mean ELO ~2355, moves already in UCI format - no parsing needed.
 """
 
 import os
+import hashlib
 import chess
 import torch
 import random
@@ -48,6 +49,9 @@ class PretrainDatasetConfig:
     is_eval: bool = False
     eval_fraction: float = 0.05
     cache_path: Optional[str] = None
+    hf_cache_dir: Optional[str] = None
+    force_reprocess: bool = False
+    num_proc: Optional[int] = None  # Workers for dataset.map(); None=auto, 1=safe for Colab
 
 
 def uci_to_action(uci_move: str) -> Optional[int]:
@@ -119,19 +123,36 @@ class ChessPretrainDataset(Dataset):
         """Initialize the dataset - downloads and processes all games."""
         self.config = config
         self._action_space_size = max(MOVE_TO_ACTION.values()) + 1
-        self._samples: list[tuple[torch.Tensor, int, torch.Tensor]] = []
+        self._boards: torch.Tensor = torch.empty(0)
+        self._actions: torch.Tensor = torch.empty(0)
+        self._masks: torch.Tensor = torch.empty(0)
 
         self._load_and_process()
 
     def _load_and_process(self):
         """Download dataset and process all games into samples."""
         # Try loading processed samples from cache
-        if self.config.cache_path:
+        if self.config.cache_path and not self.config.force_reprocess:
             cache_file = self._get_cache_filename()
             if os.path.exists(cache_file):
                 print(f"Loading processed samples from {cache_file}...")
-                self._samples = torch.load(cache_file)
-                print(f"Loaded {len(self._samples):,} samples from cache")
+                data = torch.load(cache_file)
+                if isinstance(data, dict) and 'boards' in data:
+                    self._boards = data['boards']
+                    self._actions = data['actions']
+                    self._masks = data['masks']
+                else:
+                    # Legacy format: list of (board, action, mask) tuples
+                    print("Converting legacy cache to stacked format...")
+                    boards, actions, masks = zip(*data)
+                    self._boards = torch.stack(boards)
+                    self._actions = torch.tensor(actions, dtype=torch.long)
+                    self._masks = torch.stack(masks)
+                    # Re-save in fast format
+                    torch.save({'boards': self._boards, 'actions': self._actions, 'masks': self._masks}, cache_file)
+                    print("Re-saved cache in stacked format")
+                    del data
+                print(f"Loaded {len(self._boards):,} samples from cache")
                 return
 
         # Download, filter, and process
@@ -145,7 +166,7 @@ class ChessPretrainDataset(Dataset):
                 print(f"Limited to {len(dataset):,} games")
 
         # Process games using HuggingFace's optimized map
-        num_workers = min(8, cpu_count() or 4)
+        num_workers = self.config.num_proc if self.config.num_proc is not None else min(8, cpu_count() or 4)
         print(f"Processing games into samples with {num_workers} workers...")
 
         skip_first = self.config.skip_first_n_moves
@@ -185,32 +206,34 @@ class ChessPretrainDataset(Dataset):
 
             return {'boards': all_boards, 'actions': all_actions, 'masks': all_masks}
 
+        from datasets.utils.logging import set_verbosity_info, disable_progress_bar, enable_progress_bar
+        enable_progress_bar()
         processed = dataset.map(
             process_batch,
             batched=True,
             batch_size=1000,
             num_proc=num_workers,
             remove_columns=dataset.column_names,
-            desc="Processing"
+            desc="Processing games"
         )
 
-        # Convert to tensors  (HF map flattens the lists)  
+        # Convert to stacked tensors (HF map flattens the lists)
         print("Converting to tensors...")
-        for i in tqdm(range(len(processed)), desc="Tensorizing"):
-            board_tensor = torch.tensor(processed[i]['boards'], dtype=torch.long)
-            legal_mask = torch.tensor(processed[i]['masks'], dtype=torch.bool)
-            self._samples.append((board_tensor, processed[i]['actions'], legal_mask))
-            if self.config.max_samples and len(self._samples) >= self.config.max_samples:
-                break
-          
-        print(f"Done: {len(self._samples):,} samples")
+        n = len(processed)
+        if self.config.max_samples and n > self.config.max_samples:
+            n = self.config.max_samples
+        self._boards = torch.tensor(processed[:n]['boards'], dtype=torch.long)
+        self._actions = torch.tensor(processed[:n]['actions'], dtype=torch.long)
+        self._masks = torch.tensor(processed[:n]['masks'], dtype=torch.bool)
+
+        print(f"Done: {len(self._boards):,} samples")
 
         # Save processed samples to cache
         if self.config.cache_path:
             cache_file = self._get_cache_filename()
             print(f"Saving processed samples to {cache_file}...")
             os.makedirs(self.config.cache_path, exist_ok=True)
-            torch.save(self._samples, cache_file)
+            torch.save({'boards': self._boards, 'actions': self._actions, 'masks': self._masks}, cache_file)
             print("Saved to cache")
 
     def _get_cache_filename(self) -> str:
@@ -223,7 +246,7 @@ class ChessPretrainDataset(Dataset):
         """Download and filter dataset."""
         # Download (uses cache_path for HuggingFace cache)
         print("Downloading angeluriot/chess_games (7.3GB)...")
-        cache_dir = self.config.cache_path if self.config.cache_path else None
+        cache_dir = self.config.hf_cache_dir or self.config.cache_path or None
         dataset = load_dataset("angeluriot/chess_games", split="train", cache_dir=cache_dir)
         print(f"Loaded {len(dataset):,} games")
 
@@ -254,7 +277,7 @@ class ChessPretrainDataset(Dataset):
                     continue
                 # Hash-based train/eval split
                 game_id = f"{batch['date'][i]}-{white_elo}-{black_elo}"
-                hash_val = hash(game_id) % 10000
+                hash_val = int(hashlib.md5(game_id.encode("utf-8")).hexdigest(), 16) % 10000
                 is_eval_game = hash_val < (eval_frac * 10000)
                 if is_eval_game != is_eval:
                     keep.append(False)
@@ -305,10 +328,10 @@ class ChessPretrainDataset(Dataset):
             yield board_tensor, action_idx, legal_mask
 
     def __len__(self) -> int:
-        return len(self._samples)
+        return len(self._boards)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int, torch.Tensor]:
-        return self._samples[idx]
+        return self._boards[idx], self._actions[idx], self._masks[idx]
 
 
 def collate_pretrain_batch(

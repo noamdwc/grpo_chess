@@ -41,6 +41,11 @@ def get_legal_moves_mask(board, device: str | torch.device ='cpu') -> torch.Tens
     return mask.to(device)
 
 
+def build_legal_mask_from_fen(fen: str, device: str | torch.device = 'cpu') -> torch.Tensor:
+    """Build a boolean legal-move mask from a FEN string, aligned to MOVE_TO_ACTION."""
+    return get_legal_moves_mask(chess.Board(fen), device)
+
+
 def action_to_move(board: chess.Board, action_idx: int):
     uci = ACTION_TO_MOVE.get(action_idx)
     if uci is None:

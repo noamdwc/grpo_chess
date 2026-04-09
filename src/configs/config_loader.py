@@ -21,13 +21,14 @@ Usage:
     transformer_config = config.transformer
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import Any, Optional, TypeVar, Type
+from typing import TYPE_CHECKING, Any, Optional, TypeVar, Type
 import yaml
 
 # Import all config dataclasses
-from src.grpo_logic.model import GRPOConfig
 from src.models import ChessTransformerConfig
 from src.eval_utils import EvalConfig
 from src.chess.stockfish import StockfishConfig
@@ -35,6 +36,9 @@ from src.chess.policy_player import PolicyConfig
 from src.chess.searcher import SearchConfig
 from src.chess.boards_dataset import ChessDatasetConfig
 from src.pretrain.pretrain_load_config import PretrainLoadConfig
+
+if TYPE_CHECKING:
+    from src.grpo_logic.model import GRPOConfig
 
 
 # Directory containing config YAML files
@@ -47,8 +51,11 @@ class TrainingConfig:
     num_epochs: int = 400
     batch_size: int = 32
     steps_per_epoch: int = 512
+    checkpoint_dir: str = "checkpoints"
     checkpoint_every_n_epochs: int = 5
     keep_n_checkpoints: int = 3
+    use_wandb: bool = True
+    wandb_project: str = "Chess-GRPO-Bot"
 
 
 @dataclass
@@ -66,6 +73,13 @@ class ExperimentConfig:
 
 
 T = TypeVar('T')
+
+
+def _load_grpo_config_cls() -> type["GRPOConfig"]:
+    """Resolve GRPOConfig lazily to avoid importing Lightning in data-only paths."""
+    from src.grpo_logic.model import GRPOConfig
+
+    return GRPOConfig
 
 
 def _deep_merge(base: dict, overrides: dict) -> dict:
@@ -157,7 +171,8 @@ def load_experiment_config(
 
     # Convert each section to its dataclass
     training = dict_to_dataclass(TrainingConfig, data.get('training', {}))
-    grpo = dict_to_dataclass(GRPOConfig, data.get('grpo', {}))
+    grpo_config_cls = _load_grpo_config_cls()
+    grpo = dict_to_dataclass(grpo_config_cls, data.get('grpo', {}))
     transformer = dict_to_dataclass(ChessTransformerConfig, data.get('transformer', {}))
     eval_cfg = dict_to_dataclass(EvalConfig, data.get('eval', {}))
     stockfish = dict_to_dataclass(StockfishConfig, data.get('stockfish', {}))
@@ -185,7 +200,7 @@ def load_experiment_config(
 def load_grpo_config(
     path: str | Path = "default.yaml",
     overrides: dict[str, Any] | None = None
-) -> GRPOConfig:
+) -> "GRPOConfig":
     """Load just the GRPO config from a YAML file.
 
     Args:
@@ -196,7 +211,7 @@ def load_grpo_config(
     grpo_data = data.get('grpo', {})
     if overrides:
         grpo_data = _deep_merge(grpo_data, overrides)
-    return dict_to_dataclass(GRPOConfig, grpo_data)
+    return dict_to_dataclass(_load_grpo_config_cls(), grpo_data)
 
 
 def load_transformer_config(

@@ -21,6 +21,25 @@ pretrain:
   label_smoothing: 0.1          # Prevents overconfidence
   num_workers: 4                # DataLoader workers
   val_check_interval: 0.1       # Validate every 10% of epoch
+  eval_every_n_epochs: 1        # Evaluate vs Stockfish every N epochs
+
+# =============================================================================
+# Evaluation Config (vs Stockfish)
+# =============================================================================
+eval:
+  games: 32
+  seed: 0
+  max_plies: 400
+  randomize_opening: true
+  opening_plies: 6
+
+stockfish:
+  path: "/usr/games/stockfish"
+  skill_level: 2
+  movetime_ms: 50
+
+policy:
+  greedy: true
 
 # =============================================================================
 # Dataset Settings (Lichess games from HuggingFace)

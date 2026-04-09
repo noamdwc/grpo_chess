@@ -1,0 +1,72 @@
+# Colab end-to-end smoke profile for GRPO stage.
+
+training:
+  num_epochs: 1
+  batch_size: 8
+  steps_per_epoch: 32
+  checkpoint_dir: "/content/drive/MyDrive/data/grpo-chess/colab_e2e_smoke/checkpoints/grpo"
+  checkpoint_every_n_epochs: 1
+  keep_n_checkpoints: 1
+  use_wandb: false
+  wandb_project: "Chess-GRPO-Bot"
+
+grpo:
+  lr: 0.000001
+  num_trajectories: 4
+  trajectory_depth: 6
+  clip_ratio: 0.20
+  kl_coef: 0.001
+  eval_every_n_epochs: 1000
+  ppo_steps: 1
+  rollout_temperature: 1.2
+  enable_safety_checks: false
+  safety_patience_steps: 1000
+  max_clip_fraction: 0.95
+  teacher_forcing_prob: 0.0
+  teacher_forcing_depth: 4
+
+transformer:
+  vocab_size: 300
+  embed_dim: 256
+  num_layers: 4
+  num_heads: 8
+  action_dim: 1968
+
+eval:
+  games: 4
+  seed: 0
+  max_plies: 150
+  randomize_opening: true
+  opening_plies: 4
+
+stockfish:
+  path: "/usr/games/stockfish"
+  skill_level: 2
+  use_elo_limit: false
+  elo: 2500
+  movetime_ms: 20
+  threads: 1
+  hash_mb: 64
+
+policy:
+  temperature: 0.8
+  greedy: true
+  branching_factor: 4
+  search_depth: 2
+
+searcher: null
+
+pretrain:
+  checkpoint_path: "/content/drive/MyDrive/data/grpo-chess/colab_e2e_smoke/checkpoints/distill/distill_final.pt"
+  freeze_layers: 1
+
+dataset:
+  max_steps: 32
+  phase_distribution:
+    opening: 0.33
+    middlegame: 0.34
+    endgame: 0.33
+  min_eval_cp: -200
+  max_eval_cp: 200
+  quality_filter: true
+  stockfish_filter_depth: 4

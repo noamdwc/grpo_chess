@@ -1,100 +1,55 @@
-# AGENTS.md - GRPO Chess Project Instructions
+# Repository Guidelines
 
-This file provides instructions for AI coding agents working on this repository.
-Compatible with: Claude Code, GitHub Copilot, Cursor, OpenAI Codex, and other tools supporting the AGENTS.md standard.
+## Project Invariant
+- This is a **searchless chess** project.
+- Do not propose or implement MCTS, tree-search, or related search-based chess approaches.
 
-## Project Overview
+## Project Structure & Module Organization
+- `src/`: core code for GRPO self-play training, evaluation, distillation, and pretraining.
+- `src/grpo_logic/`: GRPO sampling, loss, and Lightning module internals.
+- `src/chess/`: chess-specific logic, Stockfish integration, rewards, and datasets.
+- `src/configs/`: YAML experiment configs (`default.yaml`, `distill.yaml`, `pretrain.yaml`).
+- `tests/`: pytest suite (unit + integration-style tests), plus fixtures in `tests/resources/`.
+- `chess_model_run_git.ipynb`: primary Colab workflow for end-to-end runs.
+- `research_docs/`: experiment analyses and debugging notes. Subdirs: `experiments/` (plan docs from `/plan-experiment`), `runs/` (run reports from `/run-experiment`).
 
-**GRPO Chess** trains a chess-playing transformer using Group Relative Policy Optimization (GRPO).
+## Build, Test, and Development Commands
+Use the project Python environment (`~/miniconda3/envs/grpo_chess/bin/python`) for consistency.
 
-**Key constraint**: This is a **searchless chess** project. Do not suggest MCTS, tree search, or similar solutions.
+- `~/miniconda3/envs/grpo_chess/bin/python -m pytest tests/`
+Runs the full test suite.
+- `~/miniconda3/envs/grpo_chess/bin/python -m pytest tests/test_pretrain_pipeline.py -v`
+Runs a targeted test module.
+- `~/miniconda3/envs/grpo_chess/bin/python -m src.train_self_play`
+Starts GRPO training with default config.
+- `~/miniconda3/envs/grpo_chess/bin/python -m src.distill.distill --config distill.yaml`
+Runs distillation training.
+- `~/miniconda3/envs/grpo_chess/bin/python -m src.pretrain.pretrain --config pretrain.yaml`
+Runs supervised pretraining.
 
-## Repository Structure
+## Codex Working Style
+- Prioritize implementation over exploration: if a request is clear, start coding after minimal file/context checks.
+- Search the repository before external lookup; prefer existing scripts/utilities over creating new ones.
+- Keep changes minimal and in-scope; avoid unrelated cleanup or extra abstractions.
+- Before major edits, confirm execution context: active Python env, target config/module, and relevant data/project paths.
+- Use reasonable assumptions and proceed; ask follow-up questions only when blocked by a true ambiguity.
+- Validate changes with focused checks (`pytest`, `py_compile`, or targeted tests) before handoff when feasible.
+- For larger tasks, follow a short plan-then-execute flow with concrete file targets and incremental verification.
 
-```
-grpo_chess/
-├── chess_model_run_git.ipynb    # Main training notebook (Google Colab)
-├── src/          # Core GRPO implementation
-├── research_docs/               # Agent research documentation
-│   ├── TEMPLATE.md              # Template for new documents
-│   └── *.md                     # Research insights (dated)
-└── .claude/agents/              # Specialized agent prompts
-    ├── research-insights.md     # For analysis tasks
-    └── code-implementation.md   # For coding tasks
-```
+## Coding Style & Naming Conventions
+- Python style: 4-space indentation, type hints where practical, small focused functions.
+- Naming: `snake_case` for functions/variables/files, `PascalCase` for classes, `UPPER_SNAKE_CASE` for constants.
+- Keep training behavior configurable in YAML; prefer updating `src/configs/*.yaml` over hardcoding.
+- Follow existing module boundaries (e.g., keep GRPO logic in `src/grpo_logic/`, chess engine code in `src/chess/`).
 
-## Commands
+## Testing Guidelines
+- Framework: `pytest`.
+- Test files follow `tests/test_*.py`; test functions should be descriptive (e.g., `test_chess_dataset_multi_epoch_multi_worker`).
+- For engine-dependent tests, ensure Stockfish is installed (`brew install stockfish` on macOS).
+- Add/update tests for behavior changes in training loops, config loading, dataset iteration, or reward logic.
 
-```bash
-# Run tests (if available)
-python -m pytest
-
-# Check syntax
-python -m py_compile src/grpo_logic/model.py
-
-# Training is done via Google Colab notebook
-# See chess_model_run_git.ipynb
-```
-
-## Code Style
-
-- Python with type hints where they exist
-- snake_case for functions and variables
-- PascalCase for classes
-- Dataclasses for configuration
-- PyTorch Lightning for training modules
-- Follow existing patterns in the codebase
-
-## Key Files for Common Tasks
-
-| Task | Primary Files |
-|------|--------------|
-| Training loop | `src/grpo_logic/model.py` |
-| Loss computation | `src/grpo_logic/loss.py` |
-| Trajectory sampling | `src/grpo_logic/sampling.py` |
-| Reward computation | `src/chess/rewards.py` |
-| Dataset generation | `src/chess/boards_dataset.py` |
-| Model architecture | `src/models.py` |
-| Evaluation | `src/evaluator.py` |
-
-## Git Workflow
-
-- Main branch: `main`
-- Development branch: `improve_data_quality` (current)
-- Commit messages: Clear, concise descriptions
-- Never commit secrets or API keys
-
-## Boundaries
-
-### DO NOT
-- Suggest MCTS or tree search solutions
-- Modify files outside `src/` without explicit request
-- Commit to main without approval
-- Change code style in lines you're not modifying
-- Over-engineer solutions
-
-### DO
-- Read files before editing
-- Make minimal, targeted changes
-- Follow existing code patterns
-- Include file paths with line numbers when discussing code
-- Use research_docs/ for analysis documentation
-
-## Experiment Tracking
-
-Training is tracked with Weights & Biases. Key metrics:
-- `train/reward_mean` - Mean trajectory reward
-- `eval_stockfish/score` - Win rate vs Stockfish
-- `train/clip_fraction` - PPO clipping statistics
-
-## Specialized Agents
-
-For complex tasks, see specialized prompts in `.claude/agents/`:
-- **research-insights.md** - Analyzing training issues, writing research docs
-- **code-implementation.md** - Implementing specific code changes
-
-## Documentation
-
-- Research findings go in `research_docs/` using the template
-- Code documentation follows existing docstring patterns
-- README updates only when explicitly requested
+## Commit & Pull Request Guidelines
+- Commit messages in history are short imperative summaries (examples: `Fix ...`, `Add ...`, `refactor ...`). Keep that style.
+- Keep commits scoped to one logical change and include config updates when relevant.
+- PRs should include: purpose, key code paths touched, test evidence (command + result), and linked issue/run context when applicable.
+- For training/eval changes, include impacted metrics (for example from Weights & Biases) and any required environment assumptions.

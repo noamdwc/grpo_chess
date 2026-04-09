@@ -1,0 +1,52 @@
+# Pretrain stage for end-to-end pipeline smoke test.
+
+pretrain:
+  lr: 0.0001
+  batch_size: 512
+  num_epochs: 1
+  warmup_steps: 100
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  checkpoint_dir: "checkpoints/pipeline_e2e_pretrain"
+  resume_from: null
+  use_wandb: false
+  wandb_project: "chess-grpo-pretrain"
+  label_smoothing: 0.1
+  num_workers: 2
+  val_check_interval: 1.0
+  eval_every_n_epochs: 1000
+
+eval:
+  games: 4
+  seed: 0
+  max_plies: 150
+  randomize_opening: true
+  opening_plies: 4
+
+stockfish:
+  path: "/usr/games/stockfish"
+  skill_level: 2
+  movetime_ms: 20
+
+policy:
+  greedy: true
+
+dataset:
+  min_elo: 1800
+  max_samples: 20000
+  skip_first_n_moves: 5
+  skip_last_n_moves: 5
+  sample_positions_per_game: 1
+  buffer_size: 5000
+  filter_abandoned: true
+  dataset_name: "Lichess/standard-chess-games"
+  split: "train"
+  is_eval: false
+  eval_fraction: 0.05
+
+transformer:
+  vocab_size: 300
+  embed_dim: 256
+  num_layers: 4
+  num_heads: 8
+  action_dim: 1968

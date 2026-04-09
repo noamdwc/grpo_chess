@@ -5,15 +5,21 @@ import chess
 
 from dataclasses import dataclass
 
-from src.evaluator import Evaluator
 from src.models import ChessTransformer, ChessTransformerConfig
-from src.grpo_logic.loss import grpo_ppo_loss
+from src.models_9m import Searchless9MActionValuePolicy, Searchless9MGRPOPolicy
+from src.grpo_logic.loss import GRPOLossInfo, grpo_ppo_loss
+from src.grpo_logic.mode_utils import temporary_eval
 from src.grpo_logic.sampling import sample_trajectories_batched
 from src.eval_utils import EvalConfig
 from src.chess.policy_player import PolicyConfig
 from src.chess.searcher import SearchConfig
 from src.chess.stockfish import StockfishConfig
 from src.pretrain.pretrain_load_config import PretrainLoadConfig
+from src.checkpoint_compat import (
+    load_checkpoint_with_compat,
+    load_state_dict_with_checkpoint_compat,
+    register_legacy_checkpoint_aliases,
+)
 
 
 @dataclass
@@ -76,22 +82,32 @@ class GRPOChessTransformer(pl.LightningModule):
                  searcher_cfg: SearchConfig | None = None,
                  pretrain_cfg: PretrainLoadConfig | None = None):
         super().__init__()
-        self.save_hyperparameters()
-        self.policy_model = ChessTransformer(transformer_config)
-        self.old_policy_model = ChessTransformer(transformer_config)
+        # Lightning 2.6 apply_to_collection rejects frozen dataclasses in hparams.
+        # StockfishConfig is frozen, so keep it out of hparams.
+        self.save_hyperparameters(ignore=["stockfish_cfg"])
 
-        # Load pretrained weights if specified
-        if pretrain_cfg and pretrain_cfg.checkpoint_path:
-            self._load_pretrained_weights(pretrain_cfg)
+        if pretrain_cfg and getattr(pretrain_cfg, 'use_9m_direct', False):
+            use_exact_warmstart = bool(getattr(pretrain_cfg, "exact_9m_warmstart", True))
+            if use_exact_warmstart:
+                # Use exact 9M action-value scoring path for checkpoint-faithful startup.
+                self.policy_model = Searchless9MActionValuePolicy(
+                    checkpoint_path=pretrain_cfg.checkpoint_path,
+                )
+                self.old_policy_model = Searchless9MActionValuePolicy()
+            else:
+                # Legacy path: 9M body + random action head.
+                self.policy_model = Searchless9MGRPOPolicy(
+                    checkpoint_path=pretrain_cfg.checkpoint_path,
+                    freeze_body=pretrain_cfg.freeze_layers > 0,
+                )
+                self.old_policy_model = Searchless9MGRPOPolicy()
+        else:
+            self.policy_model = ChessTransformer(transformer_config)
+            self.old_policy_model = ChessTransformer(transformer_config)
+            if pretrain_cfg and pretrain_cfg.checkpoint_path:
+                self._load_pretrained_weights(pretrain_cfg)
 
         self._sync_old_policy()
-
-        # Evaluation config
-        self.eval_every_n_epochs = grpo_config.eval_every_n_epochs
-        self.evaluator = Evaluator(eval_cfg=eval_cfg or EvalConfig(),
-                                   policy_cfg=policy_cfg or PolicyConfig(),
-                                   stockfish_cfg=stockfish_cfg or StockfishConfig(),
-                                   searcher_cfg=searcher_cfg)
 
         # Safety-check state
         self._high_clip_steps: int = 0
@@ -134,7 +150,8 @@ class GRPOChessTransformer(pl.LightningModule):
         checkpoint_path = pretrain_cfg.checkpoint_path
         print(f"Loading pretrained weights from: {checkpoint_path}")
 
-        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+        register_legacy_checkpoint_aliases()
+        checkpoint = load_checkpoint_with_compat(checkpoint_path, map_location="cpu", weights_only=False)
 
         # Handle different checkpoint formats
         if 'model_state_dict' in checkpoint:
@@ -154,7 +171,12 @@ class GRPOChessTransformer(pl.LightningModule):
             state_dict = checkpoint
 
         # Load into policy model
-        missing, unexpected = self.policy_model.load_state_dict(state_dict, strict=False)
+        missing, unexpected = load_state_dict_with_checkpoint_compat(
+            self.policy_model,
+            state_dict,
+            checkpoint_path=checkpoint_path,
+            strict=False,
+        )
         if missing:
             print(f"Warning: Missing keys in pretrained checkpoint: {missing}")
         if unexpected:
@@ -219,7 +241,7 @@ class GRPOChessTransformer(pl.LightningModule):
         trajectories_legal_masks: torch.Tensor | None,
         step_rewards: torch.Tensor,
         effective_pad_mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, object]:
+    ) -> tuple[torch.Tensor | None, GRPOLossInfo | None]:
         """Perform a single PPO optimization step.
 
         Args:
@@ -233,10 +255,11 @@ class GRPOChessTransformer(pl.LightningModule):
         Returns:
             Tuple of (loss, loss_info)
         """
-        # Compute new log probs with current policy (must match rollout temperature)
-        new_log_probs = self.policy_model.get_group_log_probs(
-            trajectories_states, trajectories_actions, trajectories_legal_masks,
-            temperature=self.hparams.grpo_config.rollout_temperature,
+        # Compute new log probs with dropout disabled, while keeping gradients enabled.
+        new_log_probs = self._compute_new_log_probs(
+            trajectories_states=trajectories_states,
+            trajectories_actions=trajectories_actions,
+            trajectories_legal_masks=trajectories_legal_masks,
         )
 
         loss, loss_info = grpo_ppo_loss(
@@ -250,9 +273,57 @@ class GRPOChessTransformer(pl.LightningModule):
         )
 
         if not torch.isfinite(loss):
-            raise ValueError(f"Non-finite loss encountered: {loss.item()}")
+            self.log(
+                "train/nonfinite_ppo_loss_skips",
+                1.0,
+                prog_bar=False,
+                on_step=True,
+                on_epoch=True,
+                batch_size=int(effective_pad_mask.shape[0]),
+            )
+            return None, None
+        if (not loss.requires_grad) or (loss.grad_fn is None):
+            self.log(
+                "train/nograd_ppo_loss_skips",
+                1.0,
+                prog_bar=False,
+                on_step=True,
+                on_epoch=True,
+                batch_size=int(effective_pad_mask.shape[0]),
+            )
+            return None, None
 
         return loss, loss_info
+
+    def _compute_new_log_probs(
+        self,
+        trajectories_states: torch.Tensor,
+        trajectories_actions: torch.Tensor,
+        trajectories_legal_masks: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """Compute trainable log-probs for the current policy with dropout off."""
+        with temporary_eval(self.policy_model):
+            return self.policy_model.get_group_log_probs(
+                trajectories_states,
+                trajectories_actions,
+                trajectories_legal_masks,
+                temperature=self.hparams.grpo_config.rollout_temperature,
+            )
+
+    def _compute_old_log_probs(
+        self,
+        trajectories_states: torch.Tensor,
+        trajectories_actions: torch.Tensor,
+        trajectories_legal_masks: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """Compute reference log-probs for the old policy with dropout off and no-grad."""
+        with temporary_eval(self.old_policy_model), torch.no_grad():
+            return self.old_policy_model.get_group_log_probs(
+                trajectories_states,
+                trajectories_actions,
+                trajectories_legal_masks,
+                temperature=self.hparams.grpo_config.rollout_temperature,
+            )
 
     def _run_safety_checks(self, loss_info) -> None:
         """Run safety checks on training dynamics and abort if clip fraction stays too high."""
@@ -291,15 +362,16 @@ class GRPOChessTransformer(pl.LightningModule):
         if not boards:
             return  # Skip if game over
 
-        trajectories_sample = sample_trajectories_batched(
-            self.old_policy_model,
-            boards,
-            self.hparams.grpo_config.num_trajectories,
-            self.hparams.grpo_config.trajectory_depth,
-            temperature=self.hparams.grpo_config.rollout_temperature,
-            teacher_forcing_prob=self.hparams.grpo_config.teacher_forcing_prob,
-            teacher_forcing_depth=self.hparams.grpo_config.teacher_forcing_depth,
-        )
+        with temporary_eval(self.old_policy_model), torch.no_grad():
+            trajectories_sample = sample_trajectories_batched(
+                self.old_policy_model,
+                boards,
+                self.hparams.grpo_config.num_trajectories,
+                self.hparams.grpo_config.trajectory_depth,
+                temperature=self.hparams.grpo_config.rollout_temperature,
+                teacher_forcing_prob=self.hparams.grpo_config.teacher_forcing_prob,
+                teacher_forcing_depth=self.hparams.grpo_config.teacher_forcing_depth,
+            )
         if trajectories_sample is None:
             return  # Skip if no moves
 
@@ -311,17 +383,32 @@ class GRPOChessTransformer(pl.LightningModule):
         step_rewards = trajectories_sample.step_rewards  # [B, G, T]
         pad_mask = trajectories_sample.pad_mask  # [B, G, T]
         trajectories_legal_masks = trajectories_sample.trajectories_legal_masks  # [B, G, T, A] or None
+        teacher_forced_mask = trajectories_sample.teacher_forced_mask  # [B, G, T], True=teacher-forced
 
         # Add starting player mask (only consider moves from the starting player's perspective)
         _, _, T = pad_mask.shape
         t = torch.arange(T, device=pad_mask.device)
         start_player_mask = (t % 2 == 0)[None, None, :]  # [1, 1, T]
-        effective_pad_mask = pad_mask & start_player_mask  # [B, G, T]
+        # Exclude teacher-forced actions from policy-gradient updates.
+        effective_pad_mask = pad_mask & start_player_mask & (~teacher_forced_mask)  # [B, G, T]
+        if not bool(effective_pad_mask.any()):
+            self.log(
+                "train/skipped_no_policy_steps",
+                1.0,
+                prog_bar=False,
+                on_step=True,
+                on_epoch=True,
+                batch_size=int(pad_mask.shape[0]),
+            )
+            return
 
         ppo_steps = self.hparams.grpo_config.ppo_steps
+        successful_ppo_steps = 0
+        final_loss: torch.Tensor | None = None
+        final_loss_info: GRPOLossInfo | None = None
 
         # Perform multiple PPO optimization steps on the same sampled trajectories
-        for ppo_step_idx in range(ppo_steps):
+        for _ in range(ppo_steps):
             loss, loss_info = self._ppo_step(
                 trajectories_states,
                 trajectories_actions,
@@ -330,15 +417,34 @@ class GRPOChessTransformer(pl.LightningModule):
                 step_rewards,
                 effective_pad_mask,
             )
+            if loss is None or loss_info is None:
+                continue
 
             # Manual optimization step
             opt.zero_grad()
             self.manual_backward(loss)
             self.clip_gradients(opt, gradient_clip_val=1.0, gradient_clip_algorithm="norm")
             opt.step()
+            successful_ppo_steps += 1
+            final_loss = loss
+            final_loss_info = loss_info
+
+        if successful_ppo_steps == 0 or final_loss is None or final_loss_info is None:
+            self.log(
+                "train/skipped_all_ppo_steps",
+                1.0,
+                prog_bar=False,
+                on_step=True,
+                on_epoch=True,
+                batch_size=int(pad_mask.shape[0]),
+            )
+            return
 
         # Standard logging (log final ppo_step metrics)
+        loss = final_loss
+        loss_info = final_loss_info
         self.log("train/loss", loss, prog_bar=True)
+        self.log("train_total_loss", loss)
         self.log("train/ppo_loss", loss_info.ppo_loss)
         self.log("train/kl_divergence", loss_info.kl_div)
         self.log("train/ratio", loss_info.mean_ratio)
@@ -348,6 +454,13 @@ class GRPOChessTransformer(pl.LightningModule):
         self.log("train/advantage_std", loss_info.advantage_std)
         self.log("train/pad_fraction", 1.0 - pad_mask.float().mean())
         self.log("train/trajectory_length", pad_mask.float().sum(dim=-1).mean())
+        # Fraction of rollout steps that were teacher-forced.
+        valid_rollout_steps = pad_mask.sum()
+        if valid_rollout_steps.item() > 0:
+            teacher_forced_fraction = teacher_forced_mask[pad_mask].float().mean()
+        else:
+            teacher_forced_fraction = torch.tensor(0.0, device=pad_mask.device)
+        self.log("train/teacher_forced_fraction", teacher_forced_fraction)
         self._log_rewards_metrics(batch_group_rewards, prefix="train/")
 
         # Log step rewards statistics (only for valid steps)
@@ -372,83 +485,3 @@ class GRPOChessTransformer(pl.LightningModule):
             Adam optimizer with learning rate from GRPO config
         """
         return torch.optim.Adam(self.parameters(), lr=self.hparams.grpo_config.lr)
-
-    def _evaluate_against_stockfish(self) -> Optional[tuple[dict, list[str]]]:
-        """Run a single game evaluation against Stockfish with current policy model.
-
-        Returns:
-            Tuple of (results_dict, pgns) or None if evaluation failed
-            pgns is a list of PGN strings for all games played
-        """
-        was_training = self.training
-        self.eval()
-        try:
-            with torch.no_grad():
-                results, _, pgns = self.evaluator.single_evaluation(self.policy_model)
-            return results, pgns
-        except Exception as e:
-            self.logger.warning(f"Evaluation against Stockfish failed: {e}") if hasattr(self, 'logger') else print(f"Evaluation against Stockfish failed: {e}")
-            return None
-        finally:
-            if was_training:
-                self.train()
-
-    def _log_stockfish_eval(self, results: dict) -> None:
-        """Log scalar evaluation metrics from the Stockfish evaluation.
-        
-        Args:
-            results: Dictionary containing evaluation results with keys:
-                - games: Total number of games played
-                - wins: Number of wins
-                - draws: Number of draws
-                - losses: Number of losses
-                - score: Win rate (0-1)
-                - elo_diff_vs_stockfish_approx: Approximate Elo difference
-                - termination_reasons: Dict mapping termination reasons to counts
-        """
-        # Scalar stats
-        self.log("eval_stockfish/games", results["games"])
-        self.log("eval_stockfish/wins", results["wins"])
-        self.log("eval_stockfish/draws", results["draws"])
-        self.log("eval_stockfish/losses", results["losses"])
-        self.log("eval_stockfish/score", results["score"], prog_bar=True)
-        self.log("eval_stockfish/elo_diff", results["elo_diff_vs_stockfish_approx"], prog_bar=True)
-
-        # Termination reasons as fractions
-        games = results["games"] or 1
-        for reason, cnt in results["termination_reasons"].items():
-            frac = cnt / games
-            self.log(f"eval_stockfish/term_{reason}", frac)
-    
-    def _log_pgns(self, pgns: list[str]) -> None:
-        """Log PGNs to WandB as a text artifact.
-
-        Args:
-            pgns: List of PGN strings for all games played
-        """
-        if not pgns:
-            return
-
-        # Combine all PGNs into a single string
-        combined_pgn = "\n\n".join(pgns)
-
-        # Log to WandB if available
-        if self.logger and hasattr(self.logger, 'experiment'):
-            try:
-                import wandb
-                # Log as a text artifact
-                self.logger.experiment.log({
-                    "eval_stockfish/pgns": wandb.Html(f"<pre>{combined_pgn}</pre>"),
-                    "eval_stockfish/pgn_text": combined_pgn,
-                })
-            except Exception as e:
-                print(f"Failed to log PGNs to WandB: {e}")
-
-    def on_train_epoch_end(self) -> None:
-        """Called at the end of each training epoch. Runs evaluation if scheduled."""
-        if (self.current_epoch + 1) % self.eval_every_n_epochs == 0:
-            eval_result = self._evaluate_against_stockfish()
-            if eval_result is not None:
-                results, pgns = eval_result
-                self._log_stockfish_eval(results)
-                self._log_pgns(pgns)

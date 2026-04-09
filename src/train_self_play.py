@@ -8,6 +8,7 @@ from src.trainer import get_trainer
 from src.chess.boards_dataset import ChessStartStatesDataset
 from src.grpo_logic.model import GRPOChessTransformer
 from src.configs.config_loader import load_experiment_config
+from src.evaluator import Evaluator, StockfishEvalCallback
 
 
 def train(
@@ -33,7 +34,9 @@ def train(
     # Build dataloader kwargs from config, with defaults
     dataloader_config = {
         "batch_size": config.training.batch_size,
-        "num_workers": 2,
+        # Multi-worker GRPO data loading can deadlock at epoch end on Colab.
+        # Keep default single-process for reliability; callers can override.
+        "num_workers": 0,
     }
     
     # Apply dataloader_kwargs overrides and warn if overriding config values
@@ -48,7 +51,14 @@ def train(
                 )
             dataloader_config[key] = value
     
-    trainer = get_trainer(num_epochs=config.training.num_epochs)
+    trainer = get_trainer(
+        num_epochs=config.training.num_epochs,
+        checkpoint_dir=config.training.checkpoint_dir,
+        checkpoint_every_n_epochs=config.training.checkpoint_every_n_epochs,
+        keep_n_checkpoints=config.training.keep_n_checkpoints,
+        use_wandb=config.training.use_wandb,
+        wandb_project=config.training.wandb_project,
+    )
     dataset = ChessStartStatesDataset(config.dataset)
     dataloader = DataLoader(dataset, **dataloader_config)
     model = GRPOChessTransformer(
@@ -61,7 +71,28 @@ def train(
         pretrain_cfg=config.pretrain,
     )
 
-    print("Starting Training with WandB Tracking...")
+    evaluator = Evaluator(
+        eval_cfg=config.eval,
+        policy_cfg=config.policy,
+        stockfish_cfg=config.stockfish,
+        searcher_cfg=config.searcher,
+    )
+    run_baseline_eval = bool(
+        getattr(config.pretrain, "use_9m_direct", False)
+        and getattr(config.pretrain, "exact_9m_warmstart", True)
+    )
+    trainer.callbacks.append(StockfishEvalCallback(
+        evaluator,
+        every_n_epochs=config.grpo.eval_every_n_epochs,
+        model_attr="policy_model",
+        run_on_fit_start=run_baseline_eval,
+        init_metric_prefix="eval_stockfish_init",
+    ))
+
+    if config.training.use_wandb:
+        print("Starting training with WandB tracking...")
+    else:
+        print("Starting training with local CSV logging...")
     trainer.fit(model, dataloader)
 
 
