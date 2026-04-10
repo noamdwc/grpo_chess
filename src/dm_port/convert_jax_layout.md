@@ -35,7 +35,7 @@ All shapes are `(256, 256)` — (embedding_dim, embedding_dim). Transpose requir
 MLP linears use the **global** counter (`linear`, `linear_1`, ..., `linear_23`), 3 per block:
 
 - Block i: `linear_{3*i}` = w1 (256→1024), `linear_{3*i+1}` = w2 (256→1024), `linear_{3*i+2}` = w3 (1024→256)
-- Block 0 uses `linear/w` (no number), blocks 1-7 use `linear_3/w` through `linear_23/w`
+- Block 0 uses `linear/w`, `linear_1/w`, `linear_2/w` (the first `linear` omits its `_0` suffix per Haiku convention). Blocks 1-7 use `linear_3/w` through `linear_23/w`.
 
 ## Output head
 

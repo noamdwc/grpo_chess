@@ -14,13 +14,11 @@ import os
 from pathlib import Path
 from typing import Any
 
-import jax
-import jax.numpy as jnp
 import numpy as np
 import torch
 from jax import random as jrandom
 
-from src.dm_port.transformer import DMTransformer, DMTransformerConfig, DM_9M_CONFIG
+from src.dm_port.transformer import DMTransformer, DMTransformerConfig
 from src.distill.teacher import MODEL_CONFIGS, _load_sc_module
 
 
@@ -95,6 +93,14 @@ def convert(args: argparse.Namespace) -> None:
     num_layers = cfg["num_layers"]
     embedding_dim = cfg["embedding_dim"]
 
+    # Track JAX keys we consume so we can detect silent drops (e.g. an
+    # unexpected extra module or a miscounted layer index).
+    consumed: set[str] = set()
+
+    def take(key: str) -> Any:
+        consumed.add(key)
+        return flat[key]
+
     state_dict: dict[str, torch.Tensor] = {}
 
     # --- Embeddings ---
@@ -104,8 +110,8 @@ def convert(args: argparse.Namespace) -> None:
     # Position embedding: embed_1/embeddings  shape (max_seq_len, embedding_dim)
     token_key = "embed/embeddings"
     pos_key = "embed_1/embeddings"
-    state_dict["token_embedding.weight"] = _tensor(flat[token_key])
-    state_dict["pos_embedding.weight"] = _tensor(flat[pos_key])
+    state_dict["token_embedding.weight"] = _tensor(take(token_key))
+    state_dict["pos_embedding.weight"] = _tensor(take(pos_key))
 
     # --- Per-layer blocks ---
     # Haiku auto-numbers modules in call order across the whole model:
@@ -135,9 +141,9 @@ def convert(args: argparse.Namespace) -> None:
         mlp_w3_idx = 3 * i + 2
 
         # Attention pre-LN (scale=weight, offset=bias in Haiku)
-        attn_ln_name = f"layer_norm_{ln_attn_idx}" if ln_attn_idx > 0 else "layer_norm"
-        state_dict[f"layers.{i}.attn_ln.weight"] = _tensor(flat[f"{attn_ln_name}/scale"])
-        state_dict[f"layers.{i}.attn_ln.bias"] = _tensor(flat[f"{attn_ln_name}/offset"])
+        attn_ln_name = "layer_norm" if i == 0 else f"layer_norm_{ln_attn_idx}"
+        state_dict[f"layers.{i}.attn_ln.weight"] = _tensor(take(f"{attn_ln_name}/scale"))
+        state_dict[f"layers.{i}.attn_ln.bias"] = _tensor(take(f"{attn_ln_name}/offset"))
 
         # Attention projections — live under named module, not global counter
         # multi_head_dot_product_attention_{i} for i>0, no suffix for i=0
@@ -148,41 +154,51 @@ def convert(args: argparse.Namespace) -> None:
         )
         # linear/w=Q, linear_1/w=K, linear_2/w=V, linear_3/w=Out
         state_dict[f"layers.{i}.attn.q_proj.weight"] = _tensor(
-            flat[f"{attn_name}/linear/w"], transpose=True
+            take(f"{attn_name}/linear/w"), transpose=True
         )
         state_dict[f"layers.{i}.attn.k_proj.weight"] = _tensor(
-            flat[f"{attn_name}/linear_1/w"], transpose=True
+            take(f"{attn_name}/linear_1/w"), transpose=True
         )
         state_dict[f"layers.{i}.attn.v_proj.weight"] = _tensor(
-            flat[f"{attn_name}/linear_2/w"], transpose=True
+            take(f"{attn_name}/linear_2/w"), transpose=True
         )
         state_dict[f"layers.{i}.attn.out_proj.weight"] = _tensor(
-            flat[f"{attn_name}/linear_3/w"], transpose=True
+            take(f"{attn_name}/linear_3/w"), transpose=True
         )
 
         # MLP pre-LN
         mlp_ln_name = f"layer_norm_{ln_mlp_idx}"
-        state_dict[f"layers.{i}.mlp_ln.weight"] = _tensor(flat[f"{mlp_ln_name}/scale"])
-        state_dict[f"layers.{i}.mlp_ln.bias"] = _tensor(flat[f"{mlp_ln_name}/offset"])
+        state_dict[f"layers.{i}.mlp_ln.weight"] = _tensor(take(f"{mlp_ln_name}/scale"))
+        state_dict[f"layers.{i}.mlp_ln.bias"] = _tensor(take(f"{mlp_ln_name}/offset"))
 
         # MLP linears (all bias=False; transpose)
         w1_name = "linear" if mlp_w1_idx == 0 else f"linear_{mlp_w1_idx}"
         w2_name = f"linear_{mlp_w2_idx}"
         w3_name = f"linear_{mlp_w3_idx}"
-        state_dict[f"layers.{i}.mlp.w1.weight"] = _tensor(flat[f"{w1_name}/w"], transpose=True)
-        state_dict[f"layers.{i}.mlp.w2.weight"] = _tensor(flat[f"{w2_name}/w"], transpose=True)
-        state_dict[f"layers.{i}.mlp.w3.weight"] = _tensor(flat[f"{w3_name}/w"], transpose=True)
+        state_dict[f"layers.{i}.mlp.w1.weight"] = _tensor(take(f"{w1_name}/w"), transpose=True)
+        state_dict[f"layers.{i}.mlp.w2.weight"] = _tensor(take(f"{w2_name}/w"), transpose=True)
+        state_dict[f"layers.{i}.mlp.w3.weight"] = _tensor(take(f"{w3_name}/w"), transpose=True)
 
     # --- Post-LN ---
     post_ln_idx = 2 * num_layers
-    state_dict["post_ln.weight"] = _tensor(flat[f"layer_norm_{post_ln_idx}/scale"])
-    state_dict["post_ln.bias"] = _tensor(flat[f"layer_norm_{post_ln_idx}/offset"])
+    state_dict["post_ln.weight"] = _tensor(take(f"layer_norm_{post_ln_idx}/scale"))
+    state_dict["post_ln.bias"] = _tensor(take(f"layer_norm_{post_ln_idx}/offset"))
 
     # --- Output head ---
     out_lin_idx = 3 * num_layers
     out_lin_name = "linear" if out_lin_idx == 0 else f"linear_{out_lin_idx}"
-    state_dict["output_linear.weight"] = _tensor(flat[f"{out_lin_name}/w"], transpose=True)
-    state_dict["output_linear.bias"] = _tensor(flat[f"{out_lin_name}/b"])
+    state_dict["output_linear.weight"] = _tensor(take(f"{out_lin_name}/w"), transpose=True)
+    state_dict["output_linear.bias"] = _tensor(take(f"{out_lin_name}/b"))
+
+    # Catch silent drops on the JAX side (e.g. an unexpected bias, an extra
+    # module, or a miscounted layer index). strict=False below only guards
+    # the PyTorch-side keys.
+    leftover = set(flat.keys()) - consumed
+    if leftover:
+        raise RuntimeError(
+            f"JAX params not consumed by converter: {sorted(leftover)}\n"
+            "Re-run with --inspect and fix the mapping in convert_jax.py."
+        )
 
     # --- Sanity load ---
     parity_cfg = DMTransformerConfig(
