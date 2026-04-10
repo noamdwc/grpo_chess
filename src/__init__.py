@@ -15,10 +15,8 @@ __version__ = "0.1.0"
 sys.modules.setdefault("src.grpo_self_play", sys.modules[__name__])
 
 _LAZY_EXPORTS: Dict[str, Tuple[str, str]] = {
-    "ChessTransformer": ("src.models", "ChessTransformer"),
-    "ChessTransformerConfig": ("src.models", "ChessTransformerConfig"),
-    "GRPOChessTransformer": ("src.grpo_logic.model", "GRPOChessTransformer"),
-    "GRPOConfig": ("src.grpo_logic.model", "GRPOConfig"),
+    "ReasoningGRPOLightningModule": ("src.grpo_logic.model", "ReasoningGRPOLightningModule"),
+    "GRPOConfig": ("src.configs.config_loader", "GRPOConfig"),
     "grpo_ppo_loss": ("src.grpo_logic.loss", "grpo_ppo_loss"),
     "GRPOLossInfo": ("src.grpo_logic.loss", "GRPOLossInfo"),
     "Evaluator": ("src.evaluator", "Evaluator"),

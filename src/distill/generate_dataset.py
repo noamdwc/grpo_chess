@@ -19,9 +19,6 @@ import torch
 from torch.utils.data import DataLoader
 from datasets import load_dataset
 from tqdm import tqdm
-
-from src.pretrain.pretrain_dataset import get_positions_from_game
-from src.configs.config_loader import load_yaml_file, dict_to_dataclass
 from src.distill.teacher import (
     build_teacher_engine,
     FENPrepDataset,
@@ -50,6 +47,17 @@ class GenerateConfig:
     skip_first_n_moves: int = 5
     skip_last_n_moves: int = 5
     sample_positions_per_game: int = 3
+
+
+def load_yaml_file(path: str) -> dict:
+    import yaml
+
+    with open(path) as handle:
+        return yaml.safe_load(handle)
+
+
+def dict_to_dataclass(cls, data: dict):
+    return cls(**data)
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +153,8 @@ def _filter_by_elo(dataset, min_elo: int):
 
 def _extract_positions(dataset, config: GenerateConfig) -> list[str]:
     """Sample positions from filtered games."""
+    from src.pretrain.pretrain_dataset import get_positions_from_game
+
     positions = []
     max_games = config.max_samples // config.sample_positions_per_game + 1000
     game_indices = list(range(min(len(dataset), max_games)))

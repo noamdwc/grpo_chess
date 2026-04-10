@@ -1,67 +1,73 @@
-# Default experiment configuration
-# This file contains all hyperparameters for a training run.
-# Copy this file and modify for new experiments.
+# Reasoning-GRPO default configuration.
+# Edit this file for config changes; never hardcode in Python.
+# Spec: docs/superpowers/specs/2026-04-09-reasoning-grpo-refactor-design.md
 
-# =============================================================================
-# Training Loop Settings
-# =============================================================================
+model:
+  base_checkpoint: "checkpoints/dm_port/9M.pt"
+  freeze_body: false
+  max_seq_len: 120
+  value_head:
+    enabled: true
+    hidden_dim: 256
+    coef: 0.5
+
+reasoning:
+  min_think_tokens: 2
+  max_think_tokens: 12
+  allow_early_end_think: true
+  legal_mask_think: true
+  exclude_specials_from_gradient: false
+
+grpo:
+  k_samples_per_root: 8
+  lr: 1.0e-6
+  clip_ratio: 0.20
+  kl_coef: 0.001
+  ppo_epochs: 1
+  rollout_temperature: 1.0
+  move_sampling_temperature: 1.0
+  eval_every_n_epochs: 10
+
+rival:
+  mode: "self_play"
+  self_play:
+    think_enabled: false
+    temperature: 0.0
+  frozen_dm_9m:
+    checkpoint_path: "checkpoints/dm_port/9M.pt"
+  stockfish:
+    movetime_ms: 50
+    skill_level: 2
+
+leaf_evaluator:
+  mode: "dm_value_head"
+  dm_value_head:
+    model: "136M"
+    bucket_values_source: "searchless_chess"
+  stockfish:
+    movetime_ms: 50
+    cp_clip: 1000
+
 training:
-  num_epochs: 400
-  batch_size: 32
-  steps_per_epoch: 512
+  num_epochs: 200
+  batch_size: 16
+  steps_per_epoch: 256
   checkpoint_dir: "checkpoints"
-  checkpoint_every_n_epochs: 5  # Save periodic checkpoint every N epochs for crash recovery
-  keep_n_checkpoints: 3         # Keep last N periodic checkpoints per run
+  checkpoint_every_n_epochs: 5
+  keep_n_checkpoints: 3
   use_wandb: true
   wandb_project: "Chess-GRPO-Bot"
 
-# =============================================================================
-# GRPO (Group Relative Policy Optimization) Config
-# =============================================================================
-grpo:
-  lr: 0.000001  # 1e-6
-  num_trajectories: 16
-  trajectory_depth: 16
-  clip_ratio: 0.20
-  kl_coef: 0.001
-  eval_every_n_epochs: 10
-  ppo_steps: 1
-  rollout_temperature: 1.3
-
-  # Safety checks
-  enable_safety_checks: false
-  safety_patience_steps: 1000
-  max_clip_fraction: 0.95
-
-  # Teacher forcing: use Stockfish for rival moves during trajectory sampling
-  teacher_forcing_prob: 0.1
-  teacher_forcing_depth: 4
-
-# =============================================================================
-# Transformer Model Config
-# =============================================================================
-transformer:
-  vocab_size: 300
-  embed_dim: 256
-  num_layers: 4
-  num_heads: 8
-  action_dim: 1968
-
-# =============================================================================
-# Evaluation Config (vs Stockfish)
-# =============================================================================
 eval:
   games: 64
   seed: 0
   max_plies: 400
   randomize_opening: true
   opening_plies: 6
+  ablation_no_think: true
 
-# =============================================================================
-# Stockfish Config
-# =============================================================================
 stockfish:
-  path: "/usr/games/stockfish"  # Override in colab/local as needed
+  path: "/usr/games/stockfish"
   skill_level: 2
   use_elo_limit: false
   elo: 2500
@@ -69,35 +75,8 @@ stockfish:
   threads: 1
   hash_mb: 128
 
-# =============================================================================
-# Policy Player Config (for evaluation)
-# =============================================================================
-policy:
-  temperature: 0.8
-  greedy: true
-  branching_factor: 4
-  search_depth: 2
-
-# =============================================================================
-# Searcher Config (optional - set to null to disable)
-# =============================================================================
-searcher: null
-# searcher:
-#   n_trajectories: 4
-#   trajectory_depth: 8
-
-# =============================================================================
-# Pretraining (optional - load pretrained weights before GRPO)
-# =============================================================================
-pretrain:
-  checkpoint_path: null  # Path to pretrained checkpoint (e.g., "checkpoints/pretrain/pretrain_final.pt")
-  freeze_layers: 2       # Freeze first 2 transformer layers to preserve learned representations
-
-# =============================================================================
-# Dataset Config (Chess Start States)
-# =============================================================================
 dataset:
-  max_steps: 512  # Should match steps_per_epoch
+  max_steps: 256
   phase_distribution:
     opening: 0.33
     middlegame: 0.34

@@ -1,103 +1,39 @@
-"""Training script for GRPO chess self-play."""
+"""Entry point for reasoning-GRPO fine-tuning."""
+from __future__ import annotations
+
 import argparse
-import warnings
 from typing import Any
+
 from torch.utils.data import DataLoader
 
-from src.trainer import get_trainer
 from src.chess.boards_dataset import ChessStartStatesDataset
-from src.grpo_logic.model import GRPOChessTransformer
 from src.configs.config_loader import load_experiment_config
-from src.evaluator import Evaluator, StockfishEvalCallback
+from src.grpo_logic.model import ReasoningGRPOLightningModule
+from src.trainer import get_trainer
 
 
 def train(
     config_path: str = "default.yaml",
     overrides: dict[str, dict[str, Any]] | None = None,
-    dataloader_kwargs: dict[str, Any] | None = None
 ) -> None:
-    """Main training function for GRPO chess self-play.
-    
-    Args:
-        config_path: Path to the YAML config file (relative to configs directory)
-        overrides: Optional dict of overrides per section. Example:
-            {
-                "grpo": {"lr": 1e-4},
-                "training": {"num_epochs": 100},
-                "stockfish": {"skill_level": 5},
-            }
-        dataloader_kwargs: Optional dict of arguments to pass to DataLoader constructor.
-            These override config values. Example: {"batch_size": 64, "num_workers": 4}
-    """
-    config = load_experiment_config(config_path, overrides=overrides)
-    
-    # Build dataloader kwargs from config, with defaults
-    dataloader_config = {
-        "batch_size": config.training.batch_size,
-        # Multi-worker GRPO data loading can deadlock at epoch end on Colab.
-        # Keep default single-process for reliability; callers can override.
-        "num_workers": 0,
-    }
-    
-    # Apply dataloader_kwargs overrides and warn if overriding config values
-    if dataloader_kwargs:
-        for key, value in dataloader_kwargs.items():
-            if key in dataloader_config:
-                warnings.warn(
-                    f"Overriding DataLoader '{key}' from config ({dataloader_config[key]}) "
-                    f"with provided value ({value})",
-                    UserWarning,
-                    stacklevel=2
-                )
-            dataloader_config[key] = value
-    
+    cfg = load_experiment_config(config_path, overrides=overrides)
+
+    dataset = ChessStartStatesDataset(cfg.dataset)
+    dataloader = DataLoader(dataset, batch_size=cfg.training.batch_size, num_workers=0)
+    module = ReasoningGRPOLightningModule(cfg)
     trainer = get_trainer(
-        num_epochs=config.training.num_epochs,
-        checkpoint_dir=config.training.checkpoint_dir,
-        checkpoint_every_n_epochs=config.training.checkpoint_every_n_epochs,
-        keep_n_checkpoints=config.training.keep_n_checkpoints,
-        use_wandb=config.training.use_wandb,
-        wandb_project=config.training.wandb_project,
+        num_epochs=cfg.training.num_epochs,
+        checkpoint_dir=cfg.training.checkpoint_dir,
+        checkpoint_every_n_epochs=cfg.training.checkpoint_every_n_epochs,
+        keep_n_checkpoints=cfg.training.keep_n_checkpoints,
+        use_wandb=cfg.training.use_wandb,
+        wandb_project=cfg.training.wandb_project,
     )
-    dataset = ChessStartStatesDataset(config.dataset)
-    dataloader = DataLoader(dataset, **dataloader_config)
-    model = GRPOChessTransformer(
-        transformer_config=config.transformer,
-        grpo_config=config.grpo,
-        eval_cfg=config.eval,
-        stockfish_cfg=config.stockfish,
-        policy_cfg=config.policy,
-        searcher_cfg=config.searcher,
-        pretrain_cfg=config.pretrain,
-    )
-
-    evaluator = Evaluator(
-        eval_cfg=config.eval,
-        policy_cfg=config.policy,
-        stockfish_cfg=config.stockfish,
-        searcher_cfg=config.searcher,
-    )
-    run_baseline_eval = bool(
-        getattr(config.pretrain, "use_9m_direct", False)
-        and getattr(config.pretrain, "exact_9m_warmstart", True)
-    )
-    trainer.callbacks.append(StockfishEvalCallback(
-        evaluator,
-        every_n_epochs=config.grpo.eval_every_n_epochs,
-        model_attr="policy_model",
-        run_on_fit_start=run_baseline_eval,
-        init_metric_prefix="eval_stockfish_init",
-    ))
-
-    if config.training.use_wandb:
-        print("Starting training with WandB tracking...")
-    else:
-        print("Starting training with local CSV logging...")
-    trainer.fit(model, dataloader)
+    trainer.fit(module, dataloader)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="default.yaml")
+    parser.add_argument("--config", default="default.yaml")
     args = parser.parse_args()
-    train(config_path=args.config)
+    train(args.config)

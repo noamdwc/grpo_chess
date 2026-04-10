@@ -125,3 +125,11 @@ Directories are created lazily on first write. Research docs follow the template
 | Config | `configs/default.yaml`, `configs/distill.yaml`, `configs/pretrain.yaml`, `configs/config_loader.py` |
 
 All paths relative to `src/`.
+
+## Troubleshooting
+
+- **Reasoning-GRPO failure modes:** see `docs/reasoning_grpo/failure_modes.md`.
+  When you add a safety check, a metric, or a handling path for an observed
+  failure, also write it up in that file with symptom / how you'll notice /
+  recovery / history. Leave an inline comment at the code site that says the
+  same thing in its own words.

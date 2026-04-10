@@ -10,4 +10,4 @@ def test_import_src_does_not_eagerly_import_pytorch_lightning(monkeypatch):
 
     assert "pytorch_lightning" not in sys.modules
     # Accessing a lightweight lazy export should still work.
-    assert src.ChessTransformerConfig is not None
+    assert src.EvalConfig is not None

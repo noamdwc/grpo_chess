@@ -23,11 +23,15 @@ If ONLY the float32 test fails while float64 still passes at 1e-10, the port
 is correct and the float32 threshold is the thing to reconsider — but only
 after confirming float64 parity is still tight.
 
-Skipped if the converted checkpoint is missing (run src.dm_port.convert_jax).
+Skipped if the converted checkpoint, JAX checkpoint, or JAX environment is
+missing (run src.dm_port.convert_jax, sync searchless_chess checkpoints, and
+install JAX).
 """
-# JAX defaults to float32 on CPU. We need float64 for the hard-gate test,
-# and that requires enabling x64 BEFORE any jax import — so set the env var
-# here at module load, long before `_jax_logits` imports JAX.
+# JAX defaults to float32 on CPU. We need float64 for the hard-gate test.
+# `tests/conftest.py` sets this before test collection imports any JAX-using
+# modules; keep the local fallback so the file also behaves correctly when run
+# on its own outside the full suite.
+import importlib
 import os
 os.environ.setdefault("JAX_ENABLE_X64", "True")
 
@@ -39,11 +43,36 @@ import torch
 
 from src.searchless_chess_imports import tokenize
 
-CKPT = Path("checkpoints/dm_port/9M.pt")
+TESTS_DIR = Path(__file__).resolve().parent
+REPO_ROOT = TESTS_DIR.parent
+CKPT = REPO_ROOT / "checkpoints" / "dm_port" / "9M.pt"
+SEARCHLESS_CHESS_CKPT_DIR = REPO_ROOT / "searchless_chess" / "checkpoints"
+JAX_CKPT = SEARCHLESS_CHESS_CKPT_DIR / "9M"
+
+_MISSING_PREREQ_REASON = (
+    "DM port checkpoint, JAX checkpoint, or JAX environment missing; run "
+    "src.dm_port.convert_jax, sync searchless_chess checkpoints, and install JAX."
+)
+
+
+def _parity_test_skip_reason() -> str | None:
+    if not CKPT.exists():
+        return _MISSING_PREREQ_REASON
+
+    if not JAX_CKPT.exists():
+        return _MISSING_PREREQ_REASON
+
+    try:
+        importlib.import_module("jax")
+    except ImportError:
+        return _MISSING_PREREQ_REASON
+
+    return None
+
 
 pytestmark = pytest.mark.skipif(
-    not CKPT.exists(),
-    reason="DM port checkpoint missing; run src.dm_port.convert_jax first.",
+    (_PARITY_TEST_SKIP_REASON := _parity_test_skip_reason()) is not None,
+    reason=_PARITY_TEST_SKIP_REASON or "",
 )
 
 # 32 diverse FENs spanning openings, middlegames, endgames, tactical
@@ -141,7 +170,7 @@ def _jax_logits(fens, *, dtype: str, model_name: str = "9M") -> np.ndarray:
         )
     )
     params = sc_training_utils.load_parameters(
-        checkpoint_dir=os.path.abspath(f"searchless_chess/checkpoints/{model_name}"),
+        checkpoint_dir=os.path.abspath(SEARCHLESS_CHESS_CKPT_DIR / model_name),
         params=predictor.initial_params(
             rng=jrandom.PRNGKey(1),
             targets=np.ones((1, 1), dtype=np.uint32),

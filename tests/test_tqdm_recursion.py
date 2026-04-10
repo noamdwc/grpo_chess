@@ -10,6 +10,9 @@ import sys
 import unittest
 from unittest.mock import patch, MagicMock
 
+import torch
+import torch.nn as nn
+
 
 class TestTqdmRecursionSafety(unittest.TestCase):
     """Verify that eval_utils avoids tqdm-triggered RecursionError."""
@@ -46,9 +49,17 @@ class TestTqdmRecursionSafety(unittest.TestCase):
         from src.eval_utils import evaluate_policy_vs_stockfish, EvalConfig
         from src.chess.stockfish import StockfishConfig, StockfishPlayer
         from src.chess.policy_player import PolicyPlayer, PolicyConfig
-        from src.models import ChessTransformer, ChessTransformerConfig
 
-        model = ChessTransformer(ChessTransformerConfig())
+        class DummyPolicyModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.logits = nn.Parameter(torch.zeros(1, 1968))
+
+            def forward(self, board_tensor):
+                del board_tensor
+                return self.logits
+
+        model = DummyPolicyModel()
         policy = PolicyPlayer(model, cfg=PolicyConfig(greedy=True))
         sf = StockfishPlayer(StockfishConfig(), engine_name="test_recursion")
         eval_cfg = EvalConfig(games=2, max_plies=10)

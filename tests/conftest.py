@@ -1,6 +1,10 @@
 """Pytest configuration for the test suite."""
+import os
 import sys
 from pathlib import Path
+
+# JAX must see this before any import to enable real float64 tests on CPU.
+os.environ.setdefault("JAX_ENABLE_X64", "True")
 
 # Add the project root to sys.path so that 'src' module can be imported
 project_root = Path(__file__).parent.parent
