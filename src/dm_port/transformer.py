@@ -7,7 +7,7 @@ tests/test_dm_port_parity.py is the contract: if its thresholds fail, fix this
 file, do not relax the thresholds.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import torch
