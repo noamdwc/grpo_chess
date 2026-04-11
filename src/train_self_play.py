@@ -15,6 +15,7 @@ from src.trainer import get_trainer
 def train(
     config_path: str = "default.yaml",
     overrides: dict[str, dict[str, Any]] | None = None,
+    resume_from_checkpoint: str | None = None,
 ) -> None:
     cfg = load_experiment_config(config_path, overrides=overrides)
 
@@ -29,11 +30,12 @@ def train(
         use_wandb=cfg.training.use_wandb,
         wandb_project=cfg.training.wandb_project,
     )
-    trainer.fit(module, dataloader)
+    trainer.fit(module, dataloader, ckpt_path=resume_from_checkpoint)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="default.yaml")
+    parser.add_argument("--resume_from_checkpoint", default=None)
     args = parser.parse_args()
-    train(args.config)
+    train(args.config, resume_from_checkpoint=args.resume_from_checkpoint)
