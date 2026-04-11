@@ -33,6 +33,13 @@ def test_main_notebook_exposes_mode_and_drive_parameters():
     assert "RESUME_CHECKPOINT_OR_DIR" in source
 
 
+def test_main_notebook_bootstraps_missing_base_checkpoint():
+    source = _notebook_sources(MAIN_NOTEBOOK)
+    assert "https://storage.googleapis.com/searchless_chess/checkpoints/9M.zip" in source
+    assert "src.dm_port.convert_jax" in source
+    assert "if not base_checkpoint.exists()" in source
+
+
 def test_committed_colab_config_loads_with_current_config_loader():
     from src.configs.config_loader import load_experiment_config
 
