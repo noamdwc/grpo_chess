@@ -36,14 +36,16 @@ Notes:
 
 ### Running in Google Colab (Primary Method)
 
-The main way to run this code is through the `chess_model_run_git.ipynb` notebook in Google Colab:
+The main way to run this branch in Google Colab is through `chess_model_run_git.ipynb`.
 
-1. Open `chess_model_run_git.ipynb` in Google Colab
-2. The notebook handles:
-   - Repository cloning and setup
-   - Dependency installation
-   - Stockfish installation
-   - Model training and evaluation
+This notebook handles:
+- Google Drive mounting for persistent checkpoints and caches
+- repository clone and dependency installation
+- Drive-local checkpoint preparation
+- reasoning-GRPO fine-tuning through `src.train_self_play`
+- `smoke`, `full`, and checkpoint-based `resume` modes
+
+`grpo_9m_colab.ipynb` and `full_pipeline_notebook.ipynb` are legacy notebooks kept only for reference.
 
 ### Local Development
 
@@ -83,7 +85,9 @@ pip install -r requirements.txt
 
 ```
 grpo_chess/
-├── chess_model_run_git.ipynb    # Main training notebook (Colab)
+├── chess_model_run_git.ipynb    # Main reasoning-GRPO Colab notebook
+├── grpo_9m_colab.ipynb          # Legacy notebook (historical reference)
+├── full_pipeline_notebook.ipynb # Legacy notebook (historical reference)
 ├── src/
 │   ├── models.py                # Chess transformer architecture
 │   ├── trainer.py               # PyTorch Lightning trainer
