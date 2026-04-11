@@ -10,11 +10,13 @@ import pytorch_lightning as pl
 import torch
 
 from src.chess.rewards import evaluate_leaf
+from src.chess.stockfish import StockfishConfig, StockfishPlayer
 from src.configs.config_loader import ExperimentConfig, ModelConfig
 from src.grpo_logic.reasoning_loss import ReasoningLossConfig, reasoning_loss
 from src.reasoning.model import ReasoningModel, ReasoningModelConfig
 from src.reasoning.real_play import play_final_and_respond
 from src.reasoning.sampler import rollout_batch
+from src.searchless_chess_imports import ACTION_TO_MOVE
 
 
 def _build_reasoning_model(model_cfg: ModelConfig) -> ReasoningModel:
@@ -43,6 +45,17 @@ class ReasoningGRPOLightningModule(pl.LightningModule):
             kl_coef=experiment_cfg.grpo.kl_coef,
             value_coef=experiment_cfg.model.value_head.coef,
         )
+        self.frozen_rival_model: ReasoningModel | None = None
+        if experiment_cfg.rival.mode == "frozen_dm_9m":
+            rival_model_cfg = ReasoningModelConfig(
+                dm_checkpoint=experiment_cfg.rival.frozen_dm_9m.checkpoint_path,
+                max_seq_len=experiment_cfg.model.max_seq_len,
+                value_head_hidden=experiment_cfg.model.value_head.hidden_dim,
+                freeze_body=True,
+            )
+            self.frozen_rival_model = ReasoningModel(rival_model_cfg).eval()
+            for param in self.frozen_rival_model.parameters():
+                param.requires_grad_(False)
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
         return torch.optim.AdamW(
@@ -54,6 +67,59 @@ class ReasoningGRPOLightningModule(pl.LightningModule):
         """Sync the old policy once per epoch to match the intended PPO contract."""
         self.old_policy_model.load_state_dict(self.policy_model.state_dict())
         self.old_policy_model.eval()
+
+    def _recompute_log_probs(
+        self,
+        tokens: torch.Tensor,
+        seq_lens: torch.Tensor,
+        final_move_positions: torch.Tensor,
+    ) -> torch.Tensor:
+        rollout_temperature = self.cfg.grpo.rollout_temperature
+        log_probs = self.policy_model.logprob_sequence(tokens, seq_lens, temperature=rollout_temperature)
+        move_temperature = self.cfg.grpo.move_sampling_temperature
+        if move_temperature == rollout_temperature:
+            return log_probs
+
+        move_log_probs = self.policy_model.logprob_sequence(tokens, seq_lens, temperature=move_temperature)
+        batch_idx = torch.arange(tokens.shape[0], device=tokens.device)
+        log_probs[batch_idx, final_move_positions] = move_log_probs[batch_idx, final_move_positions]
+        return log_probs
+
+    def _post_fen_after_rival(
+        self,
+        *,
+        root_fen: str,
+        final_token: int,
+        stockfish_player: StockfishPlayer | None = None,
+    ) -> tuple[str, bool]:
+        rival_mode = self.cfg.rival.mode
+        if rival_mode == "self_play":
+            return play_final_and_respond(
+                model=self.old_policy_model,
+                root_fen=root_fen,
+                m_final_token=final_token,
+            )
+        if rival_mode == "frozen_dm_9m":
+            if self.frozen_rival_model is None:
+                raise RuntimeError("frozen_dm_9m rival requested but frozen_rival_model is not initialized")
+            return play_final_and_respond(
+                model=self.frozen_rival_model,
+                root_fen=root_fen,
+                m_final_token=final_token,
+            )
+        if rival_mode == "stockfish":
+            if stockfish_player is None:
+                raise RuntimeError("stockfish rival requested but no stockfish player was provided")
+            board = chess.Board(root_fen)
+            board.push(chess.Move.from_uci(ACTION_TO_MOVE[final_token]))
+            if board.is_game_over(claim_draw=True):
+                return board.fen(), True
+            rival_move = stockfish_player.act(board)
+            if rival_move is None:
+                return board.fen(), board.is_game_over(claim_draw=True)
+            board.push(rival_move)
+            return board.fen(), board.is_game_over(claim_draw=True)
+        raise ValueError(f"Unknown rival mode: {rival_mode}")
 
     def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         del batch_idx
@@ -73,26 +139,44 @@ class ReasoningGRPOLightningModule(pl.LightningModule):
 
         rewards: list[float] = []
         v_targets: list[float] = []
-        for sample_idx, root_fen in enumerate(result.root_fens_replayed):
-            pov_is_white = chess.Board(root_fen).turn == chess.WHITE
-            final_token = int(
-                result.token_sequences[sample_idx, int(result.final_move_positions[sample_idx].item())].item()
+        stockfish_player = None
+        if self.cfg.rival.mode == "stockfish":
+            stockfish_player = StockfishPlayer(
+                StockfishConfig(
+                    path=self.cfg.stockfish.path,
+                    skill_level=self.cfg.rival.stockfish.skill_level,
+                    use_elo_limit=self.cfg.stockfish.use_elo_limit,
+                    elo=self.cfg.stockfish.elo,
+                    movetime_ms=self.cfg.rival.stockfish.movetime_ms,
+                    threads=self.cfg.stockfish.threads,
+                    hash_mb=self.cfg.stockfish.hash_mb,
+                ),
+                engine_name=f"reasoning_rival_{id(self)}",
             )
-            post_fen, _ = play_final_and_respond(
-                model=self.old_policy_model,
-                root_fen=root_fen,
-                m_final_token=final_token,
-            )
-            rewards.append(
-                evaluate_leaf(post_fen, pov_is_white=pov_is_white, mode=self.cfg.leaf_evaluator.mode)
-            )
-            v_targets.append(
-                evaluate_leaf(
-                    result.imagined_leaf_fens[sample_idx],
-                    pov_is_white=pov_is_white,
-                    mode=self.cfg.leaf_evaluator.mode,
+        try:
+            for sample_idx, root_fen in enumerate(result.root_fens_replayed):
+                pov_is_white = chess.Board(root_fen).turn == chess.WHITE
+                final_token = int(
+                    result.token_sequences[sample_idx, int(result.final_move_positions[sample_idx].item())].item()
                 )
-            )
+                post_fen, _ = self._post_fen_after_rival(
+                    root_fen=root_fen,
+                    final_token=final_token,
+                    stockfish_player=stockfish_player,
+                )
+                rewards.append(
+                    evaluate_leaf(post_fen, pov_is_white=pov_is_white, mode=self.cfg.leaf_evaluator.mode)
+                )
+                v_targets.append(
+                    evaluate_leaf(
+                        result.imagined_leaf_fens[sample_idx],
+                        pov_is_white=pov_is_white,
+                        mode=self.cfg.leaf_evaluator.mode,
+                    )
+                )
+        finally:
+            if stockfish_player is not None:
+                stockfish_player.close()
 
         tokens = result.token_sequences.to(self.device)
         seq_lens = result.seq_lens.to(self.device)
@@ -103,11 +187,7 @@ class ReasoningGRPOLightningModule(pl.LightningModule):
         rewards_t = torch.tensor(rewards, dtype=torch.float32, device=self.device)
         v_target_t = torch.tensor(v_targets, dtype=torch.float32, device=self.device)
 
-        log_probs_new = self.policy_model.logprob_sequence(
-            tokens,
-            seq_lens,
-            temperature=rollout_temperature,
-        )
+        log_probs_new = self._recompute_log_probs(tokens, seq_lens, final_move_positions)
         out_new = self.policy_model(tokens, seq_lens)
         v_hat = self.policy_model.value_at_end_think(out_new.hidden, end_think_positions)
 

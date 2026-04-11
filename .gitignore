@@ -2,4 +2,17 @@
 .cursor-mcp-config.json
 *__pycache__/
 .env
+.DS_Store
+.claude/worktrees/
+artifacts/
+checkpoints/*.ckpt
+interview_presentation/build/
+job-*.log
+lightning_logs/
+tmp_logs/
+wandb/
+searchless_chess
+docs/reasoning_grpo/task_review_index.md
+docs/superpowers/plans/
+src/configs/Untitled
 checkpoints/dm_port/

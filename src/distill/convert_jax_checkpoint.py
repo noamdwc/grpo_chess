@@ -14,6 +14,7 @@ the matching Searchless9MConfig for the selected model size.
 """
 
 import argparse
+import importlib
 import os
 import sys
 from pathlib import Path
@@ -67,6 +68,55 @@ def _resolve_model_config(model_name: str) -> dict[str, int]:
         "num_heads": int(cfg["num_heads"]),
         "ffn_dim": 4 * embed_dim,
     }
+
+
+def _verify_converted_state_dict(
+    sd: dict[str, torch.Tensor],
+    model_cfg: dict[str, int],
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Best-effort verification against the legacy 9M PyTorch model, if present."""
+    try:
+        models_9m = importlib.import_module("src.models_9m")
+    except ModuleNotFoundError:
+        return (
+            {
+                "verification_skipped": True,
+                "verification_reason": "src.models_9m not available",
+            },
+            {},
+        )
+
+    model = models_9m.Searchless9MTransformer(
+        models_9m.Searchless9MConfig(
+            embed_dim=model_cfg["embed_dim"],
+            num_layers=model_cfg["num_layers"],
+            num_heads=model_cfg["num_heads"],
+            ffn_dim=model_cfg["ffn_dim"],
+        )
+    )
+    missing, unexpected = model.load_state_dict(sd, strict=True)
+    if missing or unexpected:
+        print(f"WARNING — missing keys: {missing}")
+        print(f"WARNING — unexpected keys: {unexpected}")
+    else:
+        print("strict=True load succeeded — all keys matched.")
+
+    dummy_input = torch.zeros((1, 79), dtype=torch.long)
+    with torch.no_grad():
+        out = model(dummy_input)
+    print(f"Forward pass OK — output shape: {out.shape}")
+
+    summary = {
+        "verification_skipped": False,
+        "missing_keys": len(missing),
+        "unexpected_keys": len(unexpected),
+        "forward_pass_output_shape": list(out.shape),
+        "load_strict": True,
+    }
+    extras = {
+        "n_params": sum(p.numel() for p in model.parameters()),
+    }
+    return summary, extras
 
 
 # ---------------------------------------------------------------------------
@@ -220,30 +270,10 @@ def convert(
     torch.save({"model_state_dict": sd}, output)
     print(f"\nSaved {len(sd)} tensors → {output}")
 
-    # --- Verification: load into Searchless9MTransformer with matching size ---
-    from src.models_9m import Searchless9MConfig, Searchless9MTransformer
-    model = Searchless9MTransformer(
-        Searchless9MConfig(
-            embed_dim=model_cfg["embed_dim"],
-            num_layers=model_cfg["num_layers"],
-            num_heads=model_cfg["num_heads"],
-            ffn_dim=model_cfg["ffn_dim"],
-        )
-    )
-    missing, unexpected = model.load_state_dict(sd, strict=True)
-    if missing or unexpected:
-        print(f"WARNING — missing keys: {missing}")
-        print(f"WARNING — unexpected keys: {unexpected}")
-    else:
-        print("strict=True load succeeded — all keys matched.")
+    verification_summary, verification_extras = _verify_converted_state_dict(sd, model_cfg)
+    if verification_summary.get("verification_skipped"):
+        print(f"Verification skipped — {verification_summary['verification_reason']}")
 
-    # Quick forward pass to confirm no shape errors
-    dummy_input = torch.zeros((1, 79), dtype=torch.long)
-    with torch.no_grad():
-        out = model(dummy_input)
-    print(f"Forward pass OK — output shape: {out.shape}")  # expect [1, 79, 128]
-
-    n_params = sum(p.numel() for p in model.parameters())
     summary = {
         "model_name": model_name,
         "embed_dim": model_cfg["embed_dim"],
@@ -252,13 +282,10 @@ def convert(
         "ffn_dim": model_cfg["ffn_dim"],
         "step": step,
         "output_path": output,
-        "n_params": n_params,
         "n_state_dict_keys": len(sd),
-        "missing_keys": len(missing),
-        "unexpected_keys": len(unexpected),
-        "forward_pass_output_shape": list(out.shape),
-        "load_strict": True,
     }
+    summary.update(verification_summary)
+    summary.update(verification_extras)
 
     # Log to WandB if API key is available
     wandb_key = os.environ.get("WANDB_API_KEY") or os.environ.get("WANDB_KEY")
@@ -276,7 +303,7 @@ def convert(
                     "checkpoint_step": step,
                     "checkpoint_dir": checkpoint_dir,
                     "output_path": output,
-                    "n_params": n_params,
+                    "n_params": verification_extras.get("n_params"),
                 },
             )
             wandb.summary.update(summary)
