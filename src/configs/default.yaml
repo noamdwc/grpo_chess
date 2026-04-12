@@ -9,7 +9,7 @@ model:
   value_head:
     enabled: true
     hidden_dim: 256
-    coef: 0.5
+    coef: 0.05
 
 reasoning:
   min_think_tokens: 2
@@ -23,7 +23,7 @@ grpo:
   lr: 1.0e-6
   clip_ratio: 0.20
   kl_coef: 0.001
-  ppo_epochs: 1
+  ppo_epochs: 4
   rollout_temperature: 1.0
   move_sampling_temperature: 1.0
   eval_every_n_epochs: 10
