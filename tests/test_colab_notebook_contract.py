@@ -38,6 +38,7 @@ def test_main_notebook_bootstraps_missing_base_checkpoint():
     assert "https://storage.googleapis.com/searchless_chess/checkpoints/9M.zip" in source
     assert "src.dm_port.convert_jax" in source
     assert "if not base_checkpoint.exists()" in source
+    assert "scripts/setup_distill_deps.sh --checkpoint 9M --skip-checkpoint" in source
 
 
 def test_committed_colab_config_loads_with_current_config_loader():
