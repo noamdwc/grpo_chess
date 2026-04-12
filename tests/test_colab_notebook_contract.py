@@ -23,6 +23,7 @@ def test_main_notebook_targets_reasoning_grpo_entrypoint():
     assert "dataloader_kwargs" not in source
     assert "src.pretrain.pretrain" not in source
     assert "src.distill.distill" not in source
+    assert 'os.chdir("/content")' in source
 
 
 def test_main_notebook_exposes_mode_and_drive_parameters():
@@ -39,6 +40,9 @@ def test_main_notebook_bootstraps_missing_base_checkpoint():
     assert "src.dm_port.convert_jax" in source
     assert "if not base_checkpoint.exists()" in source
     assert "scripts/setup_distill_deps.sh --checkpoint 9M --skip-checkpoint" in source
+    assert "capture_output=True" in source
+    assert "Converter stdout:" in source
+    assert "Converter stderr:" in source
 
 
 def test_committed_colab_config_loads_with_current_config_loader():
