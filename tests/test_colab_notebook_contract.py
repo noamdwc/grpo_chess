@@ -28,6 +28,7 @@ def test_main_notebook_targets_reasoning_grpo_entrypoint():
     assert '%pip install -q --force-reinstall --no-cache-dir pillow' in source
     assert 'os.kill(os.getpid(), signal.SIGKILL)' in source
     assert 'Restarting runtime to load fresh binary modules' in source
+    assert "!apt-get -qq install -y stockfish" in source
 
 
 def test_main_notebook_exposes_mode_and_drive_parameters():
@@ -41,12 +42,15 @@ def test_main_notebook_exposes_mode_and_drive_parameters():
 def test_main_notebook_bootstraps_missing_base_checkpoint():
     source = _notebook_sources(MAIN_NOTEBOOK)
     assert "https://storage.googleapis.com/searchless_chess/checkpoints/9M.zip" in source
+    assert "https://storage.googleapis.com/searchless_chess/checkpoints/136M.zip" in source
     assert "src.dm_port.convert_jax" in source
     assert "if not base_checkpoint.exists()" in source
     assert "scripts/setup_distill_deps.sh --checkpoint 9M --skip-checkpoint" in source
     assert "capture_output=True" in source
     assert "Converter stdout:" in source
     assert "Converter stderr:" in source
+    assert "searchless_chess/checkpoints/136M" in source
+    assert "symlink_to" in source
 
 
 def test_committed_colab_config_loads_with_current_config_loader():
@@ -57,3 +61,5 @@ def test_committed_colab_config_loads_with_current_config_loader():
     assert cfg.model.base_checkpoint
     assert cfg.training.checkpoint_dir
     assert cfg.reasoning.max_think_tokens >= cfg.reasoning.min_think_tokens
+    assert cfg.leaf_evaluator.mode == "dm_value_head"
+    assert cfg.leaf_evaluator.dm_value_head.model == "136M"
