@@ -44,6 +44,9 @@ def test_main_notebook_keeps_wandb_available_in_smoke_mode():
     assert 'USE_WANDB = True' in source
     assert '"use_wandb": False' not in source
     assert 'mode != "smoke"' not in source
+    assert "from google.colab import userdata" in source
+    assert 'os.environ["WANDB_API_KEY"] = userdata.get("WANDB_API_KEY")' in source
+    assert "!wandb login" in source
 
 
 def test_main_notebook_bootstraps_missing_base_checkpoint():
