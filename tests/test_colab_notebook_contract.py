@@ -39,6 +39,13 @@ def test_main_notebook_exposes_mode_and_drive_parameters():
     assert "RESUME_CHECKPOINT_OR_DIR" in source
 
 
+def test_main_notebook_keeps_wandb_available_in_smoke_mode():
+    source = _notebook_sources(MAIN_NOTEBOOK)
+    assert 'USE_WANDB = True' in source
+    assert '"use_wandb": False' not in source
+    assert 'mode != "smoke"' not in source
+
+
 def test_main_notebook_bootstraps_missing_base_checkpoint():
     source = _notebook_sources(MAIN_NOTEBOOK)
     assert "https://storage.googleapis.com/searchless_chess/checkpoints/9M.zip" in source
