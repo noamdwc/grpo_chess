@@ -380,6 +380,7 @@ def _play_stockfish_match(model, n_games: int, stockfish_level: int, seed: int, 
         for game_idx in range(n_games):
             board = chess.Board()
             model_color = chess.WHITE if game_idx % 2 == 0 else chess.BLACK
+            stockfish_failed = False
             while not board.is_game_over(claim_draw=True):
                 if board.turn == model_color:
                     result = rollout_batch(
@@ -397,8 +398,12 @@ def _play_stockfish_match(model, n_games: int, stockfish_level: int, seed: int, 
                 else:
                     reply = stockfish.act(board)
                     if reply is None:
+                        stockfish_failed = True
                         break
                     board.push(reply)
+            if stockfish_failed:
+                total += 1.0
+                continue
             outcome = board.outcome(claim_draw=True)
             if outcome is None or outcome.winner is None:
                 total += 0.5

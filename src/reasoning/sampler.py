@@ -24,6 +24,7 @@ class RolloutResult:
     seq_lens: torch.Tensor
     log_probs_old: torch.Tensor
     sampled_mask: torch.Tensor
+    legal_token_mask: torch.Tensor
     end_think_positions: torch.Tensor
     final_move_positions: torch.Tensor
     imagined_leaf_fens: list[str]
@@ -100,6 +101,7 @@ def rollout_batch(
     seq = torch.zeros((num_samples, max_len), dtype=torch.long, device=device)
     log_probs = torch.zeros((num_samples, max_len), dtype=torch.float32, device=device)
     sampled = torch.zeros((num_samples, max_len), dtype=torch.bool, device=device)
+    legal_token_mask = torch.ones((num_samples, max_len, TOTAL_VOCAB_SIZE), dtype=torch.bool, device=device)
 
     for idx in range(num_samples):
         seq[idx, :FEN_LEN] = torch.from_numpy(fen_token_arrays[idx]).to(device)
@@ -135,6 +137,7 @@ def rollout_batch(
             seq[sample_idx, new_pos] = token_id
             log_probs[sample_idx, new_pos] = log_prob
             sampled[sample_idx, new_pos] = True
+            legal_token_mask[sample_idx, new_pos] = legal
             cur_len[sample_idx] += 1
 
             if token_id == END_THINK_ID:
@@ -170,18 +173,21 @@ def rollout_batch(
         seq[sample_idx, final_pos] = token_id
         log_probs[sample_idx, final_pos] = log_prob
         sampled[sample_idx, final_pos] = True
+        legal_token_mask[sample_idx, final_pos] = legal
         final_move_positions[sample_idx] = final_pos
         cur_len[sample_idx] += 1
 
     token_sequences = seq[:, : int(cur_len.max().item())].clone()
     log_probs_old = log_probs[:, : token_sequences.shape[1]].clone()
     sampled_mask = sampled[:, : token_sequences.shape[1]].clone()
+    legal_token_mask = legal_token_mask[:, : token_sequences.shape[1]].clone()
 
     return RolloutResult(
         token_sequences=token_sequences,
         seq_lens=cur_len.clone(),
         log_probs_old=log_probs_old,
         sampled_mask=sampled_mask,
+        legal_token_mask=legal_token_mask,
         end_think_positions=end_think_positions.clone(),
         final_move_positions=final_move_positions.clone(),
         imagined_leaf_fens=imagined_leaf_fens,

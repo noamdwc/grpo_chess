@@ -148,10 +148,24 @@ class ReasoningModel(nn.Module):
         tokens: torch.Tensor,
         seq_lens: torch.Tensor,
         temperature: float = 1.0,
+        legal_token_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Return log-prob of each token conditional on its prefix. Shape [B, T]."""
+        """Return per-position next-token log-probs aligned to target token indices."""
         out = self.forward(tokens, seq_lens)
         scaled = out.logits / temperature
-        log_probs_all = torch.log_softmax(scaled, dim=-1)
-        gathered = torch.gather(log_probs_all, 2, tokens.unsqueeze(-1)).squeeze(-1)
-        return gathered
+        out_log_probs = torch.zeros(tokens.shape, dtype=scaled.dtype, device=scaled.device)
+        if tokens.shape[1] <= 1:
+            return out_log_probs
+
+        next_token_logits = scaled[:, :-1, :]
+        if legal_token_mask is not None:
+            if legal_token_mask.shape != scaled.shape:
+                raise ValueError(
+                    "legal_token_mask must match logits shape "
+                    f"{scaled.shape}, got {legal_token_mask.shape}"
+                )
+            next_token_logits = next_token_logits.masked_fill(~legal_token_mask[:, 1:, :], float("-inf"))
+        log_probs_all = torch.log_softmax(next_token_logits, dim=-1)
+        gathered = torch.gather(log_probs_all, 2, tokens[:, 1:].unsqueeze(-1)).squeeze(-1)
+        out_log_probs[:, 1:] = gathered
+        return out_log_probs

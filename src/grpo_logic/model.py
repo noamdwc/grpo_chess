@@ -73,14 +73,25 @@ class ReasoningGRPOLightningModule(pl.LightningModule):
         tokens: torch.Tensor,
         seq_lens: torch.Tensor,
         final_move_positions: torch.Tensor,
+        legal_token_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         rollout_temperature = self.cfg.grpo.rollout_temperature
-        log_probs = self.policy_model.logprob_sequence(tokens, seq_lens, temperature=rollout_temperature)
+        log_probs = self.policy_model.logprob_sequence(
+            tokens,
+            seq_lens,
+            temperature=rollout_temperature,
+            legal_token_mask=legal_token_mask,
+        )
         move_temperature = self.cfg.grpo.move_sampling_temperature
         if move_temperature == rollout_temperature:
             return log_probs
 
-        move_log_probs = self.policy_model.logprob_sequence(tokens, seq_lens, temperature=move_temperature)
+        move_log_probs = self.policy_model.logprob_sequence(
+            tokens,
+            seq_lens,
+            temperature=move_temperature,
+            legal_token_mask=legal_token_mask,
+        )
         batch_idx = torch.arange(tokens.shape[0], device=tokens.device)
         log_probs[batch_idx, final_move_positions] = move_log_probs[batch_idx, final_move_positions]
         return log_probs
@@ -187,7 +198,12 @@ class ReasoningGRPOLightningModule(pl.LightningModule):
         rewards_t = torch.tensor(rewards, dtype=torch.float32, device=self.device)
         v_target_t = torch.tensor(v_targets, dtype=torch.float32, device=self.device)
 
-        log_probs_new = self._recompute_log_probs(tokens, seq_lens, final_move_positions)
+        log_probs_new = self._recompute_log_probs(
+            tokens,
+            seq_lens,
+            final_move_positions,
+            result.legal_token_mask.to(self.device),
+        )
         out_new = self.policy_model(tokens, seq_lens)
         v_hat = self.policy_model.value_at_end_think(out_new.hidden, end_think_positions)
 

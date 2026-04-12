@@ -149,57 +149,38 @@ def generate_middlegame_position(min_moves: int = 15, max_moves: int = 40) -> ch
 
 
 
-def generate_endgame_position() -> chess.Board: # TODO: This is  not working as expected, it should be a function that generates a random endgame position.
-    """Generate an endgame position by removing pieces from a middlegame position.
-    
-    Returns:
-        Chess board in endgame phase
-    """
-    # Start with a middlegame position
-    board = generate_middlegame_position(min_moves=20, max_moves=35)
-    
-    # Remove pieces to create endgame (keep kings, remove other pieces randomly)
-    pieces_to_remove = []
-    for square in chess.SQUARES:
-        piece = board.piece_at(square)
-        if piece and piece.piece_type != chess.KING:
-            pieces_to_remove.append(square)
-    
-    # Remove random pieces until we have endgame material (<= 12 pieces total)
-    target_pieces = random.randint(6, 12)  # Endgame typically has 6-12 pieces
-    current_pieces = len([p for p in pieces_to_remove if board.piece_at(p)])
-    
-    # We need to remove pieces, but we can't directly remove them from python-chess Board
-    # Instead, we'll generate a new position by making moves that trade pieces
-    # For simplicity, we'll just continue playing until we naturally reach endgame material
-    
-    # Count material
-    def count_material(b: chess.Board) -> int:
+def generate_endgame_position() -> chess.Board:
+    """Generate a valid non-terminal endgame position with low material."""
+
+    def count_non_king_material(b: chess.Board) -> int:
         return sum(
             len(b.pieces(pt, color))
             for pt in [chess.PAWN, chess.ROOK, chess.KNIGHT, chess.BISHOP, chess.QUEEN]
             for color in [chess.WHITE, chess.BLACK]
         )
-    
-    # Play random moves until we reach endgame material
-    max_attempts = 100
-    attempts = 0
-    while count_material(board) > 12 and attempts < max_attempts and not board.is_game_over():
-        legal_moves = list(board.legal_moves)
-        if not legal_moves:
-            break
-        
-        # Prefer captures to reduce material
-        captures = [m for m in legal_moves if board.is_capture(m)]
-        if captures:
-            move = random.choice(captures)
-        else:
-            move = random.choice(legal_moves)
-        
-        board.push(move)
-        attempts += 1
-    
-    return board
+
+    for _ in range(50):
+        board = generate_middlegame_position(min_moves=20, max_moves=35)
+        non_king_squares = [
+            square
+            for square in chess.SQUARES
+            if (piece := board.piece_at(square)) is not None and piece.piece_type != chess.KING
+        ]
+
+        random.shuffle(non_king_squares)
+        target_pieces = random.randint(4, 12)
+        while count_non_king_material(board) > target_pieces and non_king_squares:
+            board.remove_piece_at(non_king_squares.pop())
+
+        if not board.is_valid():
+            continue
+        if board.is_game_over(claim_draw=True):
+            continue
+        if count_non_king_material(board) > 12:
+            continue
+        return board
+
+    raise RuntimeError("Failed to generate a valid endgame position")
 
 
 

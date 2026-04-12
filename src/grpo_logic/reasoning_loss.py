@@ -27,6 +27,15 @@ class ReasoningLossOutput(NamedTuple):
     advantage_std: torch.Tensor
 
 
+def build_final_move_mask(result: RolloutResult) -> torch.Tensor:
+    """Mask only the real move decision that receives the environment reward."""
+    num_samples, seq_len = result.token_sequences.shape
+    mask = torch.zeros((num_samples, seq_len), dtype=torch.bool, device=result.token_sequences.device)
+    batch_idx = torch.arange(num_samples, device=result.token_sequences.device)
+    mask[batch_idx, result.final_move_positions] = True
+    return mask & result.sampled_mask
+
+
 def compute_group_advantages(rewards: torch.Tensor, group_size: int, eps: float = 1e-6) -> torch.Tensor:
     """Reshape to [B, K], normalize per row, reshape back to [B*K]."""
     total = rewards.shape[0]
@@ -77,17 +86,18 @@ def reasoning_loss(
         raise ValueError("log_probs_new shape must match rollout token shape")
 
     adv_per_sample = compute_group_advantages(rewards, group_size, eps=cfg.adv_eps)
+    policy_mask = build_final_move_mask(result)
     advantages = adv_per_sample[:, None].expand(num_samples, seq_len)
 
     ppo = ppo_surrogate(
         log_probs_old=result.log_probs_old,
         log_probs_new=log_probs_new,
         advantages=advantages,
-        sampled_mask=result.sampled_mask,
+        sampled_mask=policy_mask,
         clip_ratio=cfg.clip_ratio,
     )
 
-    mask = result.sampled_mask.float()
+    mask = policy_mask.float()
     per_pos_kl = result.log_probs_old - log_probs_new
     kl = (per_pos_kl * mask).sum() / mask.sum().clamp_min(1.0)
     value = compute_value_loss(v_hat, v_target)
@@ -97,7 +107,7 @@ def reasoning_loss(
         ratio = torch.exp(log_probs_new - result.log_probs_old)
         clip_lo = 1.0 - cfg.clip_ratio
         clip_hi = 1.0 + cfg.clip_ratio
-        clipped = ((ratio < clip_lo) | (ratio > clip_hi)) & result.sampled_mask
+        clipped = ((ratio < clip_lo) | (ratio > clip_hi)) & policy_mask
         clip_fraction = clipped.float().sum() / mask.sum().clamp_min(1.0)
         ratio_mean = (ratio * mask).sum() / mask.sum().clamp_min(1.0)
         advantage_mean = adv_per_sample.mean()

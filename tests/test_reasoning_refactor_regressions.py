@@ -54,8 +54,8 @@ def test_recompute_log_probs_uses_move_temperature_for_final_move():
     from src.grpo_logic.model import ReasoningGRPOLightningModule
 
     class DummyPolicy:
-        def logprob_sequence(self, tokens, seq_lens, temperature):
-            del tokens, seq_lens
+        def logprob_sequence(self, tokens, seq_lens, temperature, legal_token_mask=None):
+            del tokens, seq_lens, legal_token_mask
             return torch.full((2, 5), float(temperature))
 
     fake = SimpleNamespace(
@@ -71,7 +71,12 @@ def test_recompute_log_probs_uses_move_temperature_for_final_move():
     seq_lens = torch.tensor([5, 5], dtype=torch.long)
     final_positions = torch.tensor([3, 4], dtype=torch.long)
 
-    out = ReasoningGRPOLightningModule._recompute_log_probs(fake, tokens, seq_lens, final_positions)
+    out = ReasoningGRPOLightningModule._recompute_log_probs(
+        fake,
+        tokens,
+        seq_lens,
+        final_positions,
+    )
     assert out[0, 2].item() == pytest_approx(0.7)
     assert out[0, 3].item() == pytest_approx(1.3)
     assert out[1, 4].item() == pytest_approx(1.3)
@@ -171,7 +176,9 @@ def test_training_step_logs_with_explicit_batch_size(monkeypatch):
         old_policy_model=object(),
         policy_model=DummyPolicy(),
         _post_fen_after_rival=lambda **kwargs: (kwargs["root_fen"], False),
-        _recompute_log_probs=lambda tokens, seq_lens, final_move_positions: torch.zeros_like(tokens, dtype=torch.float32),
+        _recompute_log_probs=lambda tokens, seq_lens, final_move_positions, legal_token_mask=None: torch.zeros_like(
+            tokens, dtype=torch.float32
+        ),
         log_dict=lambda metrics, **kwargs: logged.update({"metrics": metrics, "kwargs": kwargs}),
     )
 
@@ -180,6 +187,7 @@ def test_training_step_logs_with_explicit_batch_size(monkeypatch):
         seq_lens=torch.tensor([3, 3], dtype=torch.long),
         log_probs_old=torch.zeros((2, 3), dtype=torch.float32),
         sampled_mask=torch.tensor([[False, True, True], [False, True, True]], dtype=torch.bool),
+        legal_token_mask=torch.ones((2, 3, 1971), dtype=torch.bool),
         end_think_positions=torch.tensor([1, 1], dtype=torch.long),
         final_move_positions=torch.tensor([2, 2], dtype=torch.long),
         imagined_leaf_fens=[chess.STARTING_FEN, chess.STARTING_FEN],
