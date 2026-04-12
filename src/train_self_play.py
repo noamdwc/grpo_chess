@@ -133,6 +133,7 @@ def build_stockfish_eval_callback(cfg) -> StockfishEvalCallback:
         baseline_evaluator=baseline_evaluator,
         periodic_evaluator=periodic_evaluator,
         every_n_epochs=cfg.grpo.eval_every_n_epochs,
+        model_attr="policy_model",
         metric_prefix="eval_stockfish",
         run_on_fit_start=True,
         init_metric_prefix="eval_stockfish_init",
