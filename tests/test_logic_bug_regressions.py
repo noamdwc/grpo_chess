@@ -89,18 +89,23 @@ def test_play_stockfish_match_counts_missing_stockfish_reply_as_model_win(monkey
 def test_generate_endgame_position_returns_valid_nonterminal_endgame():
     from src.chess.boards_dataset import generate_endgame_position
 
-    board = generate_endgame_position()
-    non_king_material = sum(
-        len(board.pieces(piece_type, color))
-        for piece_type in [chess.PAWN, chess.ROOK, chess.KNIGHT, chess.BISHOP, chess.QUEEN]
-        for color in [chess.WHITE, chess.BLACK]
-    )
+    # Run 200 trials — the old buggy implementation (capture-biased random play)
+    # produces game-over or high-material boards ~3.5% of the time, so a single
+    # call would pass 96.5% of runs.  With 200 trials the false-pass rate drops
+    # to 0.965^200 ≈ 0.08%.
+    for _ in range(200):
+        board = generate_endgame_position()
+        non_king_material = sum(
+            len(board.pieces(piece_type, color))
+            for piece_type in [chess.PAWN, chess.ROOK, chess.KNIGHT, chess.BISHOP, chess.QUEEN]
+            for color in [chess.WHITE, chess.BLACK]
+        )
 
-    assert board.is_valid()
-    assert board.king(chess.WHITE) is not None
-    assert board.king(chess.BLACK) is not None
-    assert not board.is_game_over(claim_draw=True)
-    assert non_king_material <= 12
+        assert board.is_valid()
+        assert board.king(chess.WHITE) is not None
+        assert board.king(chess.BLACK) is not None
+        assert not board.is_game_over(claim_draw=True)
+        assert non_king_material <= 12
 
 
 def test_make_grouped_sample_rejects_singleton_sparse_label_group():
