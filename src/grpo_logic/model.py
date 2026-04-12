@@ -232,5 +232,6 @@ class ReasoningGRPOLightningModule(pl.LightningModule):
             on_step=True,
             on_epoch=True,
             prog_bar=True,
+            batch_size=len(root_fens),
         )
         return loss_result.total

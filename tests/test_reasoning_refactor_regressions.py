@@ -1,4 +1,5 @@
 """Regression tests for review findings on the reasoning refactor."""
+import os
 from types import SimpleNamespace
 
 import chess
@@ -136,6 +137,76 @@ def test_convert_jax_checkpoint_verification_skips_without_models_9m(monkeypatch
     assert summary["verification_skipped"] is True
     assert "verification_reason" in summary
     assert extras == {}
+
+
+def test_training_step_logs_with_explicit_batch_size(monkeypatch):
+    os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+    from src.grpo_logic.model import ReasoningGRPOLightningModule
+    from src.grpo_logic.reasoning_loss import ReasoningLossConfig
+    from src.grpo_logic.reasoning_loss import ReasoningLossOutput
+    from src.reasoning.sampler import RolloutResult
+
+    logged = {}
+
+    class DummyPolicy:
+        def __call__(self, tokens, seq_lens):
+            del seq_lens
+            batch, seq = tokens.shape
+            hidden = torch.ones((batch, seq, 4), dtype=torch.float32)
+            return SimpleNamespace(hidden=hidden)
+
+        def value_at_end_think(self, hidden, end_think_positions):
+            del hidden, end_think_positions
+            return torch.tensor([0.1, 0.2], dtype=torch.float32)
+
+    fake = SimpleNamespace(
+        cfg=SimpleNamespace(
+            grpo=SimpleNamespace(k_samples_per_root=1, rollout_temperature=1.0, move_sampling_temperature=1.0),
+            reasoning=SimpleNamespace(min_think_tokens=1, max_think_tokens=2),
+            rival=SimpleNamespace(mode="self_play"),
+            leaf_evaluator=SimpleNamespace(mode="stockfish"),
+        ),
+        device=torch.device("cpu"),
+        loss_cfg=ReasoningLossConfig(),
+        old_policy_model=object(),
+        policy_model=DummyPolicy(),
+        _post_fen_after_rival=lambda **kwargs: (kwargs["root_fen"], False),
+        _recompute_log_probs=lambda tokens, seq_lens, final_move_positions: torch.zeros_like(tokens, dtype=torch.float32),
+        log_dict=lambda metrics, **kwargs: logged.update({"metrics": metrics, "kwargs": kwargs}),
+    )
+
+    rollout = RolloutResult(
+        token_sequences=torch.tensor([[1, 2, 3], [1, 2, 4]], dtype=torch.long),
+        seq_lens=torch.tensor([3, 3], dtype=torch.long),
+        log_probs_old=torch.zeros((2, 3), dtype=torch.float32),
+        sampled_mask=torch.tensor([[False, True, True], [False, True, True]], dtype=torch.bool),
+        end_think_positions=torch.tensor([1, 1], dtype=torch.long),
+        final_move_positions=torch.tensor([2, 2], dtype=torch.long),
+        imagined_leaf_fens=[chess.STARTING_FEN, chess.STARTING_FEN],
+        root_fens_replayed=[chess.STARTING_FEN, chess.STARTING_FEN],
+        think_tokens=[[1], [1]],
+    )
+
+    monkeypatch.setattr("src.grpo_logic.model.rollout_batch", lambda **kwargs: rollout)
+    monkeypatch.setattr("src.grpo_logic.model.evaluate_leaf", lambda *args, **kwargs: 0.25)
+    monkeypatch.setattr(
+        "src.grpo_logic.model.reasoning_loss",
+        lambda **kwargs: ReasoningLossOutput(
+            total=torch.tensor(1.0),
+            ppo=torch.tensor(0.5),
+            kl=torch.tensor(0.1),
+            value=torch.tensor(0.2),
+            clip_fraction=torch.tensor(0.0),
+            ratio_mean=torch.tensor(1.0),
+            advantage_mean=torch.tensor(0.0),
+            advantage_std=torch.tensor(1.0),
+        ),
+    )
+
+    loss = ReasoningGRPOLightningModule.training_step(fake, [chess.STARTING_FEN, chess.STARTING_FEN], batch_idx=0)
+
+    assert torch.isfinite(loss)
+    assert logged["kwargs"]["batch_size"] == 2
 
 
 def pytest_approx(value):
