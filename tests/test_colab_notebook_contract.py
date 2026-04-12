@@ -24,6 +24,7 @@ def test_main_notebook_targets_reasoning_grpo_entrypoint():
     assert "src.pretrain.pretrain" not in source
     assert "src.distill.distill" not in source
     assert 'os.chdir("/content")' in source
+    assert "!git submodule update --init --recursive" in source
 
 
 def test_main_notebook_exposes_mode_and_drive_parameters():
