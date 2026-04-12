@@ -25,6 +25,7 @@ def test_build_stockfish_eval_callback_uses_baseline_and_periodic_metrics(monkey
     from src.train_self_play import build_stockfish_eval_callback
 
     resolve_calls = []
+    evaluator_kwargs = []
 
     monkeypatch.setattr(
         "src.train_self_play.resolve_stockfish_path",
@@ -32,11 +33,12 @@ def test_build_stockfish_eval_callback_uses_baseline_and_periodic_metrics(monkey
     )
     monkeypatch.setattr(
         "src.train_self_play.ReasoningEvaluator",
-        lambda **kwargs: SimpleNamespace(**kwargs),
+        lambda **kwargs: evaluator_kwargs.append(kwargs) or SimpleNamespace(**kwargs),
     )
 
     cfg = SimpleNamespace(
         grpo=SimpleNamespace(eval_every_n_epochs=7),
+        reasoning=SimpleNamespace(max_think_tokens=9),
         eval=SimpleNamespace(games=64),
         stockfish=SimpleNamespace(path="stockfish"),
     )
@@ -48,6 +50,56 @@ def test_build_stockfish_eval_callback_uses_baseline_and_periodic_metrics(monkey
     assert callback.metric_prefix == "eval_stockfish"
     assert callback.run_on_fit_start is True
     assert callback.init_metric_prefix == "eval_stockfish_init"
+    # Baseline evaluator gets think_tokens=0; periodic gets max_think_tokens.
+    assert [kw["think_tokens"] for kw in evaluator_kwargs] == [0, 9]
+    assert callback.evaluator.think_tokens == 9
+    assert callback._baseline_evaluator.think_tokens == 0
+
+
+def test_split_think_callback_uses_baseline_evaluator_only_on_fit_start():
+    from src.train_self_play import _SplitThinkStockfishEvalCallback
+
+    class RecordingEvaluator:
+        def __init__(self, name):
+            self.name = name
+            self.single_evaluation_calls = 0
+            self.evaluate_and_log_calls = 0
+
+        def single_evaluation(self, model):
+            self.single_evaluation_calls += 1
+            return {
+                "score": 0.5, "elo_diff_vs_stockfish_approx": 0.0, "games": 1,
+                "wins": 0, "draws": 1, "losses": 0, "termination_reasons": {},
+            }, None, []
+
+        def evaluate_and_log(self, pl_module, model, metric_prefix):
+            del pl_module, model, metric_prefix
+            self.evaluate_and_log_calls += 1
+            return {"score": 0.6}
+
+    baseline = RecordingEvaluator("baseline")
+    periodic = RecordingEvaluator("periodic")
+    callback = _SplitThinkStockfishEvalCallback(
+        baseline_evaluator=baseline,
+        periodic_evaluator=periodic,
+        every_n_epochs=1,
+        metric_prefix="eval_stockfish",
+        run_on_fit_start=True,
+        init_metric_prefix="eval_stockfish_init",
+    )
+
+    trainer = SimpleNamespace(logger=None, global_step=0, current_epoch=0)
+    pl_module = SimpleNamespace(model=object(), log=lambda *a, **kw: None)
+
+    callback.on_fit_start(trainer, pl_module)
+    assert baseline.single_evaluation_calls == 1
+    assert periodic.single_evaluation_calls == 0
+    # Evaluator is restored to the periodic one after fit-start.
+    assert callback.evaluator is periodic
+
+    callback.on_train_epoch_end(trainer, pl_module)
+    assert periodic.evaluate_and_log_calls == 1
+    assert baseline.evaluate_and_log_calls == 0
 
 
 def test_reasoning_eval_policy_selects_best_legal_move():
