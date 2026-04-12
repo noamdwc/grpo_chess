@@ -3,8 +3,8 @@ import random
 import string
 import pytorch_lightning as pl
 
-from pytorch_lightning.loggers import WandbLogger, CSVLogger
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import Callback, ModelCheckpoint
+from pytorch_lightning.loggers import CSVLogger, WandbLogger
 
 
 class TaggedModelCheckpoint(ModelCheckpoint):
@@ -43,7 +43,8 @@ def get_trainer(num_epochs: int = 5000,
                 keep_n_checkpoints: int = 3,
                 use_wandb: bool = True,
                 wandb_project: str = "Chess-GRPO-Bot",
-                wandb_log_model: bool = False) -> pl.Trainer:
+                wandb_log_model: bool = False,
+                callbacks: list[Callback] | None = None) -> pl.Trainer:
     """Create a PyTorch Lightning trainer with WandB logging and checkpointing.
 
     Args:
@@ -88,13 +89,17 @@ def get_trainer(num_epochs: int = 5000,
         save_last=True,  # Always keep the very last checkpoint
     )
 
+    trainer_callbacks = [best_checkpoint_cb, periodic_checkpoint_cb]
+    if callbacks:
+        trainer_callbacks.extend(callbacks)
+
     return pl.Trainer(
         max_epochs=num_epochs,
         # Gradient clipping handled manually in GRPOChessTransformer.training_step
         accelerator="auto",
         devices=1,
         logger=logger,
-        callbacks=[best_checkpoint_cb, periodic_checkpoint_cb],
+        callbacks=trainer_callbacks,
         log_every_n_steps=1  # Log every step for GRPO debug
     )
                       

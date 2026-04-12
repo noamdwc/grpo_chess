@@ -20,6 +20,8 @@ def test_main_notebook_targets_reasoning_grpo_entrypoint():
     source = _notebook_sources(MAIN_NOTEBOOK)
     assert "from src.train_self_play import train as grpo_train" in source
     assert "grpo_train(" in source
+    assert "eval_stockfish_init" in source
+    assert "eval_stockfish/" in source
     assert "dataloader_kwargs" not in source
     assert "src.pretrain.pretrain" not in source
     assert "src.distill.distill" not in source
