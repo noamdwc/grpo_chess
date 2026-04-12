@@ -25,6 +25,9 @@ def test_main_notebook_targets_reasoning_grpo_entrypoint():
     assert "src.distill.distill" not in source
     assert 'os.chdir("/content")' in source
     assert "!git submodule update --init --recursive" in source
+    assert '%pip install -q --force-reinstall --no-cache-dir pillow' in source
+    assert 'os.kill(os.getpid(), signal.SIGKILL)' in source
+    assert 'Restarting runtime to load fresh binary modules' in source
 
 
 def test_main_notebook_exposes_mode_and_drive_parameters():
