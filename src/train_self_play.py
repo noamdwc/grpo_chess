@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-import copy
+import dataclasses
 from typing import Any
 
 import chess
@@ -121,8 +121,7 @@ def build_stockfish_eval_callback(cfg) -> StockfishEvalCallback:
             "Set stockfish.path/STOCKFISH_PATH or install stockfish."
         ) from exc
 
-    stockfish_cfg = copy.copy(cfg.stockfish)
-    stockfish_cfg.path = resolved_stockfish
+    stockfish_cfg = dataclasses.replace(cfg.stockfish, path=resolved_stockfish)
 
     baseline_evaluator = ReasoningEvaluator(
         eval_cfg=cfg.eval, stockfish_cfg=stockfish_cfg, think_tokens=0
