@@ -1,0 +1,86 @@
+# Stage 2 midpoint bracket toward the higher side of the threshold ladder.
+# Use this when bracketing between A2 and A3.
+
+model:
+  base_checkpoint: "/content/drive/MyDrive/data/grpo-chess/base/9M.pt"
+  freeze_body: false
+  max_seq_len: 120
+  value_head:
+    enabled: true
+    hidden_dim: 256
+    coef: 0.05
+
+reasoning:
+  min_think_tokens: 2
+  max_think_tokens: 12
+  allow_early_end_think: true
+  legal_mask_think: true
+  exclude_specials_from_gradient: false
+
+grpo:
+  k_samples_per_root: 8
+  lr: 6.5e-6
+  clip_ratio: 0.20
+  kl_coef: 2.0e-4
+  ppo_epochs: 4
+  rollout_temperature: 1.0
+  move_sampling_temperature: 1.0
+  eval_every_n_epochs: 10
+
+rival:
+  mode: "self_play"
+  self_play:
+    think_enabled: false
+    temperature: 0.0
+  frozen_dm_9m:
+    checkpoint_path: "/content/drive/MyDrive/data/grpo-chess/base/9M.pt"
+  stockfish:
+    movetime_ms: 50
+    skill_level: 2
+
+leaf_evaluator:
+  mode: "dm_value_head"
+  dm_value_head:
+    model: "136M"
+    bucket_values_source: "searchless_chess"
+  stockfish:
+    movetime_ms: 50
+    cp_clip: 1000
+
+training:
+  num_epochs: 100
+  batch_size: 16
+  steps_per_epoch: 256
+  checkpoint_dir: "/content/drive/MyDrive/data/grpo-chess/runs/grpo_colab_bracket_b1_mid_high"
+  checkpoint_every_n_epochs: 5
+  keep_n_checkpoints: 3
+  use_wandb: true
+  wandb_project: "Chess-GRPO-Bot"
+
+eval:
+  games: 64
+  seed: 0
+  max_plies: 400
+  randomize_opening: true
+  opening_plies: 6
+  ablation_no_think: true
+
+stockfish:
+  path: "/usr/games/stockfish"
+  skill_level: 2
+  use_elo_limit: false
+  elo: 2500
+  movetime_ms: 50
+  threads: 1
+  hash_mb: 128
+
+dataset:
+  max_steps: 256
+  phase_distribution:
+    opening: 0.33
+    middlegame: 0.34
+    endgame: 0.33
+  min_eval_cp: -200
+  max_eval_cp: 200
+  quality_filter: true
+  stockfish_filter_depth: 4
