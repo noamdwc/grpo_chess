@@ -124,6 +124,8 @@ def rollout_batch(
             board = boards[sample_idx]
             logits = out.logits[sample_idx, int(cur_len[sample_idx].item()) - 1]
             legal = _legal_mask_for_board(board).to(device)
+            if not legal.any():
+                legal[END_THINK_ID] = True
             if step >= min_think_tokens:
                 legal[END_THINK_ID] = True
             if step == max_think_tokens:
