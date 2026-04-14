@@ -4,6 +4,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MAIN_NOTEBOOK = REPO_ROOT / "chess_model_run_git.ipynb"
+DEBUG_NOTEBOOK = REPO_ROOT / "chess_stockfish_eval_debug_colab.ipynb"
 COLAB_CONFIG = REPO_ROOT / "src" / "configs" / "grpo_colab_main.yaml"
 
 
@@ -14,6 +15,10 @@ def _notebook_sources(path: Path) -> str:
 
 def test_main_colab_notebook_exists():
     assert MAIN_NOTEBOOK.exists(), "Main Colab notebook should be committed at repo root"
+
+
+def test_debug_colab_notebook_exists():
+    assert DEBUG_NOTEBOOK.exists(), "Debug Colab notebook should be committed at repo root"
 
 
 def test_main_notebook_targets_reasoning_grpo_entrypoint():
@@ -75,3 +80,15 @@ def test_committed_colab_config_loads_with_current_config_loader():
     assert cfg.reasoning.max_think_tokens >= cfg.reasoning.min_think_tokens
     assert cfg.leaf_evaluator.mode == "dm_value_head"
     assert cfg.leaf_evaluator.dm_value_head.model == "136M"
+
+
+def test_debug_notebook_exposes_drive_checkpoint_eval_flow():
+    source = _notebook_sources(DEBUG_NOTEBOOK)
+    assert "CHECKPOINT_ROOT" in source
+    assert "CHECKPOINT_FILTER" in source
+    assert "CHECKPOINT_INDEX" in source
+    assert "ReasoningEvaluator" in source
+    assert "selected_checkpoint" in source
+    assert "single_evaluation()" in source
+    assert "resolve_stockfish_path" in source
+    assert "All 3 callback-style eval attempts failed" in source
