@@ -28,6 +28,8 @@ def test_ladder_notebook_uses_existing_grpo_runner_flow_and_new_ladder_helpers()
     assert "run.id" in source or '"run_id"' in source
     assert "LAUNCHED_RUNS" in source
     assert "CapturingWandbLogger" in source
+    assert "scan_history returned no rows" in source
+    assert "summary_fallback" in source
     assert "run_experiment(" in source
     assert "stage1_results" in source
     assert "stage2_result" in source
