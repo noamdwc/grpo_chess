@@ -365,23 +365,35 @@ def select_stage2_bracket(results: dict[str, RunAssessment], *, best_stage1: str
     return MID_LOW_CONFIG
 
 
-def choose_confirmation_source(best_stage1: RunAssessment, stage2_result: RunAssessment | None) -> str:
+def choose_confirmation_source(
+    best_stage1: RunAssessment,
+    stage2_result: RunAssessment | None,
+    *,
+    best_stage1_key: str | None = None,
+    stage2_key: str = "B1",
+) -> str:
+    """Return the stage key ("A1"/"A2"/"A3" or "B1") to confirm from.
+
+    best_stage1_key overrides best_stage1.name; callers that store the run
+    label (not the probe key) in .name must pass best_stage1_key explicitly.
+    """
+    winner_key = best_stage1_key if best_stage1_key is not None else best_stage1.name
     if stage2_result is None:
-        return best_stage1.name
+        return winner_key
     if (
         stage2_result.failed
         or stage2_result.inconclusive
         or not stage2_result.stable
         or stage2_result.unstable
     ):
-        return best_stage1.name
+        return winner_key
 
     # Movement score weights ratio / clip / PPO / KL into an approximately 0-3 band.
     # Require a visible gain, or a smaller movement gain plus a real eval nudge.
     movement_gain = stage2_result.movement_score - best_stage1.movement_score
     eval_gain = stage2_result.eval_score - best_stage1.eval_score
     clearly_better = movement_gain >= 0.15 or (movement_gain >= 0.08 and eval_gain >= 0.01)
-    return stage2_result.name if clearly_better else best_stage1.name
+    return stage2_key if clearly_better else winner_key
 
 
 def compute_confirmation_epochs(
