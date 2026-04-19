@@ -1,10 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import dataclasses
+import math
+import statistics
+from collections.abc import Mapping
 
 
 MID_LOW_CONFIG = "grpo_colab_bracket_b1_mid_low.yaml"
 MID_HIGH_CONFIG = "grpo_colab_bracket_b1_mid_high.yaml"
+
+MIN_USABLE_WINDOW = 8
+_REQUIRED_STEP_KEYS = (
+    "train/ratio_step",
+    "train/clip_fraction_step",
+    "train/ppo_loss_step",
+    "train/kl_divergence_step",
+    "train_total_loss_step",
+)
 
 
 @dataclass(frozen=True)
@@ -118,6 +131,154 @@ def assess_recent_history(
     )
 
 
+def _finite_values(rows: list[dict], key: str) -> list[float]:
+    values: list[float] = []
+    for row in rows:
+        value = row.get(key)
+        if value is None:
+            continue
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            values.append(value)
+    return values
+
+
+def _row_is_valid(row: Mapping[str, object]) -> bool:
+    for key in _REQUIRED_STEP_KEYS:
+        if key not in row:
+            return False
+        value = row[key]
+        if value is None:
+            return False
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(value):
+            return False
+    return True
+
+
+def _summarize_history_window(rows: list[dict], eval_score: float) -> HistoryWindow:
+    valid_rows = [row for row in rows if _row_is_valid(row)]
+    if len(valid_rows) < MIN_USABLE_WINDOW:
+        raise RuntimeError(
+            f"insufficient usable rows: {len(valid_rows)} < {MIN_USABLE_WINDOW}"
+        )
+
+    ratios = [float(row["train/ratio_step"]) for row in valid_rows]
+    clips = [float(row["train/clip_fraction_step"]) for row in valid_rows]
+    ppo = [abs(float(row["train/ppo_loss_step"])) for row in valid_rows]
+    kl = [abs(float(row["train/kl_divergence_step"])) for row in valid_rows]
+    losses = [float(row["train_total_loss_step"]) for row in valid_rows]
+
+    def _mean(values: list[float]) -> float:
+        return sum(values) / len(values)
+
+    def _std(values: list[float]) -> float:
+        if len(values) < 2:
+            return 0.0
+        return statistics.pstdev(values)
+
+    return HistoryWindow(
+        ratio_mean=_mean(ratios),
+        ratio_std=_std(ratios),
+        clip_fraction_mean=_mean(clips),
+        clip_fraction_peak=max(clips),
+        ppo_abs_mean=_mean(ppo),
+        kl_abs_mean=_mean(kl),
+        loss_mean=_mean(losses),
+        loss_std=_std(losses),
+        eval_score=eval_score,
+        point_count=len(valid_rows),
+    )
+
+
+def _summary_float(summary: Mapping[str, object], key: str, default: float = 0.0) -> float:
+    value = summary.get(key, default)
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        value = default
+    return value if math.isfinite(value) else default
+
+
+def _summary_history_window(summary: Mapping[str, object]) -> HistoryWindow:
+    ratio = _summary_float(summary, "train/ratio_step", 1.0)
+    clip_fraction = _summary_float(summary, "train/clip_fraction_step", 0.0)
+    ppo_abs = abs(_summary_float(summary, "train/ppo_loss_step", 0.0))
+    kl_abs = abs(_summary_float(summary, "train/kl_divergence_step", 0.0))
+    loss = _summary_float(summary, "train_total_loss_step", _summary_float(summary, "train/loss_step", 0.0))
+    eval_score = _summary_float(summary, "eval_stockfish/score", 0.0)
+    return HistoryWindow(
+        ratio_mean=ratio,
+        ratio_std=0.0,
+        clip_fraction_mean=clip_fraction,
+        clip_fraction_peak=clip_fraction,
+        ppo_abs_mean=ppo_abs,
+        kl_abs_mean=kl_abs,
+        loss_mean=loss,
+        loss_std=0.0,
+        eval_score=eval_score,
+        point_count=1,
+    )
+
+
+def build_assessment_from_wandb_metrics(
+    *,
+    run_name: str,
+    config_name: str,
+    run_id: str,
+    epochs_completed: int,
+    rows: list[dict],
+    summary: Mapping[str, object],
+    history_error: Exception | None = None,
+) -> RunAssessment:
+    fallback_detail = "no rows returned"
+    if rows:
+        recent_rows = rows[-12:]
+        eval_history = _finite_values(rows, "eval_stockfish/score")
+        summary_eval = _summary_float(summary, "eval_stockfish/score", 0.0)
+        try:
+            window = _summarize_history_window(
+                recent_rows,
+                eval_history[-1] if eval_history else summary_eval,
+            )
+            return assess_recent_history(
+                run_name=run_name,
+                config_name=config_name,
+                run_id=run_id,
+                window=window,
+                epochs_completed=epochs_completed,
+            )
+        except RuntimeError as exc:
+            fallback_detail = str(exc)
+
+    window = _summary_history_window(summary)
+    assessment = assess_recent_history(
+        run_name=run_name,
+        config_name=config_name,
+        run_id=run_id,
+        window=window,
+        epochs_completed=epochs_completed,
+    )
+    fallback_reason = f"insufficient_history: {fallback_detail}"
+    if history_error is not None:
+        fallback_reason += f" ({history_error})"
+    return dataclasses.replace(
+        assessment,
+        decision_reason=fallback_reason,
+        inconclusive=True,
+        inert=False,
+        unstable=False,
+        stable=True,
+        stop_reason="",
+    )
+
+
 def build_failed_assessment(
     *,
     run_name: str,
@@ -153,9 +314,13 @@ def _ranking_key(result: RunAssessment) -> tuple[float, ...]:
 
 
 def select_best_stage1_run(results: dict[str, RunAssessment]) -> str:
-    valid = {name: result for name, result in results.items() if not result.failed}
+    valid = {
+        name: result
+        for name, result in results.items()
+        if not result.failed and not result.inconclusive
+    }
     if not valid:
-        raise ValueError("no valid stage 1 results available")
+        raise ValueError("no usable stage 1 results; all inconclusive or failed")
     return max(valid.items(), key=lambda item: _ranking_key(item[1]))[0]
 
 
@@ -163,7 +328,11 @@ def should_skip_stage2(results: dict[str, RunAssessment], *, best_stage1: str) -
     if best_stage1 not in results:
         raise KeyError(f"Missing best_stage1 result: {best_stage1}")
     winner = results[best_stage1]
+    if winner.inconclusive:
+        return False
     contenders = [result for name, result in results.items() if name != best_stage1 and not result.failed]
+    if any(result.inconclusive for result in contenders):
+        return False
     if not winner.promotable:
         return False
     if not contenders:

@@ -1,13 +1,40 @@
+import math
+
+import pytest
+
 from src.colab_experiment_ladder import (
+    MIN_USABLE_WINDOW,
     HistoryWindow,
     RunAssessment,
     assess_recent_history,
+    build_assessment_from_wandb_metrics,
     choose_confirmation_source,
     compute_confirmation_epochs,
     select_best_stage1_run,
     select_stage2_bracket,
     should_skip_stage2,
 )
+
+
+def _healthy_row(i: int = 0) -> dict:
+    return {
+        "train/ratio_step": 1.01 + 0.001 * i,
+        "train/clip_fraction_step": 0.05 + 0.002 * i,
+        "train/ppo_loss_step": -0.0008 - 0.00002 * i,
+        "train/kl_divergence_step": 0.0009 + 0.00003 * i,
+        "train_total_loss_step": 0.018 + 0.0004 * i,
+    }
+
+
+def _healthy_summary() -> dict:
+    return {
+        "train/ratio_step": 1.012,
+        "train/clip_fraction_step": 0.06,
+        "train/ppo_loss_step": -0.0008,
+        "train/kl_divergence_step": 0.0009,
+        "train_total_loss_step": 0.019,
+        "eval_stockfish/score": 0.02,
+    }
 
 
 def test_select_stage2_bracket_uses_low_midpoint_when_a1_wins():
@@ -188,3 +215,127 @@ def test_compute_confirmation_epochs_allows_short_run_when_late_in_session():
     )
 
     assert 0 <= epochs < 30
+
+
+def test_build_assessment_from_wandb_metrics_marks_inconclusive_when_history_is_empty():
+    assessment = build_assessment_from_wandb_metrics(
+        run_name="A3",
+        config_name="probe_a3.yaml",
+        run_id="run-a3",
+        epochs_completed=20,
+        rows=[],
+        summary=_healthy_summary(),
+    )
+
+    assert assessment.failed is False
+    assert assessment.inconclusive is True
+    assert assessment.inert is False
+    assert assessment.unstable is False
+    assert assessment.stable is True
+    assert assessment.stop_reason == ""
+    assert assessment.run_id == "run-a3"
+    assert "insufficient_history" in assessment.decision_reason
+
+
+def test_build_assessment_from_wandb_metrics_marks_inconclusive_when_rows_are_sparse():
+    # Dangerous middle case: non-empty history with valid-row count below MIN_USABLE_WINDOW.
+    # Build (MIN_USABLE_WINDOW - 2) fully valid rows plus noise rows each missing one metric.
+    rows: list[dict] = [_healthy_row(i) for i in range(MIN_USABLE_WINDOW - 2)]
+    for key in (
+        "train/ratio_step",
+        "train/clip_fraction_step",
+        "train/ppo_loss_step",
+        "train/kl_divergence_step",
+        "train_total_loss_step",
+    ):
+        noisy = _healthy_row(99)
+        noisy.pop(key)
+        rows.append(noisy)
+
+    assessment = build_assessment_from_wandb_metrics(
+        run_name="A2",
+        config_name="probe_a2.yaml",
+        run_id="run-a2",
+        epochs_completed=30,
+        rows=rows,
+        summary=_healthy_summary(),
+    )
+
+    assert assessment.failed is False
+    assert assessment.inconclusive is True
+    assert assessment.inert is False
+    assert assessment.unstable is False
+    assert "insufficient_history" in assessment.decision_reason
+
+    other = RunAssessment(
+        name="A1", movement_score=0.30, stable=True, eval_score=0.0
+    )
+    results = {"A2": assessment, "A1": other}
+    # Inconclusive winner candidate must not be promotable for Stage 2 skip,
+    # and must be filtered out of Stage 1 winner selection.
+    assert should_skip_stage2(results, best_stage1="A1") is False
+    assert select_best_stage1_run(results) == "A1"
+
+
+def test_build_assessment_from_wandb_metrics_uses_window_when_history_is_healthy():
+    rows = [_healthy_row(i) for i in range(MIN_USABLE_WINDOW + 4)]
+
+    assessment = build_assessment_from_wandb_metrics(
+        run_name="A2",
+        config_name="probe_a2.yaml",
+        run_id="run-a2",
+        epochs_completed=30,
+        rows=rows,
+        summary=_healthy_summary(),
+    )
+
+    assert assessment.failed is False
+    assert assessment.inconclusive is False
+    assert assessment.stable is True
+    assert assessment.unstable is False
+    # Real window must produce non-zero std, not the summary-snapshot zero.
+    assert assessment.metrics["ratio_std"] > 0.0
+    assert assessment.metrics["loss_std"] > 0.0
+    assert assessment.metrics["point_count"] >= MIN_USABLE_WINDOW
+    assert "insufficient_history" not in assessment.decision_reason
+
+
+def test_build_assessment_excludes_rows_with_nan_or_missing_values():
+    rows: list[dict] = [_healthy_row(i) for i in range(MIN_USABLE_WINDOW)]
+    # Add two rows that must be excluded from the window.
+    bad_nan = _healthy_row(42)
+    bad_nan["train/ratio_step"] = float("nan")
+    rows.append(bad_nan)
+    bad_missing = _healthy_row(43)
+    bad_missing.pop("train/kl_divergence_step")
+    rows.append(bad_missing)
+
+    assessment = build_assessment_from_wandb_metrics(
+        run_name="A2",
+        config_name="probe_a2.yaml",
+        run_id="run-a2",
+        epochs_completed=30,
+        rows=rows,
+        summary=_healthy_summary(),
+    )
+
+    assert assessment.inconclusive is False
+    # point_count must reflect only fully-valid rows, ignoring the two bad rows.
+    assert assessment.metrics["point_count"] == MIN_USABLE_WINDOW
+    assert math.isfinite(assessment.metrics["ratio_mean"])
+
+
+def test_select_best_stage1_run_raises_when_all_results_are_inconclusive():
+    results = {
+        name: RunAssessment(
+            name=name,
+            movement_score=0.2,
+            stable=True,
+            eval_score=0.0,
+            inconclusive=True,
+        )
+        for name in ("A1", "A2", "A3")
+    }
+
+    with pytest.raises(ValueError):
+        select_best_stage1_run(results)
