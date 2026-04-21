@@ -396,6 +396,42 @@ def choose_confirmation_source(
     return stage2_key if clearly_better else winner_key
 
 
+def resolve_stage3_target(
+    *,
+    stage1_results: dict[str, RunAssessment],
+    best_stage1_key: str,
+    stage2_result: RunAssessment | None,
+    stage2_config: str | None,
+    stage1_configs: Mapping[str, str],
+    stage2_key: str = "B1",
+) -> tuple[str, str, int]:
+    source_key = choose_confirmation_source(
+        stage1_results[best_stage1_key],
+        stage2_result,
+        best_stage1_key=best_stage1_key,
+        stage2_key=stage2_key,
+    )
+    if source_key == stage2_key and stage2_result is not None:
+        if stage2_config is None:
+            raise ValueError(
+                f"stage2_key={stage2_key!r} selected but stage2_config is None"
+            )
+        return source_key, stage2_config, stage2_result.epochs_completed
+    if source_key not in stage1_configs:
+        # Guards the recurring 'grpo-threshold-ladder-b1-eNNN' KeyError: a run
+        # label leaked into the source key instead of a probe key.
+        raise KeyError(
+            f"resolve_stage3_target produced source_key={source_key!r}, "
+            f"which is neither stage2_key={stage2_key!r} nor a key of "
+            f"stage1_configs={list(stage1_configs)!r}"
+        )
+    return (
+        source_key,
+        stage1_configs[source_key],
+        stage1_results[source_key].epochs_completed,
+    )
+
+
 def compute_confirmation_epochs(
     *,
     remaining_hours: float,

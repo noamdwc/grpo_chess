@@ -10,10 +10,20 @@ from src.colab_experiment_ladder import (
     build_assessment_from_wandb_metrics,
     choose_confirmation_source,
     compute_confirmation_epochs,
+    resolve_stage3_target,
     select_best_stage1_run,
     select_stage2_bracket,
     should_skip_stage2,
 )
+
+from src import colab_experiment_ladder as ladder_module
+
+STAGE1_CONFIGS = {
+    "A1": "grpo_colab_probe_a1_lr3e6_kl5e4.yaml",
+    "A2": "grpo_colab_probe_a2_lr5e6_kl3e4.yaml",
+    "A3": "grpo_colab_probe_a3_lr8e6_kl1e4.yaml",
+}
+STAGE2_CONFIG = "grpo_colab_bracket_b1_mid_high.yaml"
 
 
 def _healthy_row(i: int = 0) -> dict:
@@ -323,6 +333,143 @@ def test_build_assessment_excludes_rows_with_nan_or_missing_values():
     # point_count must reflect only fully-valid rows, ignoring the two bad rows.
     assert assessment.metrics["point_count"] == MIN_USABLE_WINDOW
     assert math.isfinite(assessment.metrics["ratio_mean"])
+
+
+def _stage1_probe_results() -> dict:
+    return {
+        "A1": RunAssessment(name="grpo-threshold-ladder-a1-e40", movement_score=0.30, stable=True, eval_score=0.00, epochs_completed=40),
+        "A2": RunAssessment(name="grpo-threshold-ladder-a2-e40", movement_score=0.55, stable=True, eval_score=0.01, epochs_completed=40),
+        "A3": RunAssessment(name="grpo-threshold-ladder-a3-e40", movement_score=0.45, stable=True, eval_score=0.00, epochs_completed=40),
+    }
+
+
+def test_resolve_stage3_target_returns_b1_when_stage2_clearly_better():
+    stage1 = _stage1_probe_results()
+    stage2 = RunAssessment(
+        name="grpo-threshold-ladder-b1-e100",
+        movement_score=0.80,
+        stable=True,
+        eval_score=0.03,
+        config_name=STAGE2_CONFIG,
+        epochs_completed=100,
+    )
+    source, config, epochs = resolve_stage3_target(
+        stage1_results=stage1,
+        best_stage1_key="A2",
+        stage2_result=stage2,
+        stage2_config=STAGE2_CONFIG,
+        stage1_configs=STAGE1_CONFIGS,
+    )
+    assert source == "B1"
+    assert config == STAGE2_CONFIG
+    assert epochs == 100
+
+
+def test_resolve_stage3_target_falls_back_to_stage1_winner_when_stage2_inconclusive():
+    stage1 = _stage1_probe_results()
+    stage2 = RunAssessment(
+        name="grpo-threshold-ladder-b1-e100",
+        movement_score=0.56,
+        stable=True,
+        eval_score=0.01,
+        inconclusive=True,
+        config_name=STAGE2_CONFIG,
+        epochs_completed=100,
+    )
+    source, config, epochs = resolve_stage3_target(
+        stage1_results=stage1,
+        best_stage1_key="A2",
+        stage2_result=stage2,
+        stage2_config=STAGE2_CONFIG,
+        stage1_configs=STAGE1_CONFIGS,
+    )
+    assert source == "A2"
+    assert config == STAGE1_CONFIGS["A2"]
+    assert epochs == 40
+
+
+def test_resolve_stage3_target_when_stage2_skipped():
+    stage1 = _stage1_probe_results()
+    source, config, epochs = resolve_stage3_target(
+        stage1_results=stage1,
+        best_stage1_key="A2",
+        stage2_result=None,
+        stage2_config=None,
+        stage1_configs=STAGE1_CONFIGS,
+    )
+    assert source == "A2"
+    assert config == STAGE1_CONFIGS["A2"]
+    assert epochs == 40
+
+
+def test_resolve_stage3_target_regression_run_label_does_not_leak():
+    # Even if stage2_result.name is the WandB run label, resolve_stage3_target
+    # must return the probe key "B1", not the run label. This is the test that
+    # would have caught the original KeyError: 'grpo-threshold-ladder-b1-e100'.
+    stage1 = _stage1_probe_results()
+    stage2 = RunAssessment(
+        name="grpo-threshold-ladder-b1-e100",
+        movement_score=0.95,
+        stable=True,
+        eval_score=0.05,
+        config_name=STAGE2_CONFIG,
+        epochs_completed=100,
+    )
+    source, config, _ = resolve_stage3_target(
+        stage1_results=stage1,
+        best_stage1_key="A2",
+        stage2_result=stage2,
+        stage2_config=STAGE2_CONFIG,
+        stage1_configs=STAGE1_CONFIGS,
+    )
+    assert source == "B1"
+    assert config == STAGE2_CONFIG
+
+
+def test_resolve_stage3_target_raises_descriptive_keyerror_on_run_label_leak(monkeypatch):
+    stage1 = _stage1_probe_results()
+    stage2 = RunAssessment(
+        name="grpo-threshold-ladder-b1-e100",
+        movement_score=0.80,
+        stable=True,
+        eval_score=0.02,
+        config_name=STAGE2_CONFIG,
+        epochs_completed=100,
+    )
+    monkeypatch.setattr(
+        ladder_module,
+        "choose_confirmation_source",
+        lambda *a, **kw: "grpo-threshold-ladder-b1-e100",
+    )
+    with pytest.raises(KeyError) as excinfo:
+        resolve_stage3_target(
+            stage1_results=stage1,
+            best_stage1_key="A2",
+            stage2_result=stage2,
+            stage2_config=STAGE2_CONFIG,
+            stage1_configs=STAGE1_CONFIGS,
+        )
+    assert "grpo-threshold-ladder-b1-e100" in str(excinfo.value)
+    assert "stage1_configs" in str(excinfo.value)
+
+
+def test_resolve_stage3_target_raises_when_stage2_config_missing():
+    stage1 = _stage1_probe_results()
+    stage2 = RunAssessment(
+        name="grpo-threshold-ladder-b1-e100",
+        movement_score=0.90,
+        stable=True,
+        eval_score=0.05,
+        epochs_completed=100,
+    )
+    with pytest.raises(ValueError):
+        resolve_stage3_target(
+            stage1_results=stage1,
+            best_stage1_key="A2",
+            stage2_result=stage2,
+            stage2_config=None,
+            stage1_configs=STAGE1_CONFIGS,
+        )
 
 
 def test_select_best_stage1_run_raises_when_all_results_are_inconclusive():
