@@ -1,0 +1,68 @@
+{
+  "forward": {
+    "float64": {
+      "max_abs_diff": 3.517186542012496e-13,
+      "threshold": 1e-10,
+      "pass": true
+    },
+    "float32": {
+      "max_abs_diff": 0.00018310546875,
+      "threshold": 0.0005,
+      "pass": true
+    },
+    "passed": true,
+    "failures": []
+  },
+  "jax_wdl": {
+    "games": 64,
+    "wins": 3,
+    "draws": 20,
+    "losses": 41,
+    "score": 0.203125,
+    "elo_diff_approx": -237.45072951643985,
+    "terminations": {
+      "CHECKMATE": 44,
+      "THREEFOLD_REPETITION": 15,
+      "INSUFFICIENT_MATERIAL": 5
+    },
+    "unfinished": 0
+  },
+  "pt_wdl": {
+    "games": 64,
+    "wins": 3,
+    "draws": 20,
+    "losses": 41,
+    "score": 0.203125,
+    "elo_diff_approx": -237.45072951643985,
+    "terminations": {
+      "CHECKMATE": 44,
+      "THREEFOLD_REPETITION": 15,
+      "INSUFFICIENT_MATERIAL": 5
+    },
+    "unfinished": 0
+  },
+  "pairwise": {
+    "diverged_games": 0,
+    "total_games": 64,
+    "first_divergence_ply_histogram": {},
+    "first_divergence_ply_stats": {},
+    "result_crosstab": {
+      "0-1|0-1": 18,
+      "1-0|1-0": 26,
+      "1/2-1/2|1/2-1/2": 20
+    },
+    "examples": []
+  },
+  "stockfish_version": "Stockfish 17.1",
+  "args": {
+    "num_games": 64,
+    "stockfish_nodes": 100000,
+    "stockfish_skill": 20,
+    "stockfish_hash_mb": 16,
+    "max_plies": 400,
+    "seed": 0,
+    "report_path": "research_docs/runs/jax_pt_parity.md",
+    "skip_forward_gate": false,
+    "no_auto_convert": false
+  }
+}
