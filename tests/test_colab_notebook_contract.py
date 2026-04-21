@@ -41,6 +41,7 @@ def test_main_notebook_targets_reasoning_grpo_entrypoint():
 def test_main_notebook_exposes_mode_and_drive_parameters():
     source = _notebook_sources(MAIN_NOTEBOOK)
     assert 'MODE = "smoke"' in source or 'MODE = "full"' in source
+    assert 'CHECKPOINT_FAMILY = "dm_9m"' in source or 'CHECKPOINT_FAMILY = "bc_pt"' in source
     assert "DRIVE_ROOT" in source
     assert "BASE_CHECKPOINT_PATH" in source
     assert "RESUME_CHECKPOINT_OR_DIR" in source
