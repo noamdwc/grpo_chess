@@ -4,6 +4,7 @@ import chess
 import pytest
 import torch
 from pytorch_lightning.callbacks import Callback
+from src.chess.stockfish import StockfishConfig
 
 
 class DummyCallback(Callback):
@@ -40,7 +41,7 @@ def test_build_stockfish_eval_callback_uses_baseline_and_periodic_metrics(monkey
         grpo=SimpleNamespace(eval_every_n_epochs=7),
         reasoning=SimpleNamespace(max_think_tokens=9),
         eval=SimpleNamespace(games=64),
-        stockfish=SimpleNamespace(path="stockfish"),
+        stockfish=StockfishConfig(path="stockfish"),
     )
 
     callback = build_stockfish_eval_callback(cfg)
@@ -103,37 +104,36 @@ def test_split_think_callback_uses_baseline_evaluator_only_on_fit_start():
 
 
 def test_reasoning_eval_policy_selects_best_legal_move():
-    from src.reasoning.tokens import BASE_VOCAB_SIZE
-    from src.searchless_chess_imports import MOVE_TO_ACTION
     from src.train_self_play import ReasoningEvalPolicy
 
     board = chess.Board()
-    legal_best = MOVE_TO_ACTION["e2e4"]
-    legal_other = MOVE_TO_ACTION["d2d4"]
-    illegal_higher = MOVE_TO_ACTION["a1a8"]
+    calls = []
 
-    class DummyModel:
+    class DummyModel(torch.nn.Module):
         def __init__(self):
+            super().__init__()
             self.param = torch.nn.Parameter(torch.zeros(()))
 
-        def parameters(self):
-            yield self.param
+        def forward(self, *args, **kwargs):
+            raise AssertionError("select_reasoning_move should be stubbed in this test")
 
-        def eval(self):
-            return self
+    dummy_model = DummyModel()
 
-        def __call__(self, tokens, seq_lens):
-            del seq_lens
-            vocab_size = max(BASE_VOCAB_SIZE, illegal_higher, legal_other, legal_best) + 1
-            logits = torch.full((1, tokens.shape[1], vocab_size), -1000.0)
-            logits[0, -1, legal_other] = 1.0
-            logits[0, -1, legal_best] = 5.0
-            logits[0, -1, illegal_higher] = 99.0
-            hidden = torch.zeros((1, tokens.shape[1], 1), dtype=torch.float32)
-            return SimpleNamespace(logits=logits, hidden=hidden)
+    def fake_select_reasoning_move(model, board_arg, *, think_tokens):
+        calls.append((model, board_arg.fen(), think_tokens))
+        return chess.Move.from_uci("e2e4")
 
-    move = ReasoningEvalPolicy(DummyModel()).act(board)
+    from src import train_self_play as tsp
+
+    original = tsp.select_reasoning_move
+    tsp.select_reasoning_move = fake_select_reasoning_move
+    try:
+        move = ReasoningEvalPolicy(dummy_model, think_tokens=3).act(board)
+    finally:
+        tsp.select_reasoning_move = original
+
     assert move == chess.Move.from_uci("e2e4")
+    assert calls == [(dummy_model, board.fen(), 3)]
 
 
 def test_build_stockfish_eval_callback_raises_when_stockfish_missing(monkeypatch):

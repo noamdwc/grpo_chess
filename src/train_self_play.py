@@ -16,9 +16,7 @@ from src.chess.stockfish import resolve_stockfish_path
 from src.configs.config_loader import load_experiment_config
 from src.evaluator import Evaluator, StockfishEvalCallback
 from src.grpo_logic.model import ReasoningGRPOLightningModule
-from src.reasoning.sampler import rollout_batch
-from src.reasoning.tokens import BASE_VOCAB_SIZE, END_THINK_ID, FEN_LEN, MOVE_ID, THINK_ID
-from src.searchless_chess_imports import ACTION_TO_MOVE, MOVE_TO_ACTION, tokenize
+from src.reasoning.real_play import select_reasoning_move
 from src.trainer import get_trainer
 
 
@@ -38,49 +36,7 @@ class ReasoningEvalPolicy:
         self.think_tokens = think_tokens
 
     def act(self, board: chess.Board) -> chess.Move:
-        if self.think_tokens == 0:
-            return self._act_zero_think(board)
-        return self._act_with_think(board)
-
-    def _act_zero_think(self, board: chess.Board) -> chess.Move:
-        fen_tokens = torch.from_numpy(np.asarray(tokenize(board.fen()), dtype=np.int64)).to(self.device)
-        seq = torch.zeros((1, FEN_LEN + 3), dtype=torch.long, device=self.device)
-        seq[0, :FEN_LEN] = fen_tokens
-        seq[0, FEN_LEN] = THINK_ID
-        seq[0, FEN_LEN + 1] = END_THINK_ID
-        seq[0, FEN_LEN + 2] = MOVE_ID
-        seq_lens = torch.tensor([FEN_LEN + 3], dtype=torch.long, device=self.device)
-        with torch.no_grad():
-            out = self.model(seq, seq_lens)
-        logits = out.logits[0, FEN_LEN + 2, :BASE_VOCAB_SIZE]
-        return self._select_legal_argmax(board, logits)
-
-    def _act_with_think(self, board: chess.Board) -> chess.Move:
-        with torch.no_grad():
-            result = rollout_batch(
-                model=self.model,
-                root_fens=[board.fen()],
-                k_samples=1,
-                min_think_tokens=self.think_tokens,
-                max_think_tokens=self.think_tokens,
-                rollout_temperature=1e-4,
-                move_sampling_temperature=1e-4,
-            )
-        final_pos = int(result.final_move_positions[0].item())
-        final_token = int(result.token_sequences[0, final_pos].item())
-        uci = ACTION_TO_MOVE[final_token]
-        move = chess.Move.from_uci(uci)
-        if move not in board.legal_moves:
-            raise RuntimeError(f"Rollout produced illegal move {uci} for {board.fen()}")
-        return move
-
-    def _select_legal_argmax(self, board: chess.Board, logits: torch.Tensor) -> chess.Move:
-        legal_indices = [MOVE_TO_ACTION[move.uci()] for move in board.legal_moves if move.uci() in MOVE_TO_ACTION]
-        if not legal_indices:
-            raise RuntimeError(f"No legal moves available during eval for {board.fen()}")
-        legal_logits = logits[legal_indices]
-        best_idx = legal_indices[int(torch.argmax(legal_logits).item())]
-        return chess.Move.from_uci(ACTION_TO_MOVE[best_idx])
+        return select_reasoning_move(self.model, board, think_tokens=self.think_tokens)
 
 
 class ReasoningEvaluator(Evaluator):
