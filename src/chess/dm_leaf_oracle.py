@@ -2,8 +2,12 @@
 
 import chess
 
+from src.checkpoint_inspector import inspect_checkpoint
+
 _ENGINE = None
 _BUCKET_VALUES = None
+_CHECKPOINT_DIR = "searchless_chess/checkpoints"
+_MODEL_NAME = "136M"
 
 
 def _ensure_loaded() -> None:
@@ -12,9 +16,17 @@ def _ensure_loaded() -> None:
         return
     from src.distill.teacher import build_teacher_engine
 
+    checkpoint_path = f"{_CHECKPOINT_DIR}/{_MODEL_NAME}"
+    checkpoint_info = inspect_checkpoint(checkpoint_path)
+    if checkpoint_info.family != "dm_action_value":
+        raise ValueError(
+            f"Expected {_MODEL_NAME} oracle checkpoint to have family dm_action_value, "
+            f"got {checkpoint_info.family} from {checkpoint_info.path}"
+        )
+
     _ENGINE, _BUCKET_VALUES = build_teacher_engine(
-        model_name="136M",
-        checkpoint_dir="searchless_chess/checkpoints",
+        model_name=_MODEL_NAME,
+        checkpoint_dir=_CHECKPOINT_DIR,
         checkpoint_step=6_400_000,
         batch_size=1,
         use_half=True,
