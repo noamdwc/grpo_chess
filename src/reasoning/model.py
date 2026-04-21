@@ -19,6 +19,7 @@ from typing import NamedTuple
 import torch
 import torch.nn as nn
 
+from src.checkpoint_inspector import inspect_checkpoint
 from src.dm_port.transformer import DMTransformer, DMTransformerConfig
 from src.reasoning.attention_mask import build_prefix_lm_mask
 from src.reasoning.tokens import FEN_LEN, TOTAL_VOCAB_SIZE
@@ -45,6 +46,7 @@ class ReasoningModel(nn.Module):
             raise ValueError(f"max_seq_len must be at least {FEN_LEN}")
 
         ckpt = torch.load(config.dm_checkpoint, weights_only=False)
+        checkpoint_info = inspect_checkpoint(config.dm_checkpoint)
         dm_cfg_dict = dict(ckpt["config"])
         dm_cfg_dict["vocab_size"] = TOTAL_VOCAB_SIZE
         dm_cfg_dict["output_size"] = TOTAL_VOCAB_SIZE
@@ -52,10 +54,17 @@ class ReasoningModel(nn.Module):
         dm_cfg = DMTransformerConfig(**dm_cfg_dict)
         self.dm = DMTransformer(dm_cfg)
 
-        self._load_and_extend_dm_weights(ckpt["state_dict"])
-
         nn.init.trunc_normal_(self.dm.output_linear.weight, std=0.02)
         nn.init.zeros_(self.dm.output_linear.bias)
+        if checkpoint_info.family == "dm_action_value":
+            self._load_and_extend_dm_weights(ckpt["state_dict"])
+        elif checkpoint_info.family == "dm_behavioral_cloning":
+            self._load_and_extend_bc_weights(ckpt["state_dict"])
+        else:
+            raise ValueError(
+                f"Unsupported checkpoint family for ReasoningModel warmstart: {checkpoint_info.family} "
+                f"from {config.dm_checkpoint}"
+            )
 
         embedding_dim = dm_cfg.embedding_dim
         self.value_head = nn.Sequential(
@@ -100,6 +109,43 @@ class ReasoningModel(nn.Module):
                     )
         expected_keys = set(own_state) - {"output_linear.weight", "output_linear.bias"}
         missing_keys = sorted(expected_keys - loaded_keys)
+        if missing_keys:
+            preview = ", ".join(missing_keys[:5])
+            raise RuntimeError(f"Missing checkpoint keys: {preview}")
+        self.dm.load_state_dict(own_state)
+
+    def _load_and_extend_bc_weights(self, bc_state_dict: dict) -> None:
+        """Load BC body weights, preserving the pretrained 31-token FEN embedding and action head."""
+        own_state = self.dm.state_dict()
+        loaded_keys: set[str] = set()
+        for key, value in bc_state_dict.items():
+            if key == "token_embedding.weight":
+                own_state[key][: value.shape[0]] = value
+                loaded_keys.add(key)
+            elif key == "pos_embedding.weight":
+                own_state[key][: value.shape[0]] = value
+                last = value[-1]
+                for i in range(value.shape[0], own_state[key].shape[0]):
+                    own_state[key][i] = last
+                loaded_keys.add(key)
+            elif key == "output_linear.weight":
+                own_state[key][: value.shape[0]] = value
+                loaded_keys.add(key)
+            elif key == "output_linear.bias":
+                own_state[key][: value.shape[0]] = value
+                loaded_keys.add(key)
+            else:
+                if key not in own_state:
+                    raise RuntimeError(f"Unexpected checkpoint key: {key}")
+                if own_state[key].shape == value.shape:
+                    own_state[key] = value
+                    loaded_keys.add(key)
+                else:
+                    raise RuntimeError(
+                        f"Shape mismatch loading {key}: own={own_state[key].shape} ckpt={value.shape}"
+                    )
+        expected = set(own_state) - {"output_linear.weight", "output_linear.bias", "token_embedding.weight", "pos_embedding.weight"}
+        missing_keys = sorted(expected - loaded_keys)
         if missing_keys:
             preview = ", ".join(missing_keys[:5])
             raise RuntimeError(f"Missing checkpoint keys: {preview}")

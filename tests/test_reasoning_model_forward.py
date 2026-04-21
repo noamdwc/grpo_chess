@@ -1,5 +1,6 @@
 """Construction + forward smoke tests for ReasoningModel."""
 import copy
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -97,3 +98,75 @@ def test_construction_rejects_missing_checkpoint_body_keys(monkeypatch):
 
     with pytest.raises(RuntimeError, match="Missing checkpoint keys"):
         ReasoningModel(ReasoningModelConfig(dm_checkpoint=str(CKPT), max_seq_len=120))
+
+
+def _write_synthetic_bc_checkpoint(tmp_path: Path) -> Path:
+    from src.dm_port.transformer import DMTransformer, DMTransformerConfig
+
+    cfg = DMTransformerConfig(
+        vocab_size=31,
+        output_size=1968,
+        embedding_dim=16,
+        num_layers=1,
+        num_heads=1,
+        max_sequence_length=78,
+    )
+    model = DMTransformer(cfg)
+    state = model.state_dict()
+    state["token_embedding.weight"] = torch.arange(31 * 16, dtype=torch.float32).reshape(31, 16)
+    state["pos_embedding.weight"] = torch.arange(78 * 16, dtype=torch.float32).reshape(78, 16)
+    state["output_linear.weight"] = torch.arange(1968 * 16, dtype=torch.float32).reshape(1968, 16)
+    state["output_linear.bias"] = torch.arange(1968, dtype=torch.float32)
+    path = tmp_path / "synthetic_bc.pt"
+    torch.save(
+        {
+            "state_dict": state,
+            "config": cfg.__dict__,
+        },
+        path,
+    )
+    return path
+
+
+def test_bc_checkpoint_warmstart_preserves_fen_embeddings_and_action_head(tmp_path):
+    from src.reasoning.model import ReasoningModel, ReasoningModelConfig
+
+    bc_ckpt = _write_synthetic_bc_checkpoint(tmp_path)
+    raw = torch.load(bc_ckpt, weights_only=False)
+
+    torch.manual_seed(0)
+    model = ReasoningModel(ReasoningModelConfig(dm_checkpoint=str(bc_ckpt), max_seq_len=120)).eval()
+
+    assert torch.equal(
+        model.dm.token_embedding.weight[:31],
+        raw["state_dict"]["token_embedding.weight"],
+    )
+    assert torch.equal(
+        model.dm.pos_embedding.weight[:78],
+        raw["state_dict"]["pos_embedding.weight"],
+    )
+    assert torch.equal(
+        model.policy_head.weight[:1968],
+        raw["state_dict"]["output_linear.weight"],
+    )
+    assert torch.equal(
+        model.policy_head.bias[:1968],
+        raw["state_dict"]["output_linear.bias"],
+    )
+    assert model.dm.token_embedding.weight.shape[0] == TOTAL_VOCAB_SIZE
+    assert model.policy_head.out_features == TOTAL_VOCAB_SIZE
+
+
+def test_bc_checkpoint_forward_uses_extended_vocab_shapes(tmp_path):
+    from src.reasoning.model import ReasoningModel, ReasoningModelConfig
+
+    bc_ckpt = _write_synthetic_bc_checkpoint(tmp_path)
+    model = ReasoningModel(ReasoningModelConfig(dm_checkpoint=str(bc_ckpt), max_seq_len=120)).eval()
+
+    seq = torch.zeros((2, 90), dtype=torch.long)
+    seq_lens = torch.tensor([85, 90], dtype=torch.long)
+    with torch.no_grad():
+        out = model(seq, seq_lens)
+
+    assert out.logits.shape == (2, 90, TOTAL_VOCAB_SIZE)
+    assert out.hidden.shape == (2, 90, 16)
