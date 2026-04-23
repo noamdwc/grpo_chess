@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import os
 import traceback
 import torch
@@ -7,7 +7,6 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import Callback
 
 from src.chess.policy_player import PolicyPlayer, PolicyConfig
-from src.chess.searcher import TrajectorySearcher, SearchConfig
 from src.chess.stockfish import StockfishPlayer, StockfishConfig, StockfishManager
 from src.eval_utils import EvalConfig, evaluate_policy_vs_stockfish
 
@@ -22,7 +21,7 @@ class Evaluator:
     def __init__(self,
                  eval_cfg: EvalConfig = EvalConfig(),
                  policy_cfg: PolicyConfig = PolicyConfig(),
-                 searcher_cfg: Optional[SearchConfig] = None,
+                 searcher_cfg: Optional[Any] = None,
                  stockfish_cfg: StockfishConfig = StockfishConfig()):
         """
         Initialize evaluator.
@@ -38,8 +37,8 @@ class Evaluator:
         self.searcher_cfg = searcher_cfg
         self.default_stockfish_cfg = stockfish_cfg
 
-    def _make_policy(self, model: nn.Module) -> PolicyPlayer | TrajectorySearcher:
-        """Create a policy player (optionally wrapped with search).
+    def _make_policy(self, model: nn.Module) -> PolicyPlayer:
+        """Create a policy player.
         
         Args:
             model: Neural network model
@@ -47,10 +46,7 @@ class Evaluator:
         Returns:
             Policy player, optionally wrapped with trajectory search
         """
-        policy = PolicyPlayer(model, cfg=self.policy_cfg)
-        if self.searcher_cfg is not None:
-            policy = TrajectorySearcher(policy, cfg=self.searcher_cfg)
-        return policy
+        return PolicyPlayer(model, cfg=self.policy_cfg)
 
     def _make_stockfish(self) -> StockfishPlayer:
         """Create a Stockfish player with default configuration.
@@ -80,7 +76,7 @@ class Evaluator:
             traceback_msg = Evaluator._safe_exception_message(traceback_exc)
             return f"Failed to render traceback safely: {traceback_msg}"
 
-    def single_evaluation(self, model: nn.Module) -> Tuple[Dict, PolicyPlayer | TrajectorySearcher, List[str]]:
+    def single_evaluation(self, model: nn.Module) -> Tuple[Dict, PolicyPlayer, List[str]]:
         """Evaluate the model by playing games against Stockfish.
 
         Args:
@@ -348,3 +344,71 @@ class StockfishEvalCallback(Callback):
         pl_module.log(f"{self.metric_prefix}/callback_attempts", float(self._attempts), on_step=False, on_epoch=True)
         pl_module.log(f"{self.metric_prefix}/callback_successes", float(self._successes), on_step=False, on_epoch=True)
         pl_module.log(f"{self.metric_prefix}/callback_failures", float(self._failures), on_step=False, on_epoch=True)
+
+
+def evaluate_with_and_without_thinking(
+    *,
+    model,
+    n_games: int,
+    stockfish_level: int,
+    seed: int,
+) -> dict[str, float]:
+    """Run eval with thinking enabled and disabled, and return think_delta."""
+    score_with = _play_stockfish_match(model, n_games, stockfish_level, seed, thinking=True)
+    score_without = _play_stockfish_match(model, n_games, stockfish_level, seed, thinking=False)
+    return {
+        "score_with_think": score_with,
+        "score_no_think": score_without,
+        "think_delta": score_with - score_without,
+    }
+
+
+def _play_stockfish_match(model, n_games: int, stockfish_level: int, seed: int, thinking: bool) -> float:
+    """Play n_games vs Stockfish and return the model score in [0, 1]."""
+    import random
+    import chess
+
+    from src.reasoning.sampler import rollout_batch
+    from src.searchless_chess_imports import ACTION_TO_MOVE
+
+    total = 0.0
+    random.seed(seed)
+    torch.manual_seed(seed)
+    stockfish_cfg = StockfishConfig(skill_level=stockfish_level)
+    stockfish = StockfishPlayer(stockfish_cfg, engine_name=f"think_delta_eval_{os.getpid()}_{int(thinking)}")
+    try:
+        for game_idx in range(n_games):
+            board = chess.Board()
+            model_color = chess.WHITE if game_idx % 2 == 0 else chess.BLACK
+            stockfish_failed = False
+            while not board.is_game_over(claim_draw=True):
+                if board.turn == model_color:
+                    result = rollout_batch(
+                        model=model,
+                        root_fens=[board.fen()],
+                        k_samples=1,
+                        min_think_tokens=0 if not thinking else 2,
+                        max_think_tokens=0 if not thinking else 12,
+                        rollout_temperature=0.0001,
+                    )
+                    final_token = int(
+                        result.token_sequences[0, int(result.final_move_positions[0].item())].item()
+                    )
+                    board.push(chess.Move.from_uci(ACTION_TO_MOVE[final_token]))
+                else:
+                    reply = stockfish.act(board)
+                    if reply is None:
+                        stockfish_failed = True
+                        break
+                    board.push(reply)
+            if stockfish_failed:
+                total += 1.0
+                continue
+            outcome = board.outcome(claim_draw=True)
+            if outcome is None or outcome.winner is None:
+                total += 0.5
+            elif outcome.winner == model_color:
+                total += 1.0
+    finally:
+        stockfish.close()
+    return total / n_games

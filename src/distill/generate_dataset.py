@@ -13,15 +13,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+import chess
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 from datasets import load_dataset
 from tqdm import tqdm
-
-from src.pretrain.pretrain_dataset import get_positions_from_game
-from src.configs.config_loader import load_yaml_file, dict_to_dataclass
 from src.distill.teacher import (
     build_teacher_engine,
     FENPrepDataset,
@@ -50,6 +48,40 @@ class GenerateConfig:
     skip_first_n_moves: int = 5
     skip_last_n_moves: int = 5
     sample_positions_per_game: int = 3
+
+
+def get_positions_from_game(
+    moves: list[str],
+    skip_first_n: int = 5,
+    skip_last_n: int = 5,
+    sample_n: int = 3,
+) -> list[tuple[str, str, int]]:
+    """Extract (FEN, move_played, move_number) tuples from a game."""
+    if len(moves) <= skip_first_n + skip_last_n:
+        return []
+
+    board = chess.Board()
+    positions: list[tuple[str, str, int]] = []
+    for idx, uci_move in enumerate(moves):
+        if idx < skip_first_n:
+            try:
+                board.push_uci(uci_move)
+            except (ValueError, chess.InvalidMoveError):
+                return positions
+            continue
+
+        if idx >= len(moves) - skip_last_n:
+            break
+
+        positions.append((board.fen(), uci_move, idx))
+        try:
+            board.push_uci(uci_move)
+        except (ValueError, chess.InvalidMoveError):
+            break
+
+    if len(positions) > sample_n:
+        positions = random.sample(positions, sample_n)
+    return positions
 
 
 # ---------------------------------------------------------------------------

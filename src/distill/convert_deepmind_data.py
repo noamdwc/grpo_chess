@@ -162,6 +162,11 @@ def make_grouped_sample(
     valid.sort(key=lambda x: x[1], reverse=True)
     valid = valid[:top_k]
 
+    # Sparse singleton labels from converted .bag data are not informative enough for
+    # policy distillation; reject them so the caller can enforce a higher-quality path.
+    if len(valid) < 2:
+        return None
+
     action_indices = [v[0] for v in valid]
     win_probs = np.array([v[1] for v in valid], dtype=np.float64)
 

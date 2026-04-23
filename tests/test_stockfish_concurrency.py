@@ -358,9 +358,12 @@ class TestStockfishProcessSafety:
         assert StockfishManager.is_name_registered(main_engine_name)
 
         ctx = multiprocessing.get_context('spawn')
-        with ProcessPoolExecutor(max_workers=1, mp_context=ctx) as executor:
-            future = executor.submit(_check_engine_not_inherited, main_engine_name)
-            result = future.result(timeout=30)
+        try:
+            with ProcessPoolExecutor(max_workers=1, mp_context=ctx) as executor:
+                future = executor.submit(_check_engine_not_inherited, main_engine_name)
+                result = future.result(timeout=30)
+        except (NotImplementedError, PermissionError) as exc:
+            pytest.skip(f"ProcessPoolExecutor unavailable in this environment: {exc}")
 
         assert result, "Child process should not inherit parent's engine"
         # Main process should still have the engine

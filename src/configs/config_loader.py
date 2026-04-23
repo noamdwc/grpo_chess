@@ -1,56 +1,105 @@
-"""
-Config loader for GRPO Chess experiments.
-
-This module provides utilities to load experiment configurations from YAML files
-and convert them to the appropriate dataclass objects.
-
-Usage:
-    from src.configs.config_loader import load_experiment_config
-
-    # Load a complete experiment config
-    config = load_experiment_config("default.yaml")
-
-    # Load with overrides
-    config = load_experiment_config("default.yaml", overrides={
-        "grpo": {"lr": 1e-4},
-        "training": {"num_epochs": 100},
-    })
-
-    # Access configs
-    grpo_config = config.grpo
-    transformer_config = config.transformer
-"""
-
+"""Config loader for the reasoning-GRPO refactor."""
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional, TypeVar, Type
+from typing import Any, Optional, get_args, get_origin, get_type_hints
+
 import yaml
 
-# Import all config dataclasses
-from src.models import ChessTransformerConfig
-from src.eval_utils import EvalConfig
-from src.chess.stockfish import StockfishConfig
-from src.chess.policy_player import PolicyConfig
-from src.chess.searcher import SearchConfig
 from src.chess.boards_dataset import ChessDatasetConfig
-from src.pretrain.pretrain_load_config import PretrainLoadConfig
+from src.chess.stockfish import StockfishConfig
 
-if TYPE_CHECKING:
-    from src.grpo_logic.model import GRPOConfig
-
-
-# Directory containing config YAML files
 CONFIGS_DIR = Path(__file__).parent
 
 
 @dataclass
+class ValueHeadConfig:
+    enabled: bool = True
+    hidden_dim: int = 256
+    coef: float = 0.5
+
+
+@dataclass
+class ModelConfig:
+    base_checkpoint: str = "checkpoints/dm_port/9M.pt"
+    dm_av_embedding_source: str | None = None
+    freeze_body: bool = False
+    max_seq_len: int = 120
+    value_head: ValueHeadConfig = field(default_factory=ValueHeadConfig)
+
+
+@dataclass
+class ReasoningConfig:
+    min_think_tokens: int = 2
+    max_think_tokens: int = 12
+    allow_early_end_think: bool = True
+    legal_mask_think: bool = True
+    exclude_specials_from_gradient: bool = False
+
+
+@dataclass
+class GRPOConfig:
+    k_samples_per_root: int = 8
+    lr: float = 1e-6
+    clip_ratio: float = 0.20
+    kl_coef: float = 0.001
+    ppo_epochs: int = 1
+    rollout_temperature: float = 1.0
+    move_sampling_temperature: float = 1.0
+    eval_every_n_epochs: int = 10
+
+
+@dataclass
+class SelfPlayRivalConfig:
+    think_enabled: bool = False
+    temperature: float = 0.0
+
+
+@dataclass
+class FrozenDmRivalConfig:
+    checkpoint_path: str = "checkpoints/dm_port/9M.pt"
+    dm_av_embedding_source: str | None = None
+
+
+@dataclass
+class StockfishRivalConfig:
+    movetime_ms: int = 50
+    skill_level: int = 2
+
+
+@dataclass
+class RivalConfig:
+    mode: str = "self_play"
+    self_play: SelfPlayRivalConfig = field(default_factory=SelfPlayRivalConfig)
+    frozen_dm_9m: FrozenDmRivalConfig = field(default_factory=FrozenDmRivalConfig)
+    stockfish: StockfishRivalConfig = field(default_factory=StockfishRivalConfig)
+
+
+@dataclass
+class DmValueHeadConfig:
+    model: str = "136M"
+    bucket_values_source: str = "searchless_chess"
+
+
+@dataclass
+class StockfishLeafConfig:
+    movetime_ms: int = 50
+    cp_clip: int = 1000
+
+
+@dataclass
+class LeafEvaluatorConfig:
+    mode: str = "dm_value_head"
+    dm_value_head: DmValueHeadConfig = field(default_factory=DmValueHeadConfig)
+    stockfish: StockfishLeafConfig = field(default_factory=StockfishLeafConfig)
+
+
+@dataclass
 class TrainingConfig:
-    """Training loop configuration."""
-    num_epochs: int = 400
-    batch_size: int = 32
-    steps_per_epoch: int = 512
+    num_epochs: int = 200
+    batch_size: int = 16
+    steps_per_epoch: int = 256
     checkpoint_dir: str = "checkpoints"
     checkpoint_every_n_epochs: int = 5
     keep_n_checkpoints: int = 3
@@ -59,245 +108,214 @@ class TrainingConfig:
 
 
 @dataclass
+class EvalConfig:
+    games: int = 64
+    seed: int = 0
+    max_plies: int = 400
+    randomize_opening: bool = True
+    opening_plies: int = 6
+    ablation_no_think: bool = True
+
+
+@dataclass
 class ExperimentConfig:
-    """Complete experiment configuration containing all sub-configs."""
-    training: TrainingConfig
+    model: ModelConfig
+    reasoning: ReasoningConfig
     grpo: GRPOConfig
-    transformer: ChessTransformerConfig
+    rival: RivalConfig
+    leaf_evaluator: LeafEvaluatorConfig
+    training: TrainingConfig
     eval: EvalConfig
     stockfish: StockfishConfig
-    policy: PolicyConfig
-    searcher: Optional[SearchConfig]
     dataset: ChessDatasetConfig
-    pretrain: PretrainLoadConfig
-
-
-T = TypeVar('T')
-
-
-def _load_grpo_config_cls() -> type["GRPOConfig"]:
-    """Resolve GRPOConfig lazily to avoid importing Lightning in data-only paths."""
-    from src.grpo_logic.model import GRPOConfig
-
-    return GRPOConfig
-
-
-def _deep_merge(base: dict, overrides: dict) -> dict:
-    """Deep merge two dictionaries, with overrides taking precedence.
-
-    Args:
-        base: Base dictionary
-        overrides: Dictionary with values to override
-
-    Returns:
-        Merged dictionary
-    """
-    result = base.copy()
-    for key, value in overrides.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = _deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
-
-
-def dict_to_dataclass(cls: Type[T], data: dict[str, Any]) -> T:
-    """Convert a dictionary to a dataclass, ignoring extra keys.
-
-    Args:
-        cls: The dataclass type to instantiate
-        data: Dictionary with field values
-
-    Returns:
-        Instance of the dataclass with values from data
-    """
-    if data is None:
-        return None
-
-    # Get valid field names for this dataclass
-    valid_fields = {f.name for f in fields(cls)}
-
-    # Filter to only include valid fields
-    filtered_data = {k: v for k, v in data.items() if k in valid_fields}
-
-    return cls(**filtered_data)
 
 
 def load_yaml_file(path: str | Path) -> dict[str, Any]:
-    """Load a YAML config file.
-
-    Args:
-        path: Path to the YAML file (absolute or relative to configs dir)
-
-    Returns:
-        Dictionary containing the parsed YAML
-    """
     path = Path(path)
-
-    # If not absolute, look in configs directory
     if not path.is_absolute():
         path = CONFIGS_DIR / path
+    with open(path) as handle:
+        return yaml.safe_load(handle)
 
-    if not path.exists():
-        raise FileNotFoundError(f"Config file not found: {path}")
 
-    with open(path, 'r') as f:
-        return yaml.safe_load(f)
+def _deep_merge(base: dict, overrides: dict) -> dict:
+    out = dict(base)
+    for key, value in overrides.items():
+        if key in out and isinstance(out[key], dict) and isinstance(value, dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def _resolve_dataclass_type(annotation: Any) -> Any:
+    origin = get_origin(annotation)
+    if origin is None:
+        return annotation
+    if origin in (Optional,):
+        args = [arg for arg in get_args(annotation) if arg is not type(None)]
+        return args[0] if args else annotation
+    if origin is list:
+        return annotation
+    if origin is dict:
+        return annotation
+    if origin is tuple:
+        return annotation
+    args = [arg for arg in get_args(annotation) if arg is not type(None)]
+    if len(args) == 1:
+        return args[0]
+    return annotation
+
+
+def _from_dict(cls: type[Any], data: dict[str, Any]) -> Any:
+    if not is_dataclass(cls):
+        return data
+    type_hints = get_type_hints(cls)
+    kwargs: dict[str, Any] = {}
+    for field_info in fields(cls):
+        if field_info.name not in data:
+            continue
+        value = data[field_info.name]
+        nested_type = _resolve_dataclass_type(type_hints.get(field_info.name, field_info.type))
+        if isinstance(value, dict) and is_dataclass(nested_type):
+            kwargs[field_info.name] = _from_dict(nested_type, value)
+        else:
+            kwargs[field_info.name] = value
+    return cls(**kwargs)
+
+
+def dict_to_dataclass(cls: type[Any], data: dict[str, Any]) -> Any:
+    if data is None:
+        return None
+    return _from_dict(cls, data)
+
+
+def _legacy_to_reasoning_schema(raw: dict[str, Any]) -> dict[str, Any]:
+    if {"model", "reasoning", "rival", "leaf_evaluator"}.issubset(raw):
+        return raw
+
+    pretrain = raw.get("pretrain", {})
+    grpo = raw.get("grpo", {})
+    stockfish = raw.get("stockfish", {})
+    eval_cfg = raw.get("eval", {})
+
+    base_checkpoint = pretrain.get("checkpoint_path") or "checkpoints/dm_port/9M.pt"
+    translated = {
+        "model": {
+            "base_checkpoint": base_checkpoint,
+            "freeze_body": False,
+            "max_seq_len": 120,
+            "value_head": {
+                "enabled": True,
+                "hidden_dim": 256,
+                "coef": 0.5,
+            },
+        },
+        "reasoning": {
+            "min_think_tokens": 2,
+            "max_think_tokens": grpo.get("trajectory_depth", 12),
+            "allow_early_end_think": True,
+            "legal_mask_think": True,
+            "exclude_specials_from_gradient": False,
+        },
+        "grpo": {
+            "k_samples_per_root": grpo.get("num_trajectories", 8),
+            "lr": grpo.get("lr", 1e-6),
+            "clip_ratio": grpo.get("clip_ratio", 0.2),
+            "kl_coef": grpo.get("kl_coef", 0.001),
+            "ppo_epochs": grpo.get("ppo_steps", 1),
+            "rollout_temperature": grpo.get("rollout_temperature", 1.0),
+            "move_sampling_temperature": grpo.get("move_sampling_temperature", 1.0),
+            "eval_every_n_epochs": grpo.get("eval_every_n_epochs", 10),
+        },
+        "rival": {
+            "mode": "self_play",
+            "self_play": {
+                "think_enabled": False,
+                "temperature": 0.0,
+            },
+            "frozen_dm_9m": {
+                "checkpoint_path": base_checkpoint,
+            },
+            "stockfish": {
+                "movetime_ms": stockfish.get("movetime_ms", 50),
+                "skill_level": stockfish.get("skill_level", 2),
+            },
+        },
+        "leaf_evaluator": {
+            "mode": "stockfish",
+            "dm_value_head": {
+                "model": "136M",
+                "bucket_values_source": "searchless_chess",
+            },
+            "stockfish": {
+                "movetime_ms": stockfish.get("movetime_ms", 50),
+                "cp_clip": 1000,
+            },
+        },
+        "training": raw.get("training", {}),
+        "eval": {
+            **eval_cfg,
+            "ablation_no_think": eval_cfg.get("ablation_no_think", True),
+        },
+        "stockfish": stockfish,
+        "dataset": raw.get("dataset", {}),
+    }
+    return translated
 
 
 def load_experiment_config(
-    path: str | Path = "default.yaml",
-    overrides: dict[str, dict[str, Any]] | None = None
+    config_path: str = "default.yaml",
+    overrides: Optional[dict[str, dict[str, Any]]] = None,
 ) -> ExperimentConfig:
-    """Load a complete experiment configuration from a YAML file.
-
-    Args:
-        path: Path to the YAML file (absolute or relative to configs dir)
-        overrides: Optional dict of overrides per section. Example:
-            {
-                "grpo": {"lr": 1e-4},
-                "training": {"num_epochs": 100},
-                "stockfish": {"skill_level": 5},
-            }
-
-    Returns:
-        ExperimentConfig containing all sub-configs
-    """
-    data = load_yaml_file(path)
-
-    # Apply overrides if provided
+    raw = load_yaml_file(config_path)
     if overrides:
-        data = _deep_merge(data, overrides)
-
-    # Convert each section to its dataclass
-    training = dict_to_dataclass(TrainingConfig, data.get('training', {}))
-    grpo_config_cls = _load_grpo_config_cls()
-    grpo = dict_to_dataclass(grpo_config_cls, data.get('grpo', {}))
-    transformer = dict_to_dataclass(ChessTransformerConfig, data.get('transformer', {}))
-    eval_cfg = dict_to_dataclass(EvalConfig, data.get('eval', {}))
-    stockfish = dict_to_dataclass(StockfishConfig, data.get('stockfish', {}))
-    policy = dict_to_dataclass(PolicyConfig, data.get('policy', {}))
-    dataset = dict_to_dataclass(ChessDatasetConfig, data.get('dataset', {}))
-    pretrain = dict_to_dataclass(PretrainLoadConfig, data.get('pretrain', {}))
-
-    # Searcher is optional (can be null)
-    searcher_data = data.get('searcher')
-    searcher = dict_to_dataclass(SearchConfig, searcher_data) if searcher_data else None
-
-    return ExperimentConfig(
-        training=training,
-        grpo=grpo,
-        transformer=transformer,
-        eval=eval_cfg,
-        stockfish=stockfish,
-        policy=policy,
-        searcher=searcher,
-        dataset=dataset,
-        pretrain=pretrain,
-    )
+        raw = _deep_merge(raw, overrides)
+    raw = _legacy_to_reasoning_schema(raw)
+    return _from_dict(ExperimentConfig, raw)
 
 
 def load_grpo_config(
-    path: str | Path = "default.yaml",
-    overrides: dict[str, Any] | None = None
-) -> "GRPOConfig":
-    """Load just the GRPO config from a YAML file.
-
-    Args:
-        path: Path to the YAML file
-        overrides: Optional dict of field overrides. Example: {"lr": 1e-4}
-    """
-    data = load_yaml_file(path)
-    grpo_data = data.get('grpo', {})
-    if overrides:
-        grpo_data = _deep_merge(grpo_data, overrides)
-    return dict_to_dataclass(_load_grpo_config_cls(), grpo_data)
-
-
-def load_transformer_config(
-    path: str | Path = "default.yaml",
-    overrides: dict[str, Any] | None = None
-) -> ChessTransformerConfig:
-    """Load just the transformer config from a YAML file."""
-    data = load_yaml_file(path)
-    cfg_data = data.get('transformer', {})
-    if overrides:
-        cfg_data = _deep_merge(cfg_data, overrides)
-    return dict_to_dataclass(ChessTransformerConfig, cfg_data)
+    config_path: str = "default.yaml",
+    overrides: Optional[dict[str, Any]] = None,
+) -> GRPOConfig:
+    experiment_overrides = {"grpo": overrides} if overrides else None
+    return load_experiment_config(config_path, overrides=experiment_overrides).grpo
 
 
 def load_eval_config(
-    path: str | Path = "default.yaml",
-    overrides: dict[str, Any] | None = None
+    config_path: str = "default.yaml",
+    overrides: Optional[dict[str, Any]] = None,
 ) -> EvalConfig:
-    """Load just the eval config from a YAML file."""
-    data = load_yaml_file(path)
-    cfg_data = data.get('eval', {})
-    if overrides:
-        cfg_data = _deep_merge(cfg_data, overrides)
-    return dict_to_dataclass(EvalConfig, cfg_data)
+    experiment_overrides = {"eval": overrides} if overrides else None
+    return load_experiment_config(config_path, overrides=experiment_overrides).eval
 
 
 def load_stockfish_config(
-    path: str | Path = "default.yaml",
-    overrides: dict[str, Any] | None = None
+    config_path: str = "default.yaml",
+    overrides: Optional[dict[str, Any]] = None,
 ) -> StockfishConfig:
-    """Load just the stockfish config from a YAML file."""
-    data = load_yaml_file(path)
-    cfg_data = data.get('stockfish', {})
-    if overrides:
-        cfg_data = _deep_merge(cfg_data, overrides)
-    return dict_to_dataclass(StockfishConfig, cfg_data)
+    experiment_overrides = {"stockfish": overrides} if overrides else None
+    return load_experiment_config(config_path, overrides=experiment_overrides).stockfish
 
 
 def load_dataset_config(
-    path: str | Path = "default.yaml",
-    overrides: dict[str, Any] | None = None
+    config_path: str = "default.yaml",
+    overrides: Optional[dict[str, Any]] = None,
 ) -> ChessDatasetConfig:
-    """Load just the dataset config from a YAML file."""
-    data = load_yaml_file(path)
-    cfg_data = data.get('dataset', {})
-    if overrides:
-        cfg_data = _deep_merge(cfg_data, overrides)
-    return dict_to_dataclass(ChessDatasetConfig, cfg_data)
+    experiment_overrides = {"dataset": overrides} if overrides else None
+    return load_experiment_config(config_path, overrides=experiment_overrides).dataset
 
 
 def list_available_configs() -> list[str]:
-    """List all available YAML config files in the configs directory."""
-    return [f.name for f in CONFIGS_DIR.glob("*.yaml")]
+    return sorted(path.name for path in CONFIGS_DIR.glob("*.yaml"))
 
 
 def print_config_summary(config: ExperimentConfig) -> None:
-    """Print a summary of the experiment configuration."""
     print("=" * 60)
-    print("EXPERIMENT CONFIGURATION")
+    print("REASONING-GRPO CONFIGURATION")
     print("=" * 60)
-
-    print("\n[Training]")
-    print(f"  epochs: {config.training.num_epochs}")
-    print(f"  batch_size: {config.training.batch_size}")
-    print(f"  steps_per_epoch: {config.training.steps_per_epoch}")
-
-    print("\n[GRPO]")
-    print(f"  lr: {config.grpo.lr}")
-    print(f"  num_trajectories: {config.grpo.num_trajectories}")
-    print(f"  trajectory_depth: {config.grpo.trajectory_depth}")
-    print(f"  kl_coef: {config.grpo.kl_coef}")
-    print(f"  rollout_temperature: {config.grpo.rollout_temperature}")
-
-    print("\n[Transformer]")
-    print(f"  embed_dim: {config.transformer.embed_dim}")
-    print(f"  num_layers: {config.transformer.num_layers}")
-    print(f"  num_heads: {config.transformer.num_heads}")
-
-    print("\n[Eval]")
-    print(f"  games: {config.eval.games}")
-    print(f"  max_plies: {config.eval.max_plies}")
-
-    print("\n[Stockfish]")
-    print(f"  skill_level: {config.stockfish.skill_level}")
-
-    print("\n[Searcher]")
-    print(f"  enabled: {config.searcher is not None}")
-
-    print("=" * 60)
+    print(f"checkpoint: {config.model.base_checkpoint}")
+    print(f"max_think_tokens: {config.reasoning.max_think_tokens}")
+    print(f"k_samples_per_root: {config.grpo.k_samples_per_root}")
+    print(f"leaf_evaluator: {config.leaf_evaluator.mode}")

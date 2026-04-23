@@ -106,3 +106,27 @@ def reward_board(env: chess.Board, board_start: chess.Board, movetime_ms: int = 
     fen_0 = board_start.fen()
     r_0 = evaluate_fen(fen_0, pov_is_white, movetime_ms, depth)
     return r_t - r_0 # Reward is the change in eval
+
+
+def evaluate_leaf(fen: str, pov_is_white: bool, mode: str = "stockfish", **kwargs) -> float:
+    """Return a POV-normalized leaf reward in [-1, 1]."""
+    board = chess.Board(fen)
+    if board.is_game_over(claim_draw=True):
+        if board.is_checkmate():
+            pov_loses = board.turn == (chess.WHITE if pov_is_white else chess.BLACK)
+            return -1.0 if pov_loses else 1.0
+        return 0.0
+
+    if mode == "stockfish":
+        return evaluate_fen(
+            fen,
+            pov_is_white=pov_is_white,
+            movetime_ms=kwargs.get("movetime_ms", 50),
+            depth=kwargs.get("depth", 0),
+            normalize=True,
+        )
+    if mode == "dm_value_head":
+        from src.chess.dm_leaf_oracle import dm_leaf_value
+
+        return dm_leaf_value(fen, pov_is_white=pov_is_white)
+    raise ValueError(f"Unknown leaf evaluator mode: {mode}")

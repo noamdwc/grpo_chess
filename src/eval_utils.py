@@ -13,11 +13,10 @@ except ImportError:
     _tqdm_auto = None
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from src.chess.chess_logic import MOVE_TO_ACTION
-from src.chess.policy_player import PolicyPlayer, PolicyConfig
-from src.chess.searcher import TrajectorySearcher, SearchConfig
+from src.chess.policy_player import PolicyPlayer
 from src.chess.stockfish import StockfishPlayer, StockfishConfig, DEFAULT_STOCKFISH_PATH as STOCKFISH_PATH
 
 
@@ -74,7 +73,7 @@ def debug_legal_coverage(board: chess.Board) -> tuple[int, int, list[str]]:
 
      
 def play_one_game(
-    policy: PolicyPlayer | TrajectorySearcher,
+    policy: PolicyPlayer,
     stockfish: StockfishPlayer,
     policy_is_white: bool,
     cfg: EvalConfig,
@@ -166,10 +165,10 @@ def estimate_elo_diff(score: float) -> float:
 
 
 def evaluate_policy_vs_stockfish(
-    policy: PolicyPlayer | TrajectorySearcher,
+    policy: PolicyPlayer,
     sf: StockfishPlayer,
     eval_cfg: EvalConfig,
-) -> Tuple[Dict, PolicyPlayer | TrajectorySearcher, List[str]]:
+) -> Tuple[Dict, PolicyPlayer, List[str]]:
     """Evaluate a policy by playing multiple games against Stockfish.
 
     Args:
