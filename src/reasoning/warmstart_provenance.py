@@ -158,6 +158,78 @@ class ProvenanceReport:
                 span["verified_equal"] = bool(_torch.equal(tgt_slice, src[ss:se]))
         return self
 
+    def assert_contract(self, contract: WarmstartContract) -> None:
+        """Assert that this provenance report satisfies the warmstart contract."""
+        errors: list[str] = []
+        if self.checkpoint_family != contract.checkpoint_family:
+            errors.append(
+                f"checkpoint_family mismatch: report={self.checkpoint_family!r} "
+                f"contract={contract.checkpoint_family!r} ({contract.name})"
+            )
+
+        allowed_rows: dict[str, list[tuple[int, int]]] = {}
+        for entry in contract.allowed_new_rows:
+            allowed_rows.setdefault(entry["param"], []).append((entry["start"], entry["end"]))
+
+        for pname, pspec in self.params.items():
+            if pspec["status"] == "full_copy":
+                if not pspec.get("verified_equal", False):
+                    errors.append(f"verification failed (full_copy): {pname}")
+                continue
+
+            if pspec["status"] == "new_init":
+                module = pname.rsplit(".", 1)[0]
+                allowed_module = any(
+                    pname == allowed
+                    or module == allowed
+                    or module.startswith(allowed + ".")
+                    or pname.startswith(allowed + ".")
+                    for allowed in contract.allowed_new_modules
+                )
+                if not allowed_module:
+                    top = pname.split(".", 1)[0]
+                    if (
+                        top not in contract.allowed_new_modules
+                        and module not in contract.allowed_new_modules
+                        and not any(pname.startswith(allowed + ".") for allowed in contract.allowed_new_modules)
+                    ):
+                        errors.append(
+                            f"unexpected new_init parameter: {pname} "
+                            f"(not in allowed_new_modules={list(contract.allowed_new_modules)})"
+                        )
+                continue
+
+            for span in pspec.get("spans", []):
+                if span["source"] == "new_init":
+                    ts, te = span["target_start"], span["target_end"]
+                    param_allowlist = allowed_rows.get(pname, [])
+                    if not any(ts >= start and te <= end for (start, end) in param_allowlist):
+                        errors.append(
+                            f"unexpected new-init rows in {pname}: [{ts}, {te})  "
+                            f"(allowed: {param_allowlist}); semantic_role="
+                            f"{span.get('semantic_role', '?')}"
+                        )
+                elif not span.get("verified_equal", False):
+                    ts, te = span["target_start"], span["target_end"]
+                    errors.append(
+                        f"verification failed: {pname} rows [{ts}, {te}) "
+                        f"claimed from {span['source']}/{span.get('source_key')}"
+                    )
+
+        for warning in self.warnings:
+            if warning["tag"] not in contract.allowed_warning_tags:
+                errors.append(
+                    f"unacceptable warning tag={warning['tag']!r} "
+                    f"message={warning['message']!r}"
+                )
+
+        if errors:
+            header = (
+                f"Warmstart contract violation "
+                f"(contract={contract.name}, family={contract.checkpoint_family}):\n"
+            )
+            raise AssertionError(header + "\n".join(f"  - {error}" for error in errors))
+
 
 def _find_source_with_key(loaded_sources: dict[str, dict[str, Any]], key: str) -> str:
     for name, state_dict in loaded_sources.items():

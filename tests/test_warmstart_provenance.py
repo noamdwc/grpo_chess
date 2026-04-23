@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 import torch
 
 from src.reasoning.warmstart_provenance import (
@@ -189,3 +190,141 @@ def test_verify_marks_equal_and_unequal_spans():
     tgt_tensor[0, 0] = 999.0
     report.verify(target_state=target_state, loaded_sources=loaded_sources)
     assert report.params["foo.weight"]["spans"][0]["verified_equal"] is False
+
+
+def _minimal_ok_report_for_bc():
+    from src.reasoning.warmstart_provenance import ProvenanceReport
+
+    return ProvenanceReport(
+        contract_version="bc_with_dm_av_move_input_init_v1",
+        checkpoint_family="dm_behavioral_cloning",
+        sources={
+            "bc": {"path": "synthetic://bc", "sha256": "na"},
+            "dm_av": {"path": "synthetic://dm_av", "sha256": "na"},
+        },
+        params={
+            "dm.token_embedding.weight": {
+                "status": "partial_copy",
+                "target_shape": [1971, 32],
+                "spans": [
+                    {
+                        "target_start": 0,
+                        "target_end": 31,
+                        "source": "bc",
+                        "source_key": "token_embedding.weight",
+                        "source_start": 0,
+                        "source_end": 31,
+                        "semantic_role": "fen_input_embedding",
+                        "verified_equal": True,
+                    },
+                    {
+                        "target_start": 31,
+                        "target_end": 1968,
+                        "source": "dm_av",
+                        "source_key": "token_embedding.weight",
+                        "source_start": 31,
+                        "source_end": 1968,
+                        "semantic_role": "move_input_embedding",
+                        "verified_equal": True,
+                    },
+                    {
+                        "target_start": 1968,
+                        "target_end": 1971,
+                        "source": "new_init",
+                        "semantic_role": "reasoning_structural_tokens",
+                        "verified_not_equal_to_any_source": True,
+                    },
+                ],
+            },
+            "dm.output_linear.weight": {
+                "status": "partial_copy",
+                "target_shape": [1971, 32],
+                "spans": [
+                    {
+                        "target_start": 0,
+                        "target_end": 1968,
+                        "source": "bc",
+                        "source_key": "output_linear.weight",
+                        "source_start": 0,
+                        "source_end": 1968,
+                        "semantic_role": "move_output_head",
+                        "verified_equal": True,
+                    },
+                    {
+                        "target_start": 1968,
+                        "target_end": 1971,
+                        "source": "new_init",
+                        "semantic_role": "reasoning_structural_output_rows",
+                        "verified_not_equal_to_any_source": True,
+                    },
+                ],
+            },
+            "dm.output_linear.bias": {
+                "status": "partial_copy",
+                "target_shape": [1971],
+                "spans": [
+                    {
+                        "target_start": 0,
+                        "target_end": 1968,
+                        "source": "bc",
+                        "source_key": "output_linear.bias",
+                        "source_start": 0,
+                        "source_end": 1968,
+                        "semantic_role": "move_output_head_bias",
+                        "verified_equal": True,
+                    },
+                    {
+                        "target_start": 1968,
+                        "target_end": 1971,
+                        "source": "new_init",
+                        "semantic_role": "reasoning_structural_output_bias",
+                        "verified_not_equal_to_any_source": False,
+                    },
+                ],
+            },
+            "value_head.0.weight": {
+                "status": "new_init",
+                "target_shape": [256, 32],
+                "semantic_role": "value_head",
+                "verified_not_equal_to_any_source": True,
+            },
+        },
+        warnings=[],
+    )
+
+
+def test_assert_contract_accepts_valid_bc_report():
+    report = _minimal_ok_report_for_bc()
+    report.assert_contract(BC_CONTRACT)
+
+
+def test_assert_contract_flags_unexpected_new_init_rows():
+    report = _minimal_ok_report_for_bc()
+    report.params["dm.token_embedding.weight"]["spans"][1] = {
+        "target_start": 31,
+        "target_end": 1968,
+        "source": "new_init",
+        "semantic_role": "move_input_embedding",
+        "verified_not_equal_to_any_source": True,
+    }
+    with pytest.raises(AssertionError) as exc:
+        report.assert_contract(BC_CONTRACT)
+    msg = str(exc.value)
+    assert "unexpected new-init rows in dm.token_embedding.weight" in msg
+    assert "[31, 1968)" in msg
+
+
+def test_assert_contract_rejects_family_mismatch():
+    report = _minimal_ok_report_for_bc()
+    with pytest.raises(AssertionError) as exc:
+        report.assert_contract(DM_AV_CONTRACT)
+    assert "checkpoint_family mismatch" in str(exc.value)
+
+
+def test_assert_contract_fails_on_unwhitelisted_warning():
+    report = _minimal_ok_report_for_bc()
+    report.warnings = [{"tag": "missing_fingerprint", "message": "no fp", "context": {}}]
+    with pytest.raises(AssertionError) as exc:
+        report.assert_contract(BC_CONTRACT)
+    assert "missing_fingerprint" in str(exc.value)
+    report.assert_contract(BC_CONTRACT_LEGACY)
