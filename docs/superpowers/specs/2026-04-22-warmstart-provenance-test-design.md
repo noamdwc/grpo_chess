@@ -52,7 +52,12 @@ If the detected family is `dm_behavioral_cloning` and `dm_av_embedding_source is
    - `[31, 1968)` ← DM-AV `token_embedding.weight[31:1968]` — move-as-input (action) embeddings. **DM-AV rows `[0, 31)` are deliberately NOT used** (those are DM-AV's FEN rows; BC's FEN rows win).
    - `[1968, 1971)` ← left at default `nn.Embedding` init (structural tokens).
 4. A loader-internal assertion rejects any DM-AV span with `source_key == "token_embedding.weight"` and `source_start < 31`, so a future refactor can't silently start pulling DM-AV's FEN rows.
-5. All other keys: unchanged from today.
+5. Explicit behavior for the other touched params on the BC path:
+   - `dm.output_linear.weight`: `partial_copy`. Rows `[0, 1968)` ← BC `output_linear.weight[0:1968]`. Rows `[1968, 1971)` ← default trunc-normal init (from the pre-load `nn.init.trunc_normal_` at `model.py:57`).
+   - `dm.output_linear.bias`: `partial_copy`. Entries `[0, 1968)` ← BC `output_linear.bias[0:1968]`. Entries `[1968, 1971)` ← `0.0` (from the pre-load `nn.init.zeros_` at `model.py:58`). **Do NOT pull DM-AV's output bias** — DM-AV's head is 128-dim and semantically unrelated to move logits.
+   - `dm.pos_embedding.weight`: unchanged from today — `partial_copy` with BC-sourced rows `[0, 79)` and rows `[79, max_seq_len)` copied from BC's row 78.
+   - All transformer block params (`dm.layers.*`): `full_copy` from BC. The reasoning model must refuse to load if any block-param shape disagrees (existing behavior at `model.py:144-146`).
+6. All other keys outside the above list: loader must raise `RuntimeError` on encountering them (existing behavior at `model.py:138-139`). No silent drops.
 
 The DM-AV warmstart path is unchanged except for provenance emission.
 
@@ -78,12 +83,25 @@ class ProvenanceReport:
         is not equal to any source tensor of compatible shape. Mutates
         `verified_equal` / `verified_not_equal_to_any_source` in place."""
 
-    def assert_contract(self,
-                        allowed_new_modules: list[str],
-                        allowed_new_embedding_rows: list[dict]) -> None:
+    def assert_contract(self, contract: "WarmstartContract") -> None:
         """Raise AssertionError with a structured, human-readable message
-        if: any verification failed, any param is outside the allowed
-        new-init set, or `warnings` is non-empty."""
+        if: any verification failed, any param is outside the contract's
+        allowed new-init set, or `warnings` is non-empty."""
+
+
+@dataclass(frozen=True)
+class WarmstartContract:
+    name: str                               # e.g., "dm_av_v1", "bc_with_dm_av_move_input_init_v1"
+    checkpoint_family: str                  # must match report.checkpoint_family
+    allowed_new_modules: tuple[str, ...]
+    allowed_new_embedding_rows: tuple[dict, ...]  # each: {"param": str, "start": int, "end": int}
+    require_fingerprints: bool = True       # if False, missing fingerprints -> warning, not fail
+
+# Canonical contracts live as module constants:
+#   DM_AV_CONTRACT = WarmstartContract(name="dm_av_v1", ...)
+#   BC_CONTRACT    = WarmstartContract(name="bc_with_dm_av_move_input_init_v1", ...)
+# Loader auto-selects the right one based on detected family; tests can pass
+# an explicit contract to `assert_contract` for negative-path coverage.
 ```
 
 ### Report schema
@@ -169,7 +187,9 @@ All row ranges are **half-open** `[start, end)`, encoded with separate `*_start`
 
 - Every param has `target_shape` (including `full_copy` and `new_init`).
 - Every span carries `semantic_role`; `reason` is required wherever the source choice is non-obvious.
-- `verified_equal` / `verified_not_equal_to_any_source` are written by `ProvenanceReport.verify`, not by the loader. The loader *claims* provenance; the test *verifies* it by comparing tensors. Claims without verification don't satisfy the contract.
+- `verified_equal` is written by `ProvenanceReport.verify` — a hard guarantee, since two tensors being bitwise equal is unambiguous.
+- `verified_not_equal_to_any_source` is a **weak sanity check**, not a hard guarantee. Random init could coincidentally differ from all sources while still being structurally wrong (e.g., a param that *should* have been copied was left random — the tensor differs from the source span we'd have copied from, but that doesn't prove correctness). The report records it for transparency and to catch the obvious failure mode (a new-init tensor that happens to equal a pretrained source, indicating accidental over-copy), but `assert_contract` does not treat it as load-bearing. The load-bearing guarantee for new-init params is that they're on the contract's allowlist — provenance is proven by *where the loader claims it came from*, cross-checked against the allowlist.
+- The loader *claims* provenance; the test *verifies* copies numerically. Claims without verification don't satisfy the contract.
 - `warnings` is top-level and populated by a post-build classifier that walks every parameter: anything outside the allowlist (non-`full_copy`, non-`partial_copy`, not in `allowed_new_modules`, not in `allowed_new_embedding_rows`) becomes a warning.
 
 ### Per-path contracts
@@ -249,7 +269,7 @@ Seven tests:
 
 6. **`test_fen_vocab_swap_detected`** — same, but mismatched `fen_tokenizer_fingerprint`.
 
-7. **`test_real_checkpoint_smoke`** — gated on `os.path.exists` for both the on-disk BC and DM-AV checkpoint paths. Loads them, runs inspector, asserts contract. `pytest.skip` cleanly if either file is missing.
+7. **`test_real_checkpoint_smoke`** — paths come from env vars (`GRPO_CHESS_BC_CHECKPOINT`, `GRPO_CHESS_DM_AV_CHECKPOINT`) or pytest CLI options (`--bc-checkpoint`, `--dm-av-checkpoint`), **not** hardcoded in the test. If either is unset or the referenced file is missing, `pytest.skip(reason=...)`. When both are present, load them, run the inspector, and assert the contract. This keeps the test portable across dev machines, CI runners, and Lightning jobs without embedding machine-specific paths in code.
 
 ### Failure-message format
 
