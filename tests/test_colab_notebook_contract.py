@@ -71,6 +71,13 @@ def test_main_notebook_bootstraps_missing_base_checkpoint():
     assert "symlink_to" in source
 
 
+def test_main_notebook_rewrites_dm_av_embedding_sources_for_bc_warmstart():
+    source = _notebook_sources(MAIN_NOTEBOOK)
+    assert 'dm_av_checkpoint = drive_root / "base" / "9M.pt"' in source
+    assert 'config_data["model"]["dm_av_embedding_source"] = str(dm_av_checkpoint)' in source
+    assert 'config_data["rival"]["frozen_dm_9m"]["dm_av_embedding_source"] = str(dm_av_checkpoint)' in source
+
+
 def test_committed_colab_config_loads_with_current_config_loader():
     from src.configs.config_loader import load_experiment_config
 
