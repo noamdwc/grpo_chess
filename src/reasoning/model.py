@@ -13,6 +13,7 @@ The attention mask used during forward is prefix-LM + padding (see
 src/reasoning/attention_mask.py). It is constructed once per forward call
 and passed to every transformer block.
 """
+import hashlib as _hashlib
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -22,12 +23,22 @@ import torch.nn as nn
 from src.checkpoint_inspector import inspect_checkpoint
 from src.dm_port.transformer import DMTransformer, DMTransformerConfig
 from src.reasoning.attention_mask import build_prefix_lm_mask
+from src.reasoning.warmstart_provenance import verify_checkpoint_fingerprints
 from src.reasoning.tokens import FEN_LEN, TOTAL_VOCAB_SIZE
+
+
+def _file_sha256(path: str) -> str:
+    h = _hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return "sha256:" + h.hexdigest()
 
 
 @dataclass
 class ReasoningModelConfig:
     dm_checkpoint: str
+    dm_av_embedding_source: str | None = None
     max_seq_len: int = 120
     value_head_hidden: int = 256
     freeze_body: bool = False
@@ -47,6 +58,15 @@ class ReasoningModel(nn.Module):
 
         ckpt = torch.load(config.dm_checkpoint, weights_only=False)
         checkpoint_info = inspect_checkpoint(config.dm_checkpoint)
+        self._warmstart_warnings: list[dict] = []
+        if checkpoint_info.family == "dm_behavioral_cloning" and config.dm_av_embedding_source is None:
+            raise ValueError(
+                "BC warmstart requires ReasoningModelConfig.dm_av_embedding_source "
+                "to point at a DM-AV checkpoint. Its move-as-input embedding rows "
+                "[31, 1968) are used to populate the reasoning model's "
+                "token_embedding rows [31, 1968) (BC's own embedding only supplies "
+                "rows [0, 31))."
+            )
         dm_cfg_dict = dict(ckpt["config"])
         dm_cfg_dict["vocab_size"] = TOTAL_VOCAB_SIZE
         dm_cfg_dict["output_size"] = TOTAL_VOCAB_SIZE
@@ -57,9 +77,13 @@ class ReasoningModel(nn.Module):
         nn.init.trunc_normal_(self.dm.output_linear.weight, std=0.02)
         nn.init.zeros_(self.dm.output_linear.bias)
         if checkpoint_info.family == "dm_action_value":
+            verify_checkpoint_fingerprints("dm_av", ckpt, self._warmstart_warnings)
             self._load_and_extend_dm_weights(ckpt["state_dict"])
         elif checkpoint_info.family == "dm_behavioral_cloning":
-            self._load_and_extend_bc_weights(ckpt["state_dict"])
+            dm_av_ckpt = torch.load(config.dm_av_embedding_source, weights_only=False)
+            verify_checkpoint_fingerprints("bc", ckpt, self._warmstart_warnings)
+            verify_checkpoint_fingerprints("dm_av", dm_av_ckpt, self._warmstart_warnings)
+            self._load_and_extend_bc_weights(ckpt["state_dict"], dm_av_ckpt["state_dict"])
         else:
             raise ValueError(
                 f"Unsupported checkpoint family for ReasoningModel warmstart: {checkpoint_info.family} "
@@ -114,13 +138,22 @@ class ReasoningModel(nn.Module):
             raise RuntimeError(f"Missing checkpoint keys: {preview}")
         self.dm.load_state_dict(own_state)
 
-    def _load_and_extend_bc_weights(self, bc_state_dict: dict) -> None:
-        """Load BC body weights, preserving the pretrained 31-token FEN embedding and action head."""
+    def _load_and_extend_bc_weights(self, bc_state_dict: dict, dm_av_state_dict: dict) -> None:
+        """Load BC body weights, pulling move-input embedding rows from DM-AV."""
         own_state = self.dm.state_dict()
+        dm_av_embed = dm_av_state_dict["token_embedding.weight"]
+        if dm_av_embed.shape[0] != 1968:
+            raise RuntimeError(
+                f"dm_av_embedding_source token_embedding.weight must have 1968 rows, "
+                f"got {dm_av_embed.shape[0]}"
+            )
+        if dm_av_embed.shape[1] != own_state["token_embedding.weight"].shape[1]:
+            raise RuntimeError("dm_av_embedding_source embedding_dim does not match reasoning model")
         loaded_keys: set[str] = set()
         for key, value in bc_state_dict.items():
             if key == "token_embedding.weight":
                 own_state[key][: value.shape[0]] = value
+                own_state[key][31:1968] = dm_av_embed[31:1968]
                 loaded_keys.add(key)
             elif key == "pos_embedding.weight":
                 own_state[key][: value.shape[0]] = value

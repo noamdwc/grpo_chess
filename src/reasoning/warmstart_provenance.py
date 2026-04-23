@@ -66,6 +66,49 @@ def canonical_action_vocab_fingerprint() -> str:
     return _sha256(payload)
 
 
+def verify_checkpoint_fingerprints(label: str, ckpt: dict[str, Any], warnings_out: list[dict[str, Any]]) -> None:
+    """Verify checkpoint fingerprints against the canonical vocabularies."""
+    meta = ckpt.get("meta", {}) or {}
+    canonical_fen = canonical_fen_tokenizer_fingerprint()
+    canonical_act = canonical_action_vocab_fingerprint()
+
+    fen = meta.get("fen_tokenizer_fingerprint")
+    act = meta.get("action_vocab_fingerprint")
+
+    if fen is not None and fen != canonical_fen:
+        raise ValueError(
+            f"{label} fen_tokenizer_fingerprint mismatch: "
+            f"checkpoint={fen} canonical={canonical_fen}. "
+            "This means the checkpoint was trained against a different FEN "
+            "tokenizer than the reasoning model expects — token IDs 0-30 "
+            "would denote different characters. Do not merge."
+        )
+    if act is not None and act != canonical_act:
+        raise ValueError(
+            f"{label} action_vocab_fingerprint mismatch: "
+            f"checkpoint={act} canonical={canonical_act}. "
+            "This means the checkpoint was trained against a different UCI "
+            "move ordering — action ID k would denote a different move. "
+            "Do not merge."
+        )
+    if fen is None:
+        warnings_out.append(
+            {
+                "tag": "missing_fingerprint",
+                "message": f"{label} checkpoint lacks fen_tokenizer_fingerprint",
+                "context": {"label": label, "field": "fen_tokenizer_fingerprint"},
+            }
+        )
+    if act is None:
+        warnings_out.append(
+            {
+                "tag": "missing_fingerprint",
+                "message": f"{label} checkpoint lacks action_vocab_fingerprint",
+                "context": {"label": label, "field": "action_vocab_fingerprint"},
+            }
+        )
+
+
 @dataclass(frozen=True)
 class WarmstartContract:
     name: str

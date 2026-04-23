@@ -328,3 +328,103 @@ def test_assert_contract_fails_on_unwhitelisted_warning():
         report.assert_contract(BC_CONTRACT)
     assert "missing_fingerprint" in str(exc.value)
     report.assert_contract(BC_CONTRACT_LEGACY)
+
+
+def test_config_rejects_bc_without_dm_av_source(tmp_path):
+    from src.reasoning.model import ReasoningModel, ReasoningModelConfig
+
+    bc = tmp_path / "bc.pt"
+    _build_synthetic_bc_ckpt(bc)
+    cfg = ReasoningModelConfig(dm_checkpoint=str(bc), dm_av_embedding_source=None, max_seq_len=80)
+    with pytest.raises(ValueError) as exc:
+        ReasoningModel(cfg)
+    assert "dm_av_embedding_source" in str(exc.value)
+
+
+def _build_synthetic_dm_av_ckpt(
+    path: Path,
+    embedding_dim: int = 32,
+    num_layers: int = 2,
+    fen_fingerprint: str | None = None,
+    action_fingerprint: str | None = None,
+) -> None:
+    from src.dm_port.transformer import DMTransformer, DMTransformerConfig
+
+    cfg = DMTransformerConfig(
+        vocab_size=1968,
+        output_size=128,
+        embedding_dim=embedding_dim,
+        num_layers=num_layers,
+        num_heads=4,
+        max_sequence_length=79,
+    )
+    model = DMTransformer(cfg)
+    sd = model.state_dict()
+    sd["token_embedding.weight"][:31] = 2.0
+    sd["token_embedding.weight"][31:1968] = torch.randn(1968 - 31, embedding_dim) * 0.1
+    meta = {
+        "family": "dm_action_value",
+        "input_vocab_size": 1968,
+        "output_size": 128,
+        "positional_length": 79,
+        "fen_tokenizer_fingerprint": fen_fingerprint or canonical_fen_tokenizer_fingerprint(),
+        "action_vocab_fingerprint": action_fingerprint or canonical_action_vocab_fingerprint(),
+    }
+    torch.save({"state_dict": sd, "config": cfg.__dict__, "meta": meta}, path)
+
+
+def test_bc_loader_merges_dm_av_move_input_rows(tmp_path):
+    from src.reasoning.model import ReasoningModel, ReasoningModelConfig
+
+    bc = tmp_path / "bc.pt"
+    dm = tmp_path / "dm.pt"
+    _build_synthetic_bc_ckpt(bc)
+    bc_payload = torch.load(bc, weights_only=False)
+    bc_payload["state_dict"]["token_embedding.weight"][:31] = 1.0
+    torch.save(bc_payload, bc)
+    _build_synthetic_dm_av_ckpt(dm)
+
+    cfg = ReasoningModelConfig(
+        dm_checkpoint=str(bc),
+        dm_av_embedding_source=str(dm),
+        max_seq_len=80,
+    )
+    model = ReasoningModel(cfg)
+    tok = model.dm.token_embedding.weight.detach()
+
+    assert torch.allclose(tok[:31], torch.ones_like(tok[:31]))
+    assert not torch.allclose(tok[:31], torch.full_like(tok[:31], 2.0))
+
+    dm_sd = torch.load(dm, weights_only=False)["state_dict"]
+    assert torch.equal(tok[31:1968], dm_sd["token_embedding.weight"][31:1968])
+
+
+def test_action_vocab_swap_detected(tmp_path):
+    from src.reasoning.model import ReasoningModel, ReasoningModelConfig
+
+    bc = tmp_path / "bc.pt"
+    dm = tmp_path / "dm.pt"
+    _build_synthetic_bc_ckpt(bc)
+    _build_synthetic_dm_av_ckpt(dm, action_fingerprint="sha256:deadbeef")
+    cfg = ReasoningModelConfig(dm_checkpoint=str(bc), dm_av_embedding_source=str(dm), max_seq_len=80)
+    with pytest.raises(ValueError) as exc:
+        ReasoningModel(cfg)
+    msg = str(exc.value).lower()
+    assert "action_vocab_fingerprint" in msg and "mismatch" in msg
+
+
+def test_fen_vocab_swap_detected(tmp_path):
+    from src.reasoning.model import ReasoningModel, ReasoningModelConfig
+
+    bc = tmp_path / "bc.pt"
+    dm = tmp_path / "dm.pt"
+    _build_synthetic_bc_ckpt(bc)
+    payload = torch.load(bc, weights_only=False)
+    payload["meta"]["fen_tokenizer_fingerprint"] = "sha256:bad"
+    torch.save(payload, bc)
+    _build_synthetic_dm_av_ckpt(dm)
+    cfg = ReasoningModelConfig(dm_checkpoint=str(bc), dm_av_embedding_source=str(dm), max_seq_len=80)
+    with pytest.raises(ValueError) as exc:
+        ReasoningModel(cfg)
+    msg = str(exc.value).lower()
+    assert "fen_tokenizer_fingerprint" in msg and "mismatch" in msg
