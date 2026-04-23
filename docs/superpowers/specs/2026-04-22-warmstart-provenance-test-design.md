@@ -190,9 +190,47 @@ The contract's allowlist differs by warmstart path, because the two checkpoints 
 
 The JSON example in the previous subsection shows the BC case. The DM-AV case differs only in (a) `dm.output_linear.*` being a single `new_init` entry instead of `partial_copy`, and (b) `dm.token_embedding.weight` having two spans instead of three (one `dm_av` copy span and one `new_init` span).
 
+### Tokenizer / action-vocabulary consistency
+
+Row-level value equality is necessary but not sufficient. Copying DM-AV's embedding row `k` into our input embedding row `k` is only correct if "token ID `k`" denotes the same chess concept across BC, DM-AV, and the reasoning model. Two swap modes are possible:
+
+- **FEN vocabulary swap** (rows `[0, 31)`): BC and DM-AV were trained with different FEN character → ID mappings. Silent if we only compare row values after the copy, because both sides *are* ones vs. twos in the synthetic test — the test passes while production is wrong.
+- **Action vocabulary swap** (rows `[0, 1968)` for DM-AV's move-input embedding, and `[0, 1968)` for BC's output head): DM-AV's action ID `k` denotes a different UCI move than BC's action ID `k`.
+
+**Single source of truth.** The `searchless_chess` submodule holds the canonical FEN tokenizer (`searchless_chess/src/tokenizer.py`) and the canonical action list (`searchless_chess/src/utils.py::NUM_ACTIONS` and the UCI list it's derived from). Both BC and DM-AV JAX checkpoints were converted from models trained against this same canonical vocabulary — this is an invariant we want to verify, not assume.
+
+**Recorded in the report.** Add a top-level `vocabularies` block:
+
+```json
+"vocabularies": {
+  "fen_tokenizer_fingerprint": "sha256:...",     // hash of the sorted FEN char→ID map
+  "action_vocab_fingerprint":   "sha256:...",     // hash of the UCI move list in ID order
+  "num_actions": 1968,
+  "fen_vocab_size": 31,
+  "source": "searchless_chess/src/{tokenizer,utils}.py"
+}
+```
+
+**Test additions** (in both `test_dm_av_warmstart_provenance_synthetic` and `test_bc_warmstart_provenance_synthetic`):
+
+1. The synthetic checkpoints carry tokenizer-fingerprint metadata in their `ckpt["meta"]` dict. When the reasoning model loads them, the loader asserts:
+   - BC `meta.fen_tokenizer_fingerprint` == canonical fingerprint.
+   - DM-AV `meta.fen_tokenizer_fingerprint` == canonical fingerprint.
+   - DM-AV `meta.action_vocab_fingerprint` == canonical fingerprint.
+   - BC `meta.action_vocab_fingerprint` == canonical fingerprint.
+   Mismatch raises `ValueError` with a message naming which side disagrees.
+
+2. A dedicated test `test_action_vocab_swap_detected` builds a BC + DM-AV pair whose action fingerprints differ (simulating a swap), and asserts the loader refuses to merge them.
+
+3. A dedicated test `test_fen_vocab_swap_detected` does the same for FEN fingerprints.
+
+**Real-checkpoint path.** The converters (`dm_port/convert_jax.py`, `dm_port/convert_behavioral_cloning.py`) will be updated to stamp the canonical fingerprints into `ckpt["meta"]` at conversion time. For existing on-disk checkpoints that lack the stamp, the loader treats a missing fingerprint as `unknown` and emits a top-level warning (`"BC checkpoint lacks tokenizer fingerprint; cannot verify vocab consistency"`) rather than hard-failing. The real-checkpoint smoke test asserts the warning is present or absent as appropriate and does not hard-fail on legacy checkpoints.
+
+**Why fingerprints, not the full vocab.** The full vocabulary is long and would bloat every checkpoint. A stable hash captures equality with one line in the report.
+
 ### Test layout (`tests/test_warmstart_provenance.py`)
 
-Five tests:
+Seven tests:
 
 1. **`test_dm_av_warmstart_provenance_synthetic`** — build a tiny synthetic DM-AV checkpoint (2 layers, `embedding_dim=32`, `vocab=1968`, `output=128`, `pos=79`). Load via `ReasoningModel.from_checkpoint`. Call `report.verify(...)` then `report.assert_contract(...)`. Expect `value_head` as the sole new module and `[1968, 1971)` as the only new embedding rows.
 
@@ -207,7 +245,11 @@ Five tests:
 
 4. **`test_config_rejects_bc_without_dm_av_source`** — constructing a reasoning model from a BC checkpoint with `dm_av_embedding_source=None` raises `ValueError` with a message that names the missing field.
 
-5. **`test_real_checkpoint_smoke`** — gated on `os.path.exists` for both the on-disk BC and DM-AV checkpoint paths. Loads them, runs inspector, asserts contract. `pytest.skip` cleanly if either file is missing.
+5. **`test_action_vocab_swap_detected`** — build BC + DM-AV synthetic pair with mismatched `action_vocab_fingerprint`. Expect `ValueError` naming the mismatch.
+
+6. **`test_fen_vocab_swap_detected`** — same, but mismatched `fen_tokenizer_fingerprint`.
+
+7. **`test_real_checkpoint_smoke`** — gated on `os.path.exists` for both the on-disk BC and DM-AV checkpoint paths. Loads them, runs inspector, asserts contract. `pytest.skip` cleanly if either file is missing.
 
 ### Failure-message format
 
@@ -240,8 +282,10 @@ Warmstart contract violation (contract_version=bc_with_dm_av_move_input_init_v1)
 
 ## Files touched
 
-- `src/reasoning/model.py` — config field, BC loader fix, `from_checkpoint` classmethod, provenance emission.
-- `src/reasoning/warmstart_provenance.py` — new utility.
+- `src/reasoning/model.py` — config field, BC loader fix, `from_checkpoint` classmethod, provenance emission, tokenizer/action fingerprint verification.
+- `src/reasoning/warmstart_provenance.py` — new utility, including `compute_canonical_fingerprints()` that reads `searchless_chess/src/{tokenizer,utils}.py` as the source of truth.
+- `src/dm_port/convert_jax.py` — stamp `meta.fen_tokenizer_fingerprint` and `meta.action_vocab_fingerprint` into DM-AV conversion output.
+- `src/dm_port/convert_behavioral_cloning.py` — same stamp for BC conversion output.
 - `tests/test_warmstart_provenance.py` — new pytest file.
 - `docs/reasoning_grpo/warmstart_provenance.md` — new note.
 - `docs/reasoning_grpo/failure_modes.md` — append an entry referencing this contract.
