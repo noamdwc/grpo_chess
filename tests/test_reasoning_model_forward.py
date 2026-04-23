@@ -128,14 +128,54 @@ def _write_synthetic_bc_checkpoint(tmp_path: Path) -> Path:
     return path
 
 
+def _write_synthetic_dm_av_checkpoint(tmp_path: Path, embedding_dim: int = 16) -> Path:
+    from src.dm_port.transformer import DMTransformer, DMTransformerConfig
+    from src.reasoning.warmstart_provenance import (
+        canonical_action_vocab_fingerprint,
+        canonical_fen_tokenizer_fingerprint,
+    )
+
+    cfg = DMTransformerConfig(
+        vocab_size=1968,
+        output_size=128,
+        embedding_dim=embedding_dim,
+        num_layers=1,
+        num_heads=1,
+        max_sequence_length=79,
+    )
+    model = DMTransformer(cfg)
+    payload = {
+        "state_dict": model.state_dict(),
+        "config": cfg.__dict__,
+        "meta": {
+            "family": "dm_action_value",
+            "input_vocab_size": 1968,
+            "output_size": 128,
+            "positional_length": 79,
+            "fen_tokenizer_fingerprint": canonical_fen_tokenizer_fingerprint(),
+            "action_vocab_fingerprint": canonical_action_vocab_fingerprint(),
+        },
+    }
+    path = tmp_path / "synthetic_dm_av.pt"
+    torch.save(payload, path)
+    return path
+
+
 def test_bc_checkpoint_warmstart_preserves_fen_embeddings_and_action_head(tmp_path):
     from src.reasoning.model import ReasoningModel, ReasoningModelConfig
 
     bc_ckpt = _write_synthetic_bc_checkpoint(tmp_path)
+    dm_av_ckpt = _write_synthetic_dm_av_checkpoint(tmp_path)
     raw = torch.load(bc_ckpt, weights_only=False)
 
     torch.manual_seed(0)
-    model = ReasoningModel(ReasoningModelConfig(dm_checkpoint=str(bc_ckpt), max_seq_len=120)).eval()
+    model = ReasoningModel(
+        ReasoningModelConfig(
+            dm_checkpoint=str(bc_ckpt),
+            dm_av_embedding_source=str(dm_av_ckpt),
+            max_seq_len=120,
+        )
+    ).eval()
 
     assert torch.equal(
         model.dm.token_embedding.weight[:31],
@@ -161,7 +201,14 @@ def test_bc_checkpoint_forward_uses_extended_vocab_shapes(tmp_path):
     from src.reasoning.model import ReasoningModel, ReasoningModelConfig
 
     bc_ckpt = _write_synthetic_bc_checkpoint(tmp_path)
-    model = ReasoningModel(ReasoningModelConfig(dm_checkpoint=str(bc_ckpt), max_seq_len=120)).eval()
+    dm_av_ckpt = _write_synthetic_dm_av_checkpoint(tmp_path)
+    model = ReasoningModel(
+        ReasoningModelConfig(
+            dm_checkpoint=str(bc_ckpt),
+            dm_av_embedding_source=str(dm_av_ckpt),
+            max_seq_len=120,
+        )
+    ).eval()
 
     seq = torch.zeros((2, 90), dtype=torch.long)
     seq_lens = torch.tensor([85, 90], dtype=torch.long)

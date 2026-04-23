@@ -20,6 +20,10 @@ from jax import random as jrandom
 
 from src.dm_port.transformer import DMTransformer, DMTransformerConfig
 from src.distill.teacher import MODEL_CONFIGS, _load_sc_module
+from src.reasoning.warmstart_provenance import (
+    canonical_action_vocab_fingerprint,
+    canonical_fen_tokenizer_fingerprint,
+)
 
 
 def _load_jax_params(model_name: str, checkpoint_dir: str, checkpoint_step: int) -> dict:
@@ -219,17 +223,28 @@ def convert(args: argparse.Namespace) -> None:
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({
-        "state_dict": state_dict,
-        "config": parity_cfg.__dict__,
-    }, out_path)
+    meta = {
+        "family": "dm_action_value",
+        "model": args.model,
+        "checkpoint_step": args.checkpoint_step,
+        "input_vocab_size": parity_cfg.vocab_size,
+        "output_size": parity_cfg.output_size,
+        "positional_length": parity_cfg.max_sequence_length,
+        "num_params": sum(t.numel() for t in state_dict.values()),
+        "param_keys": sorted(state_dict.keys()),
+        "fen_tokenizer_fingerprint": canonical_fen_tokenizer_fingerprint(),
+        "action_vocab_fingerprint": canonical_action_vocab_fingerprint(),
+    }
+    torch.save(
+        {
+            "state_dict": state_dict,
+            "config": parity_cfg.__dict__,
+            "meta": meta,
+        },
+        out_path,
+    )
     with open(out_path.with_suffix(".meta.json"), "w") as f:
-        json.dump({
-            "model": args.model,
-            "checkpoint_step": args.checkpoint_step,
-            "num_params": sum(t.numel() for t in state_dict.values()),
-            "param_keys": sorted(state_dict.keys()),
-        }, f, indent=2)
+        json.dump(meta, f, indent=2)
     print(f"Wrote {out_path} ({sum(t.numel() for t in state_dict.values())} params)")
 
 
