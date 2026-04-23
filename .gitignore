@@ -4,6 +4,7 @@
 .env
 .DS_Store
 .claude/worktrees/
+.worktrees/
 artifacts/
 checkpoints/*.ckpt
 interview_presentation/build/
