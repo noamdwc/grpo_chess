@@ -142,3 +142,50 @@ def test_contract_constants_are_wellformed():
     assert "missing_fingerprint" in DM_AV_CONTRACT_LEGACY.allowed_warning_tags
     assert BC_CONTRACT_LEGACY.require_fingerprints is False
     assert "missing_fingerprint" in BC_CONTRACT_LEGACY.allowed_warning_tags
+
+
+def test_verify_marks_equal_and_unequal_spans():
+    from src.reasoning.warmstart_provenance import ProvenanceReport
+
+    src_tensor = torch.arange(20, dtype=torch.float32).reshape(10, 2)
+    tgt_tensor = torch.zeros(12, 2, dtype=torch.float32)
+    tgt_tensor[:10] = src_tensor
+
+    report = ProvenanceReport(
+        contract_version="test_v1",
+        checkpoint_family="dm_behavioral_cloning",
+        sources={"bc": {"path": "synthetic://bc", "sha256": "na"}},
+        params={
+            "foo.weight": {
+                "status": "partial_copy",
+                "target_shape": [12, 2],
+                "spans": [
+                    {
+                        "target_start": 0,
+                        "target_end": 10,
+                        "source": "bc",
+                        "source_key": "foo.weight",
+                        "source_start": 0,
+                        "source_end": 10,
+                        "semantic_role": "copied",
+                    },
+                    {
+                        "target_start": 10,
+                        "target_end": 12,
+                        "source": "new_init",
+                        "semantic_role": "new",
+                    },
+                ],
+            }
+        },
+    )
+    loaded_sources = {"bc": {"foo.weight": src_tensor}}
+    target_state = {"foo.weight": tgt_tensor}
+    report.verify(target_state=target_state, loaded_sources=loaded_sources)
+    spans = report.params["foo.weight"]["spans"]
+    assert spans[0]["verified_equal"] is True
+    assert spans[1]["verified_not_equal_to_any_source"] is True
+
+    tgt_tensor[0, 0] = 999.0
+    report.verify(target_state=target_state, loaded_sources=loaded_sources)
+    assert report.params["foo.weight"]["spans"][0]["verified_equal"] is False

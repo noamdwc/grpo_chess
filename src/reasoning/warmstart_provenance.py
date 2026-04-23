@@ -125,3 +125,53 @@ class ProvenanceReport:
 
     def to_json(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=2, default=str)
+
+    def verify(self, target_state: dict[str, Any], loaded_sources: dict[str, dict[str, Any]]) -> "ProvenanceReport":
+        """Compare claimed provenance spans against actual tensors."""
+        import torch as _torch
+
+        for param_name, pspec in self.params.items():
+            tgt = target_state[param_name]
+            if pspec["status"] == "new_init":
+                pspec["verified_not_equal_to_any_source"] = _verify_new_init(tgt, loaded_sources)
+                continue
+            if pspec["status"] == "full_copy":
+                src_key = pspec["source_key"]
+                src = loaded_sources[pspec["source"]][src_key]
+                pspec["verified_equal"] = bool(_torch.equal(tgt, src))
+                continue
+            for span in pspec.get("spans", []):
+                ts, te = span["target_start"], span["target_end"]
+                tgt_slice = tgt[ts:te]
+                if span["source"] == "new_init":
+                    span["verified_not_equal_to_any_source"] = _verify_new_init(tgt_slice, loaded_sources)
+                    continue
+                if span["source"] == "copy_of_last_pretrained_row":
+                    source_name = _find_source_with_key(loaded_sources, span["source_key"])
+                    src = loaded_sources[source_name][span["source_key"]]
+                    ss, se = span["source_start"], span["source_end"]
+                    expected = src[ss:se].expand_as(tgt_slice)
+                    span["verified_equal"] = bool(_torch.equal(tgt_slice, expected))
+                    continue
+                src = loaded_sources[span["source"]][span["source_key"]]
+                ss, se = span["source_start"], span["source_end"]
+                span["verified_equal"] = bool(_torch.equal(tgt_slice, src[ss:se]))
+        return self
+
+
+def _find_source_with_key(loaded_sources: dict[str, dict[str, Any]], key: str) -> str:
+    for name, state_dict in loaded_sources.items():
+        if key in state_dict:
+            return name
+    raise KeyError(f"No loaded source provides key {key!r}")
+
+
+def _verify_new_init(tensor: Any, loaded_sources: dict[str, dict[str, Any]]) -> bool:
+    """Weak sanity check for new-init spans."""
+    import torch as _torch
+
+    for state_dict in loaded_sources.values():
+        for src in state_dict.values():
+            if src.shape == tensor.shape and _torch.equal(tensor, src):
+                return False
+    return True
