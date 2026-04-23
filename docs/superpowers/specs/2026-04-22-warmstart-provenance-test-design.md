@@ -84,9 +84,13 @@ class ProvenanceReport:
         `verified_equal` / `verified_not_equal_to_any_source` in place."""
 
     def assert_contract(self, contract: "WarmstartContract") -> None:
-        """Raise AssertionError with a structured, human-readable message
-        if: any verification failed, any param is outside the contract's
-        allowed new-init set, or `warnings` is non-empty."""
+        """Raise AssertionError with a structured, human-readable message if:
+          - any verification failed,
+          - any param is outside the contract's allowed new-init set,
+          - report.checkpoint_family != contract.checkpoint_family,
+          - any warning's `tag` is not in contract.allowed_warning_tags.
+        Warnings whose tag IS in `allowed_warning_tags` are acceptable (they
+        are still surfaced in the report, just not fatal)."""
 
 
 @dataclass(frozen=True)
@@ -94,8 +98,10 @@ class WarmstartContract:
     name: str                               # e.g., "dm_av_v1", "bc_with_dm_av_move_input_init_v1"
     checkpoint_family: str                  # must match report.checkpoint_family
     allowed_new_modules: tuple[str, ...]
-    allowed_new_embedding_rows: tuple[dict, ...]  # each: {"param": str, "start": int, "end": int}
-    require_fingerprints: bool = True       # if False, missing fingerprints -> warning, not fail
+    allowed_new_rows: tuple[dict, ...]  # each: {"param": str, "start": int, "end": int}
+    require_fingerprints: bool = True       # see warning/fingerprint semantics below
+    allowed_warning_tags: tuple[str, ...] = ()  # warning tags that may appear in
+                                                # report.warnings WITHOUT failing the contract
 
 # Canonical contracts live as module constants:
 #   DM_AV_CONTRACT = WarmstartContract(name="dm_av_v1", ...)
@@ -166,6 +172,14 @@ All row ranges are **half-open** `[start, end)`, encoded with separate `*_start`
         {"target_start": 1968, "target_end": 1971, "source": "new_init", "semantic_role": "reasoning_structural_output_rows", "verified_not_equal_to_any_source": true}
       ]
     },
+    "dm.output_linear.bias": {
+      "status": "partial_copy",
+      "target_shape": [1971],
+      "spans": [
+        {"target_start": 0,    "target_end": 1968, "source": "bc", "source_key": "output_linear.bias", "source_start": 0, "source_end": 1968, "semantic_role": "move_output_head_bias", "verified_equal": true},
+        {"target_start": 1968, "target_end": 1971, "source": "new_init", "semantic_role": "reasoning_structural_output_bias", "reason": "Zero-initialized by nn.init.zeros_ at model.py:58; DM-AV's 128-dim bias is semantically unrelated and intentionally NOT pulled.", "verified_not_equal_to_any_source": false}
+      ]
+    },
     "value_head.0.weight": {"status": "new_init", "target_shape": [256, 256], "semantic_role": "value_head", "reason": "Auxiliary value head (FM 7.5) has no pretrained source.", "verified_not_equal_to_any_source": true},
     "value_head.0.bias":   {"status": "new_init", "target_shape": [256],      "semantic_role": "value_head", "verified_not_equal_to_any_source": true},
     "value_head.2.weight": {"status": "new_init", "target_shape": [1, 256],   "semantic_role": "value_head", "verified_not_equal_to_any_source": true},
@@ -175,9 +189,10 @@ All row ranges are **half-open** `[start, end)`, encoded with separate `*_start`
   "summary": {
     "allowed_new_modules":   ["value_head"],
     "unexpected_new_modules": [],
-    "allowed_new_embedding_rows": [
+    "allowed_new_rows": [
       {"param": "dm.token_embedding.weight", "start": 1968, "end": 1971},
-      {"param": "dm.output_linear.weight",   "start": 1968, "end": 1971}
+      {"param": "dm.output_linear.weight",   "start": 1968, "end": 1971},
+      {"param": "dm.output_linear.bias",     "start": 1968, "end": 1971}
     ]
   }
 }
@@ -190,7 +205,19 @@ All row ranges are **half-open** `[start, end)`, encoded with separate `*_start`
 - `verified_equal` is written by `ProvenanceReport.verify` — a hard guarantee, since two tensors being bitwise equal is unambiguous.
 - `verified_not_equal_to_any_source` is a **weak sanity check**, not a hard guarantee. Random init could coincidentally differ from all sources while still being structurally wrong (e.g., a param that *should* have been copied was left random — the tensor differs from the source span we'd have copied from, but that doesn't prove correctness). The report records it for transparency and to catch the obvious failure mode (a new-init tensor that happens to equal a pretrained source, indicating accidental over-copy), but `assert_contract` does not treat it as load-bearing. The load-bearing guarantee for new-init params is that they're on the contract's allowlist — provenance is proven by *where the loader claims it came from*, cross-checked against the allowlist.
 - The loader *claims* provenance; the test *verifies* copies numerically. Claims without verification don't satisfy the contract.
-- `warnings` is top-level and populated by a post-build classifier that walks every parameter: anything outside the allowlist (non-`full_copy`, non-`partial_copy`, not in `allowed_new_modules`, not in `allowed_new_embedding_rows`) becomes a warning.
+- `warnings` is top-level. Each entry is a structured record `{"tag": str, "message": str, "context": dict}` — the tag is the machine-readable key used by `allowed_warning_tags` and the message is for humans. The post-build classifier walks every parameter: anything outside the allowlist (non-`full_copy`, non-`partial_copy`, not in `allowed_new_modules`, not in `allowed_new_rows`) is recorded as a warning with tag `"unexpected_new_init"`. Tokenizer fingerprint issues use `"missing_fingerprint"` or `"fingerprint_mismatch"` tags (see next section).
+
+### Warning and fingerprint semantics
+
+`assert_contract` does **not** treat `warnings != []` as automatic failure. Instead, each warning has a `tag`; a warning fails the contract only if its tag is NOT in `contract.allowed_warning_tags`.
+
+Concrete policy:
+
+- `WarmstartContract.require_fingerprints=True` (default, used by both `DM_AV_CONTRACT` and `BC_CONTRACT` for synthetic/production): `allowed_warning_tags` does NOT include `"missing_fingerprint"`, so a missing fingerprint fails. `"fingerprint_mismatch"` is always fatal regardless of this flag — a mismatch is a hard error, never a warning.
+- `WarmstartContract.require_fingerprints=False` (used by `LEGACY_SMOKE_CONTRACT` variants, or on a per-call basis for the real-checkpoint smoke test when the on-disk checkpoints predate the fingerprint stamp): `allowed_warning_tags` includes `"missing_fingerprint"`, so the contract passes if fingerprints are absent. Mismatch still fails.
+- The loader's raise-on-mismatch behavior described earlier is unchanged — fingerprint mismatch surfaces as a `ValueError` at load time, before the report is even built. `"fingerprint_mismatch"` in the warning list covers only the corner case where fingerprints are present and match the canonical source but disagree between BC and DM-AV in a way the loader chose to demote to a warning (none at present — reserved for future use).
+
+This keeps the legacy-smoke-test plan and `assert_contract`'s strict default in harmony: strict by default, explicitly relaxed when the contract opts in.
 
 ### Per-path contracts
 
@@ -198,14 +225,15 @@ The contract's allowlist differs by warmstart path, because the two checkpoints 
 
 **DM-AV warmstart:**
 - `allowed_new_modules`: `["value_head", "dm.output_linear"]` — DM-AV's 128-bucket output head is incompatible with our 1971-move head, so the entire `dm.output_linear` is new-init.
-- `allowed_new_embedding_rows`: `[{"param": "dm.token_embedding.weight", "start": 1968, "end": 1971}]`.
+- `allowed_new_rows`: `[{"param": "dm.token_embedding.weight", "start": 1968, "end": 1971}]`.
 - Expected: `dm.token_embedding.weight` is `partial_copy` (rows `[0, 1968)` from DM-AV, rows `[1968, 1971)` new). `dm.pos_embedding.weight` is `partial_copy` (rows `[0, 79)` copied, rows `[79, max_seq_len)` = copy of row 78). `dm.output_linear.{weight,bias}` are `new_init`. All transformer block params are `full_copy`. `value_head.*` are `new_init`.
 
 **BC warmstart:**
 - `allowed_new_modules`: `["value_head"]` — BC's 1968-row output head IS compatible (first 1968 rows copy in, only the 3 new structural rows are new-init).
-- `allowed_new_embedding_rows`:
+- `allowed_new_rows`:
   - `{"param": "dm.token_embedding.weight", "start": 1968, "end": 1971}`
   - `{"param": "dm.output_linear.weight",   "start": 1968, "end": 1971}`
+  - `{"param": "dm.output_linear.bias",     "start": 1968, "end": 1971}` — new-init tail on the bias must be explicitly allowed too, or `assert_contract` would flag the 3 zero-initialized tail entries as unexpected.
 - Expected: `dm.token_embedding.weight` is `partial_copy` with three spans (BC `[0, 31)`, DM-AV `[31, 1968)`, new-init `[1968, 1971)`). `dm.output_linear.weight` and `.bias` are `partial_copy` (BC `[0, 1968)`, new-init `[1968, 1971)`). Pos embedding and transformer blocks as in DM-AV path. `value_head.*` are `new_init`.
 
 The JSON example in the previous subsection shows the BC case. The DM-AV case differs only in (a) `dm.output_linear.*` being a single `new_init` entry instead of `partial_copy`, and (b) `dm.token_embedding.weight` having two spans instead of three (one `dm_av` copy span and one `new_init` span).
@@ -252,9 +280,9 @@ Row-level value equality is necessary but not sufficient. Copying DM-AV's embedd
 
 Seven tests:
 
-1. **`test_dm_av_warmstart_provenance_synthetic`** — build a tiny synthetic DM-AV checkpoint (2 layers, `embedding_dim=32`, `vocab=1968`, `output=128`, `pos=79`). Load via `ReasoningModel.from_checkpoint`. Call `report.verify(...)` then `report.assert_contract(...)`. Expect `value_head` as the sole new module and `[1968, 1971)` as the only new embedding rows.
+1. **`test_dm_av_warmstart_provenance_synthetic`** — build a tiny synthetic DM-AV checkpoint (2 layers, `embedding_dim=32`, `vocab=1968`, `output=128`, `pos=79`). Load via `ReasoningModel.from_checkpoint`. Before anything else, **assert the auto-selected contract's `.name` is exactly `"dm_av_v1"`** — this prevents a wrong-family detection bug from silently running a BC report through a DM-AV-shaped contract (or vice versa). Then call `report.verify(...)` followed by `report.assert_contract(DM_AV_CONTRACT)`. Expect `value_head` as the sole new module and `[1968, 1971)` as the only new embedding rows.
 
-2. **`test_bc_warmstart_provenance_synthetic`** — build a tiny synthetic BC checkpoint (`input_vocab=31`, `output=1968`, `pos=79`) **and** a tiny synthetic DM-AV checkpoint with the same `embedding_dim`. Crucially, populate BC rows `[0, 31)` and DM-AV rows `[0, 31)` with **distinguishable values** (e.g., ones vs. twos). Load reasoning model. Verify:
+2. **`test_bc_warmstart_provenance_synthetic`** — build a tiny synthetic BC checkpoint (`input_vocab=31`, `output=1968`, `pos=79`) **and** a tiny synthetic DM-AV checkpoint with the same `embedding_dim`. Crucially, populate BC rows `[0, 31)` and DM-AV rows `[0, 31)` with **distinguishable values** (e.g., ones vs. twos). Load reasoning model. Assert the auto-selected contract's `.name` is exactly `"bc_with_dm_av_move_input_init_v1"` before running verification, for the same reason as test 1. Then verify:
    - Target `token_embedding.weight[0:31]` equals BC (ones), *not* DM-AV (twos) — guards against accidentally pulling DM-AV's FEN rows.
    - Target `token_embedding.weight[31:1968]` equals DM-AV's `[31:1968]`.
    - Target `token_embedding.weight[1968:1971]` is not equal to any source row.
@@ -269,7 +297,7 @@ Seven tests:
 
 6. **`test_fen_vocab_swap_detected`** — same, but mismatched `fen_tokenizer_fingerprint`.
 
-7. **`test_real_checkpoint_smoke`** — paths come from env vars (`GRPO_CHESS_BC_CHECKPOINT`, `GRPO_CHESS_DM_AV_CHECKPOINT`) or pytest CLI options (`--bc-checkpoint`, `--dm-av-checkpoint`), **not** hardcoded in the test. If either is unset or the referenced file is missing, `pytest.skip(reason=...)`. When both are present, load them, run the inspector, and assert the contract. This keeps the test portable across dev machines, CI runners, and Lightning jobs without embedding machine-specific paths in code.
+7. **`test_real_checkpoint_smoke`** — paths come from env vars (`GRPO_CHESS_BC_CHECKPOINT`, `GRPO_CHESS_DM_AV_CHECKPOINT`) or pytest CLI options (`--bc-checkpoint`, `--dm-av-checkpoint`), **not** hardcoded in the test. If either is unset or the referenced file is missing, `pytest.skip(reason=...)`. When both are present, load them and assert the auto-selected contract name matches the checkpoint family (`dm_av_v1` for DM-AV, `bc_with_dm_av_move_input_init_v1` for BC). Use `require_fingerprints=False` (i.e., apply the legacy variant of the contract) so pre-stamp checkpoints don't hard-fail on `"missing_fingerprint"`. Keeps the test portable across dev machines, CI runners, and Lightning jobs.
 
 ### Failure-message format
 
