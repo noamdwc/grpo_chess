@@ -1,5 +1,5 @@
 # JAX vs PyTorch DM-port parity report
-_Generated: 2026-04-21T19:38:25_
+_Generated: 2026-04-23T17:33:32_
 
 ## Configuration
 - Stockfish: `Stockfish 17.1`

@@ -68,6 +68,13 @@ class _SplitThinkStockfishEvalCallback(StockfishEvalCallback):
             self.evaluator = periodic
 
 
+def _has_stockfish_eval_config(cfg: Any) -> bool:
+    return all(
+        hasattr(cfg, attr)
+        for attr in ("stockfish", "eval", "reasoning", "grpo")
+    )
+
+
 def build_stockfish_eval_callback(cfg) -> StockfishEvalCallback:
     try:
         resolved_stockfish = resolve_stockfish_path(cfg.stockfish.path)
@@ -106,7 +113,9 @@ def train(
     dataset = ChessStartStatesDataset(cfg.dataset)
     dataloader = DataLoader(dataset, batch_size=cfg.training.batch_size, num_workers=0)
     module = ReasoningGRPOLightningModule(cfg)
-    eval_callback = build_stockfish_eval_callback(cfg)
+    callbacks = []
+    if _has_stockfish_eval_config(cfg):
+        callbacks.append(build_stockfish_eval_callback(cfg))
     trainer = get_trainer(
         num_epochs=cfg.training.num_epochs,
         checkpoint_dir=cfg.training.checkpoint_dir,
@@ -114,7 +123,7 @@ def train(
         keep_n_checkpoints=cfg.training.keep_n_checkpoints,
         use_wandb=cfg.training.use_wandb,
         wandb_project=cfg.training.wandb_project,
-        callbacks=[eval_callback],
+        callbacks=callbacks,
     )
     trainer.fit(module, dataloader, ckpt_path=resume_from_checkpoint)
 

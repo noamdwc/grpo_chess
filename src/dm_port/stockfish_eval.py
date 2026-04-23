@@ -8,6 +8,7 @@ import chess
 import numpy as np
 import torch
 
+from src.checkpoint_inspector import inspect_checkpoint
 from src.chess.policy_player import PolicyConfig
 from src.dm_port.transformer import DMTransformer, DMTransformerConfig
 from src.evaluator import Evaluator
@@ -35,11 +36,23 @@ def load_dm_port_and_reasoning_models(
     device: torch.device | str = "cpu",
     reasoning_max_seq_len: int = 120,
     value_head_hidden: int = 256,
+    dm_av_embedding_source: str | Path | None = None,
 ) -> tuple[DMTransformer, ReasoningModel]:
     dm_model = load_dm_port_model(checkpoint_path, device=device)
+    checkpoint_info = inspect_checkpoint(checkpoint_path)
+    if checkpoint_info.family == "dm_behavioral_cloning":
+        dm_av_path = Path(dm_av_embedding_source) if dm_av_embedding_source is not None else DEFAULT_DM_PORT_CHECKPOINT
+        if not dm_av_path.exists():
+            raise FileNotFoundError(
+                "BC warmstart requires a DM-AV checkpoint for move-input embedding rows; "
+                f"expected {dm_av_path}"
+            )
+    else:
+        dm_av_path = None
     reasoning_model = ReasoningModel(
         ReasoningModelConfig(
             dm_checkpoint=str(checkpoint_path),
+            dm_av_embedding_source=str(dm_av_path) if dm_av_path is not None else None,
             max_seq_len=reasoning_max_seq_len,
             value_head_hidden=value_head_hidden,
         )

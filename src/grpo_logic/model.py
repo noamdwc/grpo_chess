@@ -22,6 +22,7 @@ from src.searchless_chess_imports import ACTION_TO_MOVE
 def _build_reasoning_model(model_cfg: ModelConfig) -> ReasoningModel:
     rm_cfg = ReasoningModelConfig(
         dm_checkpoint=model_cfg.base_checkpoint,
+        dm_av_embedding_source=model_cfg.dm_av_embedding_source,
         max_seq_len=model_cfg.max_seq_len,
         value_head_hidden=model_cfg.value_head.hidden_dim,
         freeze_body=model_cfg.freeze_body,
@@ -49,6 +50,7 @@ class ReasoningGRPOLightningModule(pl.LightningModule):
         if experiment_cfg.rival.mode == "frozen_dm_9m":
             rival_model_cfg = ReasoningModelConfig(
                 dm_checkpoint=experiment_cfg.rival.frozen_dm_9m.checkpoint_path,
+                dm_av_embedding_source=experiment_cfg.rival.frozen_dm_9m.dm_av_embedding_source,
                 max_seq_len=experiment_cfg.model.max_seq_len,
                 value_head_hidden=experiment_cfg.model.value_head.hidden_dim,
                 freeze_body=True,

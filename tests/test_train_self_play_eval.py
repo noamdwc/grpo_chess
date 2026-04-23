@@ -168,6 +168,10 @@ def test_train_passes_eval_callback_to_trainer(monkeypatch):
             use_wandb=False,
             wandb_project="Chess-GRPO-Bot",
         ),
+        stockfish=SimpleNamespace(path="stockfish"),
+        eval=SimpleNamespace(games=64),
+        reasoning=SimpleNamespace(max_think_tokens=4),
+        grpo=SimpleNamespace(eval_every_n_epochs=1),
     )
     callback = DummyCallback()
     trainer_calls = {}
@@ -194,5 +198,52 @@ def test_train_passes_eval_callback_to_trainer(monkeypatch):
     train(config_path="default.yaml", resume_from_checkpoint="resume.ckpt")
 
     assert trainer_calls["kwargs"]["callbacks"] == [callback]
+    assert trainer_calls["fit"]["dataloader_batch_size"] == 2
+    assert trainer_calls["fit"]["ckpt_path"] == "resume.ckpt"
+
+
+def test_train_omits_eval_callback_when_eval_config_is_unavailable(monkeypatch):
+    from src.train_self_play import train
+
+    cfg = SimpleNamespace(
+        dataset=SimpleNamespace(),
+        training=SimpleNamespace(
+            batch_size=2,
+            num_epochs=1,
+            checkpoint_dir="checkpoints/test",
+            checkpoint_every_n_epochs=1,
+            keep_n_checkpoints=1,
+            use_wandb=False,
+            wandb_project="Chess-GRPO-Bot",
+        ),
+    )
+    trainer_calls = {}
+
+    monkeypatch.setattr("src.train_self_play.load_experiment_config", lambda *args, **kwargs: cfg)
+    monkeypatch.setattr("src.train_self_play.ChessStartStatesDataset", lambda dataset_cfg: ["fen-a", "fen-b"])
+    monkeypatch.setattr("src.train_self_play.ReasoningGRPOLightningModule", lambda loaded_cfg: object())
+
+    def fail_build_stockfish_eval_callback(_cfg):
+        raise AssertionError("build_stockfish_eval_callback should not be called")
+
+    monkeypatch.setattr("src.train_self_play.build_stockfish_eval_callback", fail_build_stockfish_eval_callback)
+
+    class DummyTrainer:
+        def fit(self, module, dataloader, ckpt_path=None):
+            trainer_calls["fit"] = {
+                "module": module,
+                "dataloader_batch_size": dataloader.batch_size,
+                "ckpt_path": ckpt_path,
+            }
+
+    def fake_get_trainer(**kwargs):
+        trainer_calls["kwargs"] = kwargs
+        return DummyTrainer()
+
+    monkeypatch.setattr("src.train_self_play.get_trainer", fake_get_trainer)
+
+    train(config_path="default.yaml", resume_from_checkpoint="resume.ckpt")
+
+    assert trainer_calls["kwargs"]["callbacks"] == []
     assert trainer_calls["fit"]["dataloader_batch_size"] == 2
     assert trainer_calls["fit"]["ckpt_path"] == "resume.ckpt"

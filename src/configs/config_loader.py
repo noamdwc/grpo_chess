@@ -23,6 +23,7 @@ class ValueHeadConfig:
 @dataclass
 class ModelConfig:
     base_checkpoint: str = "checkpoints/dm_port/9M.pt"
+    dm_av_embedding_source: str | None = None
     freeze_body: bool = False
     max_seq_len: int = 120
     value_head: ValueHeadConfig = field(default_factory=ValueHeadConfig)
@@ -58,6 +59,7 @@ class SelfPlayRivalConfig:
 @dataclass
 class FrozenDmRivalConfig:
     checkpoint_path: str = "checkpoints/dm_port/9M.pt"
+    dm_av_embedding_source: str | None = None
 
 
 @dataclass

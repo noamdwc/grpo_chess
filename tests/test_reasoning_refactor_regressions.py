@@ -34,6 +34,44 @@ def test_load_experiment_config_accepts_legacy_colab_yaml():
     assert cfg.grpo.k_samples_per_root == 4
 
 
+def test_bc_colab_config_plumbs_dm_av_sources_into_model_builds(monkeypatch):
+    from src.configs.config_loader import load_experiment_config
+    from src.grpo_logic.model import ReasoningGRPOLightningModule
+
+    captured = []
+
+    class DummyReasoningModel:
+        def __init__(self, cfg):
+            captured.append(cfg)
+
+        def eval(self):
+            return self
+
+        def parameters(self):
+            return []
+
+        def state_dict(self):
+            return {}
+
+        def load_state_dict(self, state_dict):
+            del state_dict
+
+    monkeypatch.setattr("src.grpo_logic.model.ReasoningModel", DummyReasoningModel)
+    monkeypatch.setattr("src.grpo_logic.model.copy.deepcopy", lambda model: model)
+
+    cfg = load_experiment_config(
+        "grpo_colab_main.yaml",
+        overrides={"rival": {"mode": "frozen_dm_9m"}},
+    )
+    ReasoningGRPOLightningModule(cfg)
+
+    assert len(captured) == 2
+    assert captured[0].dm_checkpoint.endswith("9M_behavioral_cloning.pt")
+    assert captured[0].dm_av_embedding_source.endswith("9M.pt")
+    assert captured[1].dm_checkpoint.endswith("9M_behavioral_cloning.pt")
+    assert captured[1].dm_av_embedding_source.endswith("9M.pt")
+
+
 def test_distill_generate_dataset_position_extraction_no_deleted_module_dependency():
     from src.distill.generate_dataset import get_positions_from_game
 
