@@ -131,3 +131,24 @@ Start with the current mitigation: copy the last DM positional row into all exte
 
 ### History
 The neighbor-copy initialization in `src/reasoning/model.py` was added explicitly to avoid this failure from the start.
+
+## BC warmstart silently random-inits move-input embedding
+
+### Symptom
+With BC warmstart, `dm.token_embedding.weight` rows `[31, 1968)` start at
+random init rather than inheriting pretrained move-input semantics.
+
+### How you'll notice
+`tests/test_warmstart_provenance.py` fails the BC regression test if rows
+`[31, 1968)` are not sourced from a DM-AV embedding.
+`ReasoningModel.__init__` also raises if `dm_av_embedding_source` is missing on
+a BC config.
+
+### Recovery
+Point `ReasoningModelConfig.dm_av_embedding_source` at a DM-AV checkpoint
+(`checkpoints/dm_port/*_action_value.pt` or equivalent). Re-run warmstart. If
+no DM-AV checkpoint is available, use the DM-AV warmstart path instead of BC.
+
+### History
+Discovered 2026-04-22. Contract `bc_with_dm_av_move_input_init_v1` in
+`src/reasoning/warmstart_provenance.py` codifies the fix.

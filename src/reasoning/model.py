@@ -23,7 +23,12 @@ import torch.nn as nn
 from src.checkpoint_inspector import inspect_checkpoint
 from src.dm_port.transformer import DMTransformer, DMTransformerConfig
 from src.reasoning.attention_mask import build_prefix_lm_mask
-from src.reasoning.warmstart_provenance import verify_checkpoint_fingerprints
+from src.reasoning.warmstart_provenance import (
+    ProvenanceReport,
+    build_bc_report,
+    build_dm_av_report,
+    verify_checkpoint_fingerprints,
+)
 from src.reasoning.tokens import FEN_LEN, TOTAL_VOCAB_SIZE
 
 
@@ -248,3 +253,39 @@ class ReasoningModel(nn.Module):
         gathered = torch.gather(log_probs_all, 2, tokens[:, 1:].unsqueeze(-1)).squeeze(-1)
         out_log_probs[:, 1:] = gathered
         return out_log_probs
+
+    @classmethod
+    def from_checkpoint(cls, config: ReasoningModelConfig) -> tuple["ReasoningModel", ProvenanceReport]:
+        model = cls(config)
+        ckpt_info = inspect_checkpoint(config.dm_checkpoint)
+        sources: dict[str, dict] = {}
+        primary_label = "dm_av" if ckpt_info.family == "dm_action_value" else "bc"
+        sources[primary_label] = {
+            "path": str(config.dm_checkpoint),
+            "sha256": _file_sha256(config.dm_checkpoint),
+        }
+        target_state = model.state_dict()
+        if ckpt_info.family == "dm_behavioral_cloning":
+            assert config.dm_av_embedding_source is not None
+            sources["dm_av"] = {
+                "path": str(config.dm_av_embedding_source),
+                "sha256": _file_sha256(config.dm_av_embedding_source),
+            }
+            report = build_bc_report(
+                sources=sources,
+                warnings=model._warmstart_warnings,
+                max_seq_len=config.max_seq_len,
+                pos_len=ckpt_info.positional_length,
+                target_state=target_state,
+            )
+        elif ckpt_info.family == "dm_action_value":
+            report = build_dm_av_report(
+                sources=sources,
+                warnings=model._warmstart_warnings,
+                max_seq_len=config.max_seq_len,
+                pos_len=ckpt_info.positional_length,
+                target_state=target_state,
+            )
+        else:
+            raise ValueError(f"Unsupported checkpoint family: {ckpt_info.family}")
+        return model, report

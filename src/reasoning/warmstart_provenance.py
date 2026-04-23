@@ -290,3 +290,246 @@ def _verify_new_init(tensor: Any, loaded_sources: dict[str, dict[str, Any]]) -> 
             if src.shape == tensor.shape and _torch.equal(tensor, src):
                 return False
     return True
+
+
+def select_contract_for_family(family: str) -> WarmstartContract:
+    if family == "dm_action_value":
+        return DM_AV_CONTRACT
+    if family == "dm_behavioral_cloning":
+        return BC_CONTRACT
+    raise ValueError(f"No default contract for checkpoint family {family!r}")
+
+
+def build_dm_av_report(
+    sources: dict[str, dict[str, Any]],
+    warnings: list[dict[str, Any]],
+    max_seq_len: int,
+    pos_len: int,
+    target_state: dict[str, Any],
+) -> ProvenanceReport:
+    def _shape(name: str) -> list[int]:
+        return list(target_state[name].shape)
+
+    report = ProvenanceReport(
+        contract_version=DM_AV_CONTRACT.name,
+        checkpoint_family="dm_action_value",
+        sources=sources,
+        warnings=list(warnings),
+        vocabularies={
+            "fen_tokenizer_fingerprint": canonical_fen_tokenizer_fingerprint(),
+            "action_vocab_fingerprint": canonical_action_vocab_fingerprint(),
+            "num_actions": 1968,
+            "fen_vocab_size": 31,
+            "source": "searchless_chess/src/{tokenizer,utils}.py",
+        },
+        params={},
+    )
+    report.params["dm.token_embedding.weight"] = {
+        "status": "partial_copy",
+        "target_shape": _shape("dm.token_embedding.weight"),
+        "spans": [
+            {
+                "target_start": 0,
+                "target_end": 1968,
+                "source": "dm_av",
+                "source_key": "token_embedding.weight",
+                "source_start": 0,
+                "source_end": 1968,
+                "semantic_role": "full_pretrained_embedding",
+            },
+            {
+                "target_start": 1968,
+                "target_end": 1971,
+                "source": "new_init",
+                "semantic_role": "reasoning_structural_tokens",
+                "tokens": ["<think>", "</think>", "<move>"],
+            },
+        ],
+    }
+    report.params["dm.pos_embedding.weight"] = {
+        "status": "partial_copy",
+        "target_shape": _shape("dm.pos_embedding.weight"),
+        "spans": [
+            {
+                "target_start": 0,
+                "target_end": pos_len,
+                "source": "dm_av",
+                "source_key": "pos_embedding.weight",
+                "source_start": 0,
+                "source_end": pos_len,
+                "semantic_role": "pretrained_positions",
+            },
+            {
+                "target_start": pos_len,
+                "target_end": max_seq_len,
+                "source": "copy_of_last_pretrained_row",
+                "source_key": "pos_embedding.weight",
+                "source_start": pos_len - 1,
+                "source_end": pos_len,
+                "semantic_role": "extended_positions",
+            },
+        ],
+    }
+    report.params["dm.output_linear.weight"] = {
+        "status": "new_init",
+        "target_shape": _shape("dm.output_linear.weight"),
+        "semantic_role": "value_head_unrelated",
+    }
+    report.params["dm.output_linear.bias"] = {
+        "status": "new_init",
+        "target_shape": _shape("dm.output_linear.bias"),
+        "semantic_role": "value_head_unrelated",
+    }
+    for key in ("value_head.0.weight", "value_head.0.bias", "value_head.2.weight", "value_head.2.bias"):
+        report.params[key] = {"status": "new_init", "target_shape": _shape(key), "semantic_role": "value_head"}
+    for key, tensor in target_state.items():
+        if key in report.params:
+            continue
+        if not key.startswith("dm.layers.") and not key.startswith("dm.post_ln."):
+            continue
+        report.params[key] = {
+            "status": "full_copy",
+            "target_shape": list(tensor.shape),
+            "source": "dm_av",
+            "source_key": key[len("dm."):],
+            "semantic_role": "transformer_block",
+        }
+    return report
+
+
+def build_bc_report(
+    sources: dict[str, dict[str, Any]],
+    warnings: list[dict[str, Any]],
+    max_seq_len: int,
+    pos_len: int,
+    target_state: dict[str, Any],
+) -> ProvenanceReport:
+    def _shape(name: str) -> list[int]:
+        return list(target_state[name].shape)
+
+    report = ProvenanceReport(
+        contract_version=BC_CONTRACT.name,
+        checkpoint_family="dm_behavioral_cloning",
+        sources=sources,
+        warnings=list(warnings),
+        vocabularies={
+            "fen_tokenizer_fingerprint": canonical_fen_tokenizer_fingerprint(),
+            "action_vocab_fingerprint": canonical_action_vocab_fingerprint(),
+            "num_actions": 1968,
+            "fen_vocab_size": 31,
+            "source": "searchless_chess/src/{tokenizer,utils}.py",
+        },
+        params={},
+    )
+    report.params["dm.token_embedding.weight"] = {
+        "status": "partial_copy",
+        "target_shape": _shape("dm.token_embedding.weight"),
+        "spans": [
+            {
+                "target_start": 0,
+                "target_end": 31,
+                "source": "bc",
+                "source_key": "token_embedding.weight",
+                "source_start": 0,
+                "source_end": 31,
+                "semantic_role": "fen_input_embedding",
+            },
+            {
+                "target_start": 31,
+                "target_end": 1968,
+                "source": "dm_av",
+                "source_key": "token_embedding.weight",
+                "source_start": 31,
+                "source_end": 1968,
+                "semantic_role": "move_input_embedding",
+            },
+            {
+                "target_start": 1968,
+                "target_end": 1971,
+                "source": "new_init",
+                "semantic_role": "reasoning_structural_tokens",
+                "tokens": ["<think>", "</think>", "<move>"],
+            },
+        ],
+    }
+    report.params["dm.pos_embedding.weight"] = {
+        "status": "partial_copy",
+        "target_shape": _shape("dm.pos_embedding.weight"),
+        "spans": [
+            {
+                "target_start": 0,
+                "target_end": pos_len,
+                "source": "bc",
+                "source_key": "pos_embedding.weight",
+                "source_start": 0,
+                "source_end": pos_len,
+                "semantic_role": "pretrained_positions",
+            },
+            {
+                "target_start": pos_len,
+                "target_end": max_seq_len,
+                "source": "copy_of_last_pretrained_row",
+                "source_key": "pos_embedding.weight",
+                "source_start": pos_len - 1,
+                "source_end": pos_len,
+                "semantic_role": "extended_positions",
+            },
+        ],
+    }
+    report.params["dm.output_linear.weight"] = {
+        "status": "partial_copy",
+        "target_shape": _shape("dm.output_linear.weight"),
+        "spans": [
+            {
+                "target_start": 0,
+                "target_end": 1968,
+                "source": "bc",
+                "source_key": "output_linear.weight",
+                "source_start": 0,
+                "source_end": 1968,
+                "semantic_role": "move_output_head",
+            },
+            {
+                "target_start": 1968,
+                "target_end": 1971,
+                "source": "new_init",
+                "semantic_role": "reasoning_structural_output_rows",
+            },
+        ],
+    }
+    report.params["dm.output_linear.bias"] = {
+        "status": "partial_copy",
+        "target_shape": _shape("dm.output_linear.bias"),
+        "spans": [
+            {
+                "target_start": 0,
+                "target_end": 1968,
+                "source": "bc",
+                "source_key": "output_linear.bias",
+                "source_start": 0,
+                "source_end": 1968,
+                "semantic_role": "move_output_head_bias",
+            },
+            {
+                "target_start": 1968,
+                "target_end": 1971,
+                "source": "new_init",
+                "semantic_role": "reasoning_structural_output_bias",
+            },
+        ],
+    }
+    for key in ("value_head.0.weight", "value_head.0.bias", "value_head.2.weight", "value_head.2.bias"):
+        report.params[key] = {"status": "new_init", "target_shape": _shape(key), "semantic_role": "value_head"}
+    for key, tensor in target_state.items():
+        if key in report.params:
+            continue
+        if not key.startswith("dm.layers.") and not key.startswith("dm.post_ln."):
+            continue
+        report.params[key] = {
+            "status": "full_copy",
+            "target_shape": list(tensor.shape),
+            "source": "bc",
+            "source_key": key[len("dm."):],
+            "semantic_role": "transformer_block",
+        }
+    return report

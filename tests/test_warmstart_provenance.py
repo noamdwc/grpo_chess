@@ -428,3 +428,115 @@ def test_fen_vocab_swap_detected(tmp_path):
         ReasoningModel(cfg)
     msg = str(exc.value).lower()
     assert "fen_tokenizer_fingerprint" in msg and "mismatch" in msg
+
+
+def test_dm_av_warmstart_provenance_synthetic(tmp_path):
+    from src.reasoning.model import ReasoningModel, ReasoningModelConfig
+    from src.reasoning.warmstart_provenance import DM_AV_CONTRACT, select_contract_for_family
+
+    dm = tmp_path / "dm.pt"
+    _build_synthetic_dm_av_ckpt(dm)
+    cfg = ReasoningModelConfig(dm_checkpoint=str(dm), max_seq_len=80)
+
+    model, report = ReasoningModel.from_checkpoint(cfg)
+
+    selected = select_contract_for_family(report.checkpoint_family)
+    assert selected.name == "dm_av_v1"
+
+    loaded_sources = {"dm_av": torch.load(dm, weights_only=False)["state_dict"]}
+    report.verify(target_state=model.state_dict(), loaded_sources=loaded_sources)
+    report.assert_contract(DM_AV_CONTRACT)
+
+
+def test_bc_warmstart_provenance_synthetic(tmp_path):
+    from src.reasoning.model import ReasoningModel, ReasoningModelConfig
+    from src.reasoning.warmstart_provenance import BC_CONTRACT, select_contract_for_family
+
+    bc = tmp_path / "bc.pt"
+    dm = tmp_path / "dm.pt"
+    _build_synthetic_bc_ckpt(bc)
+    bc_payload = torch.load(bc, weights_only=False)
+    bc_payload["state_dict"]["token_embedding.weight"][:31] = 1.0
+    torch.save(bc_payload, bc)
+    _build_synthetic_dm_av_ckpt(dm)
+
+    cfg = ReasoningModelConfig(dm_checkpoint=str(bc), dm_av_embedding_source=str(dm), max_seq_len=80)
+    model, report = ReasoningModel.from_checkpoint(cfg)
+    assert select_contract_for_family(report.checkpoint_family).name == "bc_with_dm_av_move_input_init_v1"
+
+    loaded_sources = {
+        "bc": torch.load(bc, weights_only=False)["state_dict"],
+        "dm_av": torch.load(dm, weights_only=False)["state_dict"],
+    }
+    report.verify(target_state=model.state_dict(), loaded_sources=loaded_sources)
+    report.assert_contract(BC_CONTRACT)
+
+
+def test_bc_regression_more_than_3_new_rows_fails(tmp_path, monkeypatch):
+    from src.reasoning import model as reasoning_model
+    from src.reasoning.model import ReasoningModel, ReasoningModelConfig
+    from src.reasoning import warmstart_provenance as wp
+    from src.reasoning.warmstart_provenance import BC_CONTRACT
+
+    bc = tmp_path / "bc.pt"
+    dm = tmp_path / "dm.pt"
+    _build_synthetic_bc_ckpt(bc)
+    _build_synthetic_dm_av_ckpt(dm)
+
+    real_builder = wp.build_bc_report
+
+    def _buggy_builder(*args, **kwargs):
+        report = real_builder(*args, **kwargs)
+        spans = report.params["dm.token_embedding.weight"]["spans"]
+        spans[1] = {
+            "target_start": 31,
+            "target_end": 1968,
+            "source": "new_init",
+            "semantic_role": "move_input_embedding",
+            "reason": "[simulated pre-fix BC bug: rows not sourced from DM-AV]",
+        }
+        return report
+
+    monkeypatch.setattr(wp, "build_bc_report", _buggy_builder)
+    monkeypatch.setattr(reasoning_model, "build_bc_report", _buggy_builder)
+
+    cfg = ReasoningModelConfig(dm_checkpoint=str(bc), dm_av_embedding_source=str(dm), max_seq_len=80)
+    model, report = ReasoningModel.from_checkpoint(cfg)
+    loaded_sources = {
+        "bc": torch.load(bc, weights_only=False)["state_dict"],
+        "dm_av": torch.load(dm, weights_only=False)["state_dict"],
+    }
+    report.verify(target_state=model.state_dict(), loaded_sources=loaded_sources)
+
+    with pytest.raises(AssertionError) as exc:
+        report.assert_contract(BC_CONTRACT)
+    msg = str(exc.value)
+    assert "unexpected new-init rows in dm.token_embedding.weight" in msg
+    assert "[31, 1968)" in msg
+    assert "semantic_role=move_input_embedding" in msg
+
+
+def test_real_checkpoint_smoke(bc_checkpoint_path, dm_av_checkpoint_path):
+    import os
+    from src.reasoning.model import ReasoningModel, ReasoningModelConfig
+    from src.reasoning.warmstart_provenance import BC_CONTRACT_LEGACY, select_contract_for_family
+
+    if not bc_checkpoint_path or not os.path.exists(bc_checkpoint_path):
+        pytest.skip("BC checkpoint path not provided or missing")
+    if not dm_av_checkpoint_path or not os.path.exists(dm_av_checkpoint_path):
+        pytest.skip("DM-AV checkpoint path not provided or missing")
+
+    cfg = ReasoningModelConfig(
+        dm_checkpoint=bc_checkpoint_path,
+        dm_av_embedding_source=dm_av_checkpoint_path,
+        max_seq_len=120,
+    )
+    model, report = ReasoningModel.from_checkpoint(cfg)
+    assert select_contract_for_family(report.checkpoint_family).name == "bc_with_dm_av_move_input_init_v1"
+
+    loaded_sources = {
+        "bc": torch.load(bc_checkpoint_path, weights_only=False)["state_dict"],
+        "dm_av": torch.load(dm_av_checkpoint_path, weights_only=False)["state_dict"],
+    }
+    report.verify(target_state=model.state_dict(), loaded_sources=loaded_sources)
+    report.assert_contract(BC_CONTRACT_LEGACY)
