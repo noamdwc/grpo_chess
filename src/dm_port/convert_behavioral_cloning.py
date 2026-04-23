@@ -17,6 +17,10 @@ import orbax.checkpoint as ocp
 import torch
 
 from src.dm_port.transformer import DMTransformer, DMTransformerConfig
+from src.reasoning.warmstart_provenance import (
+    canonical_action_vocab_fingerprint,
+    canonical_fen_tokenizer_fingerprint,
+)
 
 
 def _tensor(arr) -> torch.Tensor:
@@ -79,13 +83,15 @@ def convert(checkpoint_dir: str, out: str) -> None:
 
     out_path = Path(out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"state_dict": state_dict, "config": config.__dict__}, out_path)
     meta = {
         "family": "dm_behavioral_cloning",
         "input_vocab_size": config.vocab_size,
         "output_size": config.output_size,
         "positional_length": config.max_sequence_length,
+        "fen_tokenizer_fingerprint": canonical_fen_tokenizer_fingerprint(),
+        "action_vocab_fingerprint": canonical_action_vocab_fingerprint(),
     }
+    torch.save({"state_dict": state_dict, "config": config.__dict__, "meta": meta}, out_path)
     out_path.with_suffix(".meta.json").write_text(json.dumps(meta, indent=2))
     print(f"Wrote {out_path}")
 
