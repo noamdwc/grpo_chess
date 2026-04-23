@@ -134,9 +134,9 @@ git commit -m "feat(warmstart): canonical FEN and action vocab fingerprints"
 
 The converters must write the canonical fingerprints into both the `torch.save` payload (under `meta`) and the sidecar `.meta.json`. Existing on-disk checkpoints do NOT have these — they're handled by the legacy contract variant later.
 
-- [ ] **Step 1: Write failing test for converter stamp**
+- [ ] **Step 1: Add the synthetic-checkpoint test helper (not a converter test)**
 
-Append to `tests/test_warmstart_provenance.py`:
+Append to `tests/test_warmstart_provenance.py`. Note clearly that this helper is for later tests — it stamps fingerprints itself and is NOT a validation of the real converters.
 
 ```python
 import json
@@ -152,7 +152,12 @@ from src.reasoning.warmstart_provenance import (
 
 
 def _build_synthetic_bc_ckpt(path: Path, embedding_dim: int = 32, num_layers: int = 2) -> None:
-    """Build a tiny BC-shaped torch .pt checkpoint for tests (bypasses JAX/Orbax)."""
+    """Build a tiny BC-shaped torch .pt checkpoint for tests (bypasses JAX/Orbax).
+
+    IMPORTANT: this helper stamps fingerprints itself. It is NOT a test of the
+    real `convert_behavioral_cloning.convert()` function — that is covered by
+    `test_bc_converter_stamps_fingerprints` below.
+    """
     from src.dm_port.transformer import DMTransformerConfig, DMTransformer
 
     cfg = DMTransformerConfig(
@@ -172,22 +177,85 @@ def _build_synthetic_bc_ckpt(path: Path, embedding_dim: int = 32, num_layers: in
     torch.save({"state_dict": sd, "config": cfg.__dict__, "meta": meta}, path)
 
 
-def test_synthetic_bc_ckpt_carries_fingerprints(tmp_path):
+def test_synthetic_bc_helper_stamps_fingerprints(tmp_path):
+    """Locks the shape of the test HELPER's output — not the real converter.
+    The real converter is tested by test_bc_converter_stamps_fingerprints."""
     p = tmp_path / "bc.pt"
     _build_synthetic_bc_ckpt(p)
     payload = torch.load(p, weights_only=False)
-    assert "meta" in payload, "converter output must carry a 'meta' block"
+    assert "meta" in payload
     assert payload["meta"]["fen_tokenizer_fingerprint"] == canonical_fen_tokenizer_fingerprint()
     assert payload["meta"]["action_vocab_fingerprint"] == canonical_action_vocab_fingerprint()
 ```
 
-- [ ] **Step 2: Run test to confirm it fails**
+- [ ] **Step 2: Run to confirm the helper test passes**
 
 ```bash
-~/miniconda3/envs/grpo_chess/bin/python -m pytest tests/test_warmstart_provenance.py::test_synthetic_bc_ckpt_carries_fingerprints -v
+~/miniconda3/envs/grpo_chess/bin/python -m pytest tests/test_warmstart_provenance.py::test_synthetic_bc_helper_stamps_fingerprints -v
 ```
 
-Expected: PASS already (the helper stamps fingerprints itself). **This test locks the helper's output shape** so later tasks can rely on it. If it fails, the fingerprint functions regressed.
+Expected: PASS. If it fails, the fingerprint functions regressed.
+
+- [ ] **Step 2b: Write failing test for the *real* BC converter**
+
+Append to `tests/test_warmstart_provenance.py`. This monkeypatches Orbax so the test can run without a real Orbax checkpoint on disk, and drives `convert_behavioral_cloning.convert()` end-to-end.
+
+```python
+def _fake_bc_params(embedding_dim: int = 256):
+    """Build a fake Orbax 'params' tree matching the layout the BC converter reads."""
+    import numpy as np
+    def _rand(*shape):
+        return np.random.RandomState(0).randn(*shape).astype(np.float32)
+    params = {
+        "Embed_0": {"embedding": {"value": _rand(31, embedding_dim)}},
+        "Embed_1": {"embedding": {"value": _rand(79, embedding_dim)}},
+        "LayerNorm_16": {"scale": _rand(embedding_dim), "bias": _rand(embedding_dim)},
+        "Dense_24": {"kernel": {"value": _rand(embedding_dim, 1968)}, "bias": _rand(1968)},
+    }
+    for i in range(8):
+        params[f"LayerNorm_{2 * i}"]     = {"scale": _rand(embedding_dim), "bias": _rand(embedding_dim)}
+        params[f"LayerNorm_{2 * i + 1}"] = {"scale": _rand(embedding_dim), "bias": _rand(embedding_dim)}
+        params[f"MultiHeadDotProductAttention_{i}"] = {
+            "query": {"kernel": _rand(embedding_dim, embedding_dim)},
+            "key":   {"kernel": _rand(embedding_dim, embedding_dim)},
+            "value": {"kernel": _rand(embedding_dim, embedding_dim)},
+            "out":   {"kernel": _rand(embedding_dim, embedding_dim)},
+        }
+        params[f"Dense_{3 * i}"]     = {"kernel": {"value": _rand(embedding_dim, embedding_dim * 4)}}
+        params[f"Dense_{3 * i + 1}"] = {"kernel": {"value": _rand(embedding_dim, embedding_dim * 4)}}
+        params[f"Dense_{3 * i + 2}"] = {"kernel": {"value": _rand(embedding_dim * 4, embedding_dim)}}
+    return params
+
+
+def test_bc_converter_stamps_fingerprints(tmp_path, monkeypatch):
+    """End-to-end check that the real BC converter writes fingerprints."""
+    from src.dm_port import convert_behavioral_cloning as cv
+
+    class _FakeCheckpointer:
+        def restore(self, _dir): return {"params": _fake_bc_params()}
+
+    monkeypatch.setattr(cv.ocp, "StandardCheckpointer", lambda: _FakeCheckpointer())
+
+    out = tmp_path / "bc_real.pt"
+    cv.convert(checkpoint_dir="ignored", out=str(out))
+
+    payload = torch.load(out, weights_only=False)
+    assert "meta" in payload, "BC converter must write a 'meta' block into the .pt file"
+    assert payload["meta"]["fen_tokenizer_fingerprint"] == canonical_fen_tokenizer_fingerprint()
+    assert payload["meta"]["action_vocab_fingerprint"] == canonical_action_vocab_fingerprint()
+
+    sidecar = json.loads(out.with_suffix(".meta.json").read_text())
+    assert sidecar["fen_tokenizer_fingerprint"] == canonical_fen_tokenizer_fingerprint()
+    assert sidecar["action_vocab_fingerprint"] == canonical_action_vocab_fingerprint()
+```
+
+- [ ] **Step 2c: Run to confirm it fails**
+
+```bash
+~/miniconda3/envs/grpo_chess/bin/python -m pytest tests/test_warmstart_provenance.py::test_bc_converter_stamps_fingerprints -v
+```
+
+Expected: FAIL — converter doesn't stamp fingerprints yet.
 
 - [ ] **Step 3: Modify BC converter to stamp fingerprints**
 
@@ -797,6 +865,13 @@ git commit -m "feat(warmstart): reject BC warmstart without dm_av_embedding_sour
 
 Load the DM-AV checkpoint, pull its `token_embedding.weight[31:1968]` into the reasoning model's rows `[31, 1968)`. FEN rows `[0, 31)` continue to come from BC. Assert DM-AV rows `[0, 31)` are NEVER read.
 
+> **Namespace distinction (important — do not mix these up).** Two different parameter-name conventions appear in this task:
+>
+> - **Internal (inside `_load_and_extend_bc_weights`):** we work with `self.dm.state_dict()`, so keys are **without** the `dm.` prefix — e.g. `"token_embedding.weight"`, `"output_linear.weight"`, `"output_linear.bias"`, `"pos_embedding.weight"`, `"layers.0.attn.q_proj.weight"`.
+> - **External (in the `ProvenanceReport` and `WarmstartContract` allowlists):** we use the full `ReasoningModel.state_dict()` keys, so they carry the `dm.` prefix — e.g. `"dm.token_embedding.weight"`, `"dm.output_linear.weight"`, `"dm.output_linear.bias"`.
+>
+> The loader code uses the internal names. The report builders in Task 9 use the external names. `verify()` in Task 4 reads target tensors via `target_state[param_name]` where `param_name` is the *external* name (passed from `model.state_dict()`), and reads source tensors from `loaded_sources[source][source_key]` where `source_key` is the *internal* name (as stored in the BC/DM-AV checkpoint's raw `state_dict`, which is flat — it has no `dm.` prefix because the checkpoint was saved from `DMTransformer`, not from `ReasoningModel`). Keep these two namespaces separate throughout.
+
 - [ ] **Step 1: Write failing test that catches the BC bug**
 
 Append:
@@ -1184,9 +1259,15 @@ def select_contract_for_family(family: str) -> "WarmstartContract":
 
 
 def build_dm_av_report(sources: dict[str, dict], warnings: list[dict],
-                       max_seq_len: int, pos_len: int) -> "ProvenanceReport":
-    """Claim provenance for the DM-AV warmstart path. The loader must
+                       max_seq_len: int, pos_len: int,
+                       target_state: dict) -> "ProvenanceReport":
+    """Claim provenance for the DM-AV warmstart path. `target_state` is
+    `model.state_dict()` of the just-built reasoning model — used only so
+    each param entry can carry its real `target_shape`. The loader must
     actually perform the copies described here; verify() checks."""
+    def _shape(name: str) -> list[int]:
+        return list(target_state[name].shape)
+
     report = ProvenanceReport(
         contract_version=DM_AV_CONTRACT.name,
         checkpoint_family="dm_action_value",
@@ -1203,6 +1284,7 @@ def build_dm_av_report(sources: dict[str, dict], warnings: list[dict],
     # Token embedding: DM-AV rows [0, 1968) copied in; [1968, 1971) new.
     report.params["dm.token_embedding.weight"] = {
         "status": "partial_copy",
+        "target_shape": _shape("dm.token_embedding.weight"),
         "spans": [
             {"target_start": 0, "target_end": 1968,
              "source": "dm_av", "source_key": "token_embedding.weight",
@@ -1214,9 +1296,10 @@ def build_dm_av_report(sources: dict[str, dict], warnings: list[dict],
              "tokens": ["<think>", "</think>", "<move>"]},
         ],
     }
-    # Pos embedding: DM-AV rows [0, 79) copied in; [79, max_seq_len) = last row.
+    # Pos embedding: DM-AV rows [0, pos_len) copied in; [pos_len, max_seq_len) = last row.
     report.params["dm.pos_embedding.weight"] = {
         "status": "partial_copy",
+        "target_shape": _shape("dm.pos_embedding.weight"),
         "spans": [
             {"target_start": 0, "target_end": pos_len,
              "source": "dm_av", "source_key": "pos_embedding.weight",
@@ -1230,18 +1313,46 @@ def build_dm_av_report(sources: dict[str, dict], warnings: list[dict],
              "reason": "Last pretrained row copied to avoid cold-start blowup (FM 7.9)."},
         ],
     }
-    # Output head fully new-init for DM-AV.
-    report.params["dm.output_linear.weight"] = {"status": "new_init", "semantic_role": "value_head_unrelated",
-                                                "reason": "DM-AV's 128-bucket head is incompatible with the 1971-move head."}
-    report.params["dm.output_linear.bias"]   = {"status": "new_init", "semantic_role": "value_head_unrelated"}
+    # Output head fully new-init for DM-AV (128-bucket head incompatible with 1971-move head).
+    report.params["dm.output_linear.weight"] = {
+        "status": "new_init", "target_shape": _shape("dm.output_linear.weight"),
+        "semantic_role": "value_head_unrelated",
+        "reason": "DM-AV's 128-bucket head is incompatible with the 1971-move head.",
+    }
+    report.params["dm.output_linear.bias"] = {
+        "status": "new_init", "target_shape": _shape("dm.output_linear.bias"),
+        "semantic_role": "value_head_unrelated",
+    }
     # Value head: always new.
     for k in ("value_head.0.weight", "value_head.0.bias", "value_head.2.weight", "value_head.2.bias"):
-        report.params[k] = {"status": "new_init", "semantic_role": "value_head"}
+        report.params[k] = {
+            "status": "new_init", "target_shape": _shape(k),
+            "semantic_role": "value_head",
+        }
+    # Transformer blocks: full copies from DM-AV. Walk every remaining key.
+    for k, t in target_state.items():
+        if k in report.params:
+            continue
+        if not k.startswith("dm.layers.") and not k.startswith("dm.post_ln.") and not k.startswith("dm.pre_ln."):
+            continue  # anything else should already be in report.params — protect against silent drops
+        # Strip the leading "dm." to get the key inside the DM-AV checkpoint's flat state_dict.
+        src_key = k[len("dm."):]
+        report.params[k] = {
+            "status": "full_copy", "target_shape": list(t.shape),
+            "source": "dm_av", "source_key": src_key,
+            "semantic_role": "transformer_block",
+        }
     return report
 
 
 def build_bc_report(sources: dict[str, dict], warnings: list[dict],
-                    max_seq_len: int, pos_len: int) -> "ProvenanceReport":
+                    max_seq_len: int, pos_len: int,
+                    target_state: dict) -> "ProvenanceReport":
+    """See build_dm_av_report's docstring. `target_state` supplies real
+    shapes so every param entry carries `target_shape`."""
+    def _shape(name: str) -> list[int]:
+        return list(target_state[name].shape)
+
     report = ProvenanceReport(
         contract_version=BC_CONTRACT.name,
         checkpoint_family="dm_behavioral_cloning",
@@ -1257,6 +1368,7 @@ def build_bc_report(sources: dict[str, dict], warnings: list[dict],
     )
     report.params["dm.token_embedding.weight"] = {
         "status": "partial_copy",
+        "target_shape": _shape("dm.token_embedding.weight"),
         "spans": [
             {"target_start": 0, "target_end": 31,
              "source": "bc", "source_key": "token_embedding.weight",
@@ -1275,6 +1387,7 @@ def build_bc_report(sources: dict[str, dict], warnings: list[dict],
     }
     report.params["dm.pos_embedding.weight"] = {
         "status": "partial_copy",
+        "target_shape": _shape("dm.pos_embedding.weight"),
         "spans": [
             {"target_start": 0, "target_end": pos_len,
              "source": "bc", "source_key": "pos_embedding.weight",
@@ -1289,6 +1402,7 @@ def build_bc_report(sources: dict[str, dict], warnings: list[dict],
     }
     report.params["dm.output_linear.weight"] = {
         "status": "partial_copy",
+        "target_shape": _shape("dm.output_linear.weight"),
         "spans": [
             {"target_start": 0, "target_end": 1968,
              "source": "bc", "source_key": "output_linear.weight",
@@ -1300,6 +1414,7 @@ def build_bc_report(sources: dict[str, dict], warnings: list[dict],
     }
     report.params["dm.output_linear.bias"] = {
         "status": "partial_copy",
+        "target_shape": _shape("dm.output_linear.bias"),
         "spans": [
             {"target_start": 0, "target_end": 1968,
              "source": "bc", "source_key": "output_linear.bias",
@@ -1310,7 +1425,21 @@ def build_bc_report(sources: dict[str, dict], warnings: list[dict],
         ],
     }
     for k in ("value_head.0.weight", "value_head.0.bias", "value_head.2.weight", "value_head.2.bias"):
-        report.params[k] = {"status": "new_init", "semantic_role": "value_head"}
+        report.params[k] = {
+            "status": "new_init", "target_shape": _shape(k),
+            "semantic_role": "value_head",
+        }
+    for k, t in target_state.items():
+        if k in report.params:
+            continue
+        if not k.startswith("dm.layers.") and not k.startswith("dm.post_ln.") and not k.startswith("dm.pre_ln."):
+            continue
+        src_key = k[len("dm."):]
+        report.params[k] = {
+            "status": "full_copy", "target_shape": list(t.shape),
+            "source": "bc", "source_key": src_key,
+            "semantic_role": "transformer_block",
+        }
     return report
 ```
 
@@ -1338,6 +1467,7 @@ In `src/reasoning/model.py`, add classmethod at the end of the class:
             "path": str(config.dm_checkpoint),
             "sha256": _file_sha256(config.dm_checkpoint),
         }
+        target_state = model.state_dict()
         if ckpt_info.family == "dm_behavioral_cloning":
             sources["dm_av"] = {
                 "path": str(config.dm_av_embedding_source),
@@ -1346,11 +1476,13 @@ In `src/reasoning/model.py`, add classmethod at the end of the class:
             report = build_bc_report(
                 sources=sources, warnings=model._warmstart_warnings,
                 max_seq_len=config.max_seq_len, pos_len=ckpt_info.positional_length,
+                target_state=target_state,
             )
         elif ckpt_info.family == "dm_action_value":
             report = build_dm_av_report(
                 sources=sources, warnings=model._warmstart_warnings,
                 max_seq_len=config.max_seq_len, pos_len=ckpt_info.positional_length,
+                target_state=target_state,
             )
         else:
             raise ValueError(f"Unsupported checkpoint family: {ckpt_info.family}")
@@ -1392,7 +1524,9 @@ git commit -m "feat(warmstart): ReasoningModel.from_checkpoint returns Provenanc
 **Files:**
 - Test: `tests/test_warmstart_provenance.py`
 
-Monkey-patch `_load_and_extend_bc_weights` to the *pre-fix* behavior and assert that `assert_contract` fails with a message naming rows `[31, 1968)`.
+The design's failure-message example names **"unexpected new-init rows in dm.token_embedding.weight"** with range `[31, 1968)`. That message fires only when the report *claims* those rows are new-init — which is exactly the shape of the original BC bug: the report honestly says "rows 31-1967 are new" and the contract says "no, only 1968-1970 may be new."
+
+We reproduce that scenario by monkeypatching `build_bc_report` to emit a report that claims `new_init` for the middle span (matching what a pre-fix loader would truthfully produce), then call `assert_contract` and expect the design's exact failure wording.
 
 - [ ] **Step 1: Write the regression test**
 
@@ -1400,8 +1534,12 @@ Append:
 
 ```python
 def test_bc_regression_more_than_3_new_rows_fails(tmp_path, monkeypatch):
-    from src.reasoning import model as model_mod
+    """Would have caught the pre-2026-04-22 BC bug: the BC loader left
+    token_embedding rows [31, 1968) at random init. If the report
+    truthfully recorded that (status='new_init' for the middle span),
+    assert_contract must refuse with 'unexpected new-init rows'."""
     from src.reasoning.model import ReasoningModel, ReasoningModelConfig
+    from src.reasoning import warmstart_provenance as wp
     from src.reasoning.warmstart_provenance import BC_CONTRACT
 
     bc = tmp_path / "bc.pt"
@@ -1409,31 +1547,26 @@ def test_bc_regression_more_than_3_new_rows_fails(tmp_path, monkeypatch):
     _build_synthetic_bc_ckpt(bc)
     _build_synthetic_dm_av_ckpt(dm)
 
-    # Simulate the pre-fix loader: only BC rows [0, 31) go in; [31, 1968) stays random.
-    def _buggy_bc_loader(self, bc_state_dict, dm_av_state_dict):
-        own_state = self.dm.state_dict()
-        for key, value in bc_state_dict.items():
-            if key == "token_embedding.weight":
-                own_state[key][: value.shape[0]] = value   # only [0, 31), bug
-            elif key == "pos_embedding.weight":
-                own_state[key][: value.shape[0]] = value
-                last = value[-1]
-                for i in range(value.shape[0], own_state[key].shape[0]):
-                    own_state[key][i] = last
-            elif key == "output_linear.weight":
-                own_state[key][: value.shape[0]] = value
-            elif key == "output_linear.bias":
-                own_state[key][: value.shape[0]] = value
-            else:
-                if own_state[key].shape == value.shape:
-                    own_state[key] = value
-        self.dm.load_state_dict(own_state)
+    real_builder = wp.build_bc_report
 
-    monkeypatch.setattr(ReasoningModel, "_load_and_extend_bc_weights", _buggy_bc_loader)
+    def _buggy_builder(*args, **kwargs):
+        report = real_builder(*args, **kwargs)
+        # Pre-fix loader semantics: rows [31, 1968) were actually new-init.
+        # A truthful report captures that — which is what this regression
+        # is designed to catch at assert_contract time.
+        spans = report.params["dm.token_embedding.weight"]["spans"]
+        spans[1] = {
+            "target_start": 31, "target_end": 1968,
+            "source": "new_init",
+            "semantic_role": "move_input_embedding",
+            "reason": "[simulated pre-fix BC bug: rows not sourced from DM-AV]",
+        }
+        return report
+
+    monkeypatch.setattr(wp, "build_bc_report", _buggy_builder)
 
     cfg = ReasoningModelConfig(dm_checkpoint=str(bc), dm_av_embedding_source=str(dm), max_seq_len=80)
     model, report = ReasoningModel.from_checkpoint(cfg)
-
     loaded_sources = {
         "bc":    torch.load(bc, weights_only=False)["state_dict"],
         "dm_av": torch.load(dm, weights_only=False)["state_dict"],
@@ -1443,7 +1576,9 @@ def test_bc_regression_more_than_3_new_rows_fails(tmp_path, monkeypatch):
     with pytest.raises(AssertionError) as exc:
         report.assert_contract(BC_CONTRACT)
     msg = str(exc.value)
-    assert "verification failed" in msg and "[31, 1968)" in msg
+    assert "unexpected new-init rows in dm.token_embedding.weight" in msg
+    assert "[31, 1968)" in msg
+    assert "semantic_role=move_input_embedding" in msg
 ```
 
 - [ ] **Step 2: Run**
@@ -1452,7 +1587,7 @@ def test_bc_regression_more_than_3_new_rows_fails(tmp_path, monkeypatch):
 ~/miniconda3/envs/grpo_chess/bin/python -m pytest tests/test_warmstart_provenance.py::test_bc_regression_more_than_3_new_rows_fails -v
 ```
 
-Expected: PASS (the verification for the `[31, 1968)` DM-AV span fails because the buggy loader didn't actually copy those rows).
+Expected: PASS. The assertion message matches the design's example wording verbatim.
 
 - [ ] **Step 3: Commit**
 
@@ -1701,7 +1836,7 @@ Expected: all PASS. Any new failure in the BC/DM parity tests means the loader c
 git log --oneline main..HEAD
 ```
 
-Expected: 12 focused commits, each on one task, each with a clear imperative subject.
+Expected: 13 focused commits (one per task 1-12 plus any step-level commits), each with a clear imperative subject.
 
 ---
 
