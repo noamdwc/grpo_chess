@@ -7,6 +7,11 @@ from pathlib import Path
 import torch
 
 from src.reasoning.warmstart_provenance import (
+    BC_CONTRACT,
+    BC_CONTRACT_LEGACY,
+    DM_AV_CONTRACT,
+    DM_AV_CONTRACT_LEGACY,
+    WarmstartContract,
     canonical_action_vocab_fingerprint,
     canonical_fen_tokenizer_fingerprint,
 )
@@ -114,3 +119,26 @@ def test_bc_converter_stamps_fingerprints(tmp_path, monkeypatch):
     sidecar = json.loads(out.with_suffix(".meta.json").read_text())
     assert sidecar["fen_tokenizer_fingerprint"] == canonical_fen_tokenizer_fingerprint()
     assert sidecar["action_vocab_fingerprint"] == canonical_action_vocab_fingerprint()
+
+
+def test_contract_constants_are_wellformed():
+    assert DM_AV_CONTRACT.name == "dm_av_v1"
+    assert DM_AV_CONTRACT.checkpoint_family == "dm_action_value"
+    assert DM_AV_CONTRACT.require_fingerprints is True
+    assert "value_head" in DM_AV_CONTRACT.allowed_new_modules
+    assert "dm.output_linear" in DM_AV_CONTRACT.allowed_new_modules
+
+    assert BC_CONTRACT.name == "bc_with_dm_av_move_input_init_v1"
+    assert BC_CONTRACT.checkpoint_family == "dm_behavioral_cloning"
+    assert BC_CONTRACT.require_fingerprints is True
+    assert BC_CONTRACT.allowed_new_modules == ("value_head",)
+
+    bc_rows = {(r["param"], r["start"], r["end"]) for r in BC_CONTRACT.allowed_new_rows}
+    assert ("dm.token_embedding.weight", 1968, 1971) in bc_rows
+    assert ("dm.output_linear.weight", 1968, 1971) in bc_rows
+    assert ("dm.output_linear.bias", 1968, 1971) in bc_rows
+
+    assert DM_AV_CONTRACT_LEGACY.require_fingerprints is False
+    assert "missing_fingerprint" in DM_AV_CONTRACT_LEGACY.allowed_warning_tags
+    assert BC_CONTRACT_LEGACY.require_fingerprints is False
+    assert "missing_fingerprint" in BC_CONTRACT_LEGACY.allowed_warning_tags
