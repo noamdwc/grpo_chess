@@ -103,11 +103,23 @@ class WarmstartContract:
     allowed_warning_tags: tuple[str, ...] = ()  # warning tags that may appear in
                                                 # report.warnings WITHOUT failing the contract
 
-# Canonical contracts live as module constants:
-#   DM_AV_CONTRACT = WarmstartContract(name="dm_av_v1", ...)
-#   BC_CONTRACT    = WarmstartContract(name="bc_with_dm_av_move_input_init_v1", ...)
-# Loader auto-selects the right one based on detected family; tests can pass
-# an explicit contract to `assert_contract` for negative-path coverage.
+# Canonical contracts live as module constants in warmstart_provenance.py:
+#   DM_AV_CONTRACT         = WarmstartContract(name="dm_av_v1",                         require_fingerprints=True,  ...)
+#   BC_CONTRACT            = WarmstartContract(name="bc_with_dm_av_move_input_init_v1", require_fingerprints=True,  ...)
+#
+# Legacy variants for pre-fingerprint on-disk checkpoints — same name/allowlists
+# as their strict counterparts, but with missing-fingerprint warnings whitelisted:
+#   DM_AV_CONTRACT_LEGACY  = dataclasses.replace(DM_AV_CONTRACT,
+#                                require_fingerprints=False,
+#                                allowed_warning_tags=("missing_fingerprint",))
+#   BC_CONTRACT_LEGACY     = dataclasses.replace(BC_CONTRACT,
+#                                require_fingerprints=False,
+#                                allowed_warning_tags=("missing_fingerprint",))
+#
+# The loader auto-selects DM_AV_CONTRACT or BC_CONTRACT based on detected
+# family. Tests can pass an explicit contract (including legacy variants) to
+# `assert_contract` for negative-path coverage or for the real-checkpoint
+# smoke test.
 ```
 
 ### Report schema
@@ -297,7 +309,7 @@ Seven tests:
 
 6. **`test_fen_vocab_swap_detected`** — same, but mismatched `fen_tokenizer_fingerprint`.
 
-7. **`test_real_checkpoint_smoke`** — paths come from env vars (`GRPO_CHESS_BC_CHECKPOINT`, `GRPO_CHESS_DM_AV_CHECKPOINT`) or pytest CLI options (`--bc-checkpoint`, `--dm-av-checkpoint`), **not** hardcoded in the test. If either is unset or the referenced file is missing, `pytest.skip(reason=...)`. When both are present, load them and assert the auto-selected contract name matches the checkpoint family (`dm_av_v1` for DM-AV, `bc_with_dm_av_move_input_init_v1` for BC). Use `require_fingerprints=False` (i.e., apply the legacy variant of the contract) so pre-stamp checkpoints don't hard-fail on `"missing_fingerprint"`. Keeps the test portable across dev machines, CI runners, and Lightning jobs.
+7. **`test_real_checkpoint_smoke`** — paths come from env vars (`GRPO_CHESS_BC_CHECKPOINT`, `GRPO_CHESS_DM_AV_CHECKPOINT`) or pytest CLI options (`--bc-checkpoint`, `--dm-av-checkpoint`), **not** hardcoded in the test. If either is unset or the referenced file is missing, `pytest.skip(reason=...)`. When both are present, load the reasoning model and check the auto-selected contract name: must be `"bc_with_dm_av_move_input_init_v1"` (the detected family is BC, since that's what the user passes as `dm_checkpoint`). Then call `report.assert_contract(BC_CONTRACT_LEGACY)` — i.e., explicitly pass the legacy variant so pre-stamp on-disk checkpoints don't hard-fail on `"missing_fingerprint"` warnings. (The strict `BC_CONTRACT` is still what the loader auto-selects and what the synthetic tests use; the smoke test opts into the relaxed variant on purpose.) Keeps the test portable across dev machines, CI runners, and Lightning jobs.
 
 ### Failure-message format
 
