@@ -1,6 +1,16 @@
 [mcp_servers.wandb-grpo]
 command = "/Users/noamc/miniconda3/bin/conda"
-args = ["run", "-n", "grpo_chess", "--cwd", "/Users/noamc/repos/grpo_chess", "--no-capture-output", "python", "-m", "mcp_wandb_server.server"]
+args = [
+    "run",
+    "-n",
+    "grpo_chess",
+    "--cwd",
+    "/Users/noamc/repos/grpo_chess",
+    "--no-capture-output",
+    "python",
+    "-m",
+    "mcp_wandb_server.server",
+]
 
 [mcp_servers.wandb-grpo.env]
 WANDB_PROJECT = "Chess-GRPO-Bot"
@@ -25,7 +35,17 @@ approval_mode = "approve"
 
 [mcp_servers.wandb-pretrain]
 command = "/Users/noamc/miniconda3/bin/conda"
-args = ["run", "-n", "grpo_chess", "--cwd", "/Users/noamc/repos/grpo_chess", "--no-capture-output", "python", "-m", "mcp_wandb_server.server"]
+args = [
+    "run",
+    "-n",
+    "grpo_chess",
+    "--cwd",
+    "/Users/noamc/repos/grpo_chess",
+    "--no-capture-output",
+    "python",
+    "-m",
+    "mcp_wandb_server.server",
+]
 
 [mcp_servers.wandb-pretrain.env]
 WANDB_PROJECT = "chess-grpo-pretrain"
@@ -33,11 +53,41 @@ WANDB_PROJECT = "chess-grpo-pretrain"
 [mcp_servers.wandb-pretrain.tools.get_run_summary]
 approval_mode = "approve"
 
+[mcp_servers.wandb-pretrain.tools.list_runs]
+approval_mode = "approve"
+
 [mcp_servers.lightning]
 command = "/Users/noamc/miniconda3/bin/conda"
-args = ["run", "-n", "grpo_chess", "--cwd", "/Users/noamc/repos/grpo_chess", "--no-capture-output", "python", "-m", "mcp_lightning_server.server"]
+args = [
+    "run",
+    "-n",
+    "grpo_chess",
+    "--cwd",
+    "/Users/noamc/repos/grpo_chess",
+    "--no-capture-output",
+    "python",
+    "-m",
+    "mcp_lightning_server.server",
+]
 
 [mcp_servers.lightning.env]
 LIGHTNING_STUDIO_NAME = "grpo-chess"
 LIGHTNING_TEAMSPACE = "GRPO-chess"
 LIGHTNING_USER = "noamdwc"
+
+[mcp_servers.whatsapp]
+command = "/Users/noamc/miniconda3/bin/conda"
+args = [
+    "run",
+    "-n",
+    "grpo_chess",
+    "--no-capture-output",
+    "python",
+    "-m",
+    "mcp_whatsapp_server.server",
+]
+
+[mcp_servers.whatsapp.env]
+WHATSAPP_ACCESS_TOKEN = ""
+WHATSAPP_PHONE_NUMBER_ID = ""
+WHATSAPP_RECIPIENT_NUMBER = ""

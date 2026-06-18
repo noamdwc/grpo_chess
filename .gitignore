@@ -11,6 +11,7 @@ interview_presentation/build/
 job-*.log
 lightning_logs/
 tmp_logs/
+tmp/
 wandb/
 searchless_chess
 docs/reasoning_grpo/task_review_index.md
