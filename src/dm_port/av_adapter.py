@@ -25,6 +25,16 @@ class PPOActorHead(nn.Module):
         return logits
 
 
+class PPOCriticHead(nn.Module):
+    def __init__(self, dm_model: DMTransformer):
+        super().__init__()
+        self.value_head = nn.Linear(ACTION_DIM, 1)
+
+    def forward(self, scores: torch.Tensor) -> torch.Tensor:
+        # scores: [B, A]
+        # return: [B, 1]
+        return self.value_head(scores)
+
 class AVAdapterPolicy(nn.Module):
     def __init__(self, dm_model: DMTransformer, actor_head: PPOActorHead):
         super().__init__()
@@ -82,4 +92,5 @@ class AVAdapterPolicy(nn.Module):
 
     def forward(self, board_tokens: torch.Tensor, legal_masks: torch.Tensor) -> torch.Tensor:
         action_scores = self._score_actions(board_tokens, legal_masks) # [B, A]
+        action_scores = action_scores.masked_fill(~legal_masks, -1) # Dont feed -inf to the head
         return self.actor_head(action_scores)
