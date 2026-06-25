@@ -96,3 +96,21 @@ def tokenize(fen: str) -> np.ndarray:
         raise ValueError(f"Unexpected token length: {len(indices)} (expected {SEQUENCE_LENGTH})")
 
     return np.asarray(indices, dtype=np.uint8)
+
+
+def get_uniform_buckets_edges_values(
+    num_buckets: int,
+) -> tuple[np.ndarray, np.ndarray]:
+  """Returns edges and values of uniformly sampled buckets in [0, 1].
+
+  Example: for num_buckets=4, it returns:
+  edges=[0.25, 0.50, 0.75]
+  values=[0.125, 0.375, 0.625, 0.875]
+
+  Args:
+    num_buckets: Number of buckets to create.
+  """
+  full_linspace = np.linspace(0.0, 1.0, num_buckets + 1)
+  edges = full_linspace[1:-1]
+  values = (full_linspace[:-1] + full_linspace[1:]) / 2
+  return edges, values
