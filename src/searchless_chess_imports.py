@@ -18,6 +18,7 @@ _utils = _load("utils")
 
 ACTION_TO_MOVE = _utils.ACTION_TO_MOVE
 MOVE_TO_ACTION = _utils.MOVE_TO_ACTION
+ACTION_DIM = len(MOVE_TO_ACTION)
 
 # Local tokenizer mirror to avoid hard runtime dependency on JAX via jaxtyping.
 _CHARACTERS = [
