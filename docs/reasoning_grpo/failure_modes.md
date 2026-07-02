@@ -152,3 +152,72 @@ no DM-AV checkpoint is available, use the DM-AV warmstart path instead of BC.
 ### History
 Discovered 2026-04-22. Contract `bc_with_dm_av_move_input_init_v1` in
 `src/reasoning/warmstart_provenance.py` codifies the fix.
+
+## ppo_epochs configured but not executed
+
+### Symptom
+The run makes far smaller effective policy updates than the config advertises,
+so training looks stable but under-optimizes and never lifts eval.
+
+### How you'll notice
+On the AV-PPO path, `train/ppo_epochs_ran` and the `ppo/ppo_epochs` hyperparam
+are logged every run; if they disagree with the config (or are absent), the
+loop is not honoring the setting. `tests/grpo/test_ppo_model.py` asserts the
+loop actually iterates.
+
+### Recovery
+Check that the config was loaded with `load_av_ppo_config` — the legacy
+translation in `_legacy_to_reasoning_schema` reads `ppo_steps`, not
+`ppo_epochs`, and silently degrades the value to 1. Then check the training
+loop actually loops over `cfg.ppo.ppo_epochs`.
+
+### History
+Run `lrreykii` (2026-04-22 analysis) configured `ppo_epochs: 4` while the
+reasoning-GRPO loop performed one update per rollout. The AV-PPO rebuild
+(`src/grpo_logic/ppo_model.py`) made the loop real and logs the contract.
+
+## AV-PPO sampling/scoring temperature mismatch
+
+### Symptom
+Importance ratios differ from 1.0 on the very first PPO epoch after a rollout,
+so clipping engages immediately and updates are biased.
+
+### How you'll notice
+`train/ratio_first_epoch` drifts away from 1.0 (it is exactly 1.0 by
+construction when the sampling and scoring paths agree).
+
+### Recovery
+Verify that rollout sampling and both old/new log-prob computations all use
+`ppo.rollout_temperature` in `AVPPOLightningModule._actor_logprobs`, and that
+the old policy was synced after the previous step's update loop.
+
+### History
+Mirrors the 2026-02-07 temperature-mismatch bug
+(`research_docs/2026-02-07_clean-run-temperature-mismatch-bug.md`); the
+`ratio_first_epoch` metric was added to the AV-PPO path so the same class of
+bug is visible at step 0 instead of after a wasted run.
+
+## Run hangs at exit (unclosed Stockfish engines)
+
+### Symptom
+Training and evaluation finish (final metrics and "fit stopped" are printed)
+but the Python process never exits, so the launcher — and a cloud job billing
+by the minute — hangs indefinitely.
+
+### How you'll notice
+The process sits in `threading._shutdown` joining a non-daemon
+`SimpleEngine (pid=...)` thread (visible with `py-spy dump`), with a
+`stockfish` child process still alive after the run is logically done.
+
+### Recovery
+Make the entry point call `StockfishManager.close_all()` after `trainer.fit`
+(in a `finally:` block), as `src/train_av_ppo.py` does. Kill the hung
+process; no training state is lost since checkpoints were already written.
+
+### History
+Observed 2026-07-02 on the first AV-PPO CPU smoke run: the run printed its
+success marker and then hung at interpreter shutdown. python-chess's
+`SimpleEngine` background thread is non-daemon, and `StockfishManager` keeps
+engines open for reuse, so something must close them at end of run. Other
+entry points (`train_self_play.py`, distill, pretrain) predate this entry and
+may hang the same way at exit.

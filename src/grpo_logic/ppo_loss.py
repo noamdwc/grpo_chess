@@ -16,7 +16,7 @@ class PPOLossInfo:
     actor_loss: torch.Tensor | None = None
     critic_loss: torch.Tensor | None = None
 
-    def _detach(self) -> PPOLossInfo:
+    def _detach(self) -> "PPOLossInfo":
         """Make sure all tensors are detached"""
         self.kl_loss = self.kl_loss.detach()
         self.ppo_loss = self.ppo_loss.detach()
