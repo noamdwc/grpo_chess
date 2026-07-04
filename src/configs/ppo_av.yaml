@@ -1,0 +1,62 @@
+# AV-PPO configuration (searchless PPO on the DM action-value backbone).
+# Entry point: python -m src.train_av_ppo --config ppo_av.yaml
+
+model:
+  base_checkpoint: "checkpoints/dm_port/9M.pt"
+  freeze_backbone: false
+
+ppo:
+  lr: 1.0e-5
+  clip_eps: 0.20
+  ppo_epochs: 4
+  kl_coef: 0.001
+  entropy_coef: 0.0
+  critic_coef: 1.0
+  rollout_temperature: 1.0
+  eval_every_n_epochs: 10
+
+leaf_evaluator:
+  mode: "stockfish"
+  dm_value_head:
+    model: "136M"
+    bucket_values_source: "searchless_chess"
+  stockfish:
+    movetime_ms: 50
+    cp_clip: 1000
+
+training:
+  num_epochs: 200
+  batch_size: 16
+  steps_per_epoch: 256
+  checkpoint_dir: "checkpoints"
+  checkpoint_every_n_epochs: 5
+  keep_n_checkpoints: 3
+  use_wandb: true
+  wandb_project: "Chess-GRPO-Bot"
+
+eval:
+  games: 64
+  seed: 0
+  max_plies: 400
+  randomize_opening: true
+  opening_plies: 6
+
+stockfish:
+  path: "/usr/games/stockfish"
+  skill_level: 2
+  use_elo_limit: false
+  elo: 2500
+  movetime_ms: 50
+  threads: 1
+  hash_mb: 128
+
+dataset:
+  max_steps: 256
+  phase_distribution:
+    opening: 0.33
+    middlegame: 0.34
+    endgame: 0.33
+  min_eval_cp: -200
+  max_eval_cp: 200
+  quality_filter: true
+  stockfish_filter_depth: 4

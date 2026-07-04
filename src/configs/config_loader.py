@@ -130,6 +130,35 @@ class ExperimentConfig:
     dataset: ChessDatasetConfig
 
 
+@dataclass
+class AVPPOModelConfig:
+    base_checkpoint: str = "checkpoints/dm_port/9M.pt"
+    freeze_backbone: bool = False
+
+
+@dataclass
+class PPOConfig:
+    lr: float = 1e-5
+    clip_eps: float = 0.20
+    ppo_epochs: int = 4
+    kl_coef: float = 0.001
+    entropy_coef: float = 0.0
+    critic_coef: float = 1.0
+    rollout_temperature: float = 1.0
+    eval_every_n_epochs: int = 10
+
+
+@dataclass
+class AVPPOExperimentConfig:
+    model: AVPPOModelConfig
+    ppo: PPOConfig
+    leaf_evaluator: LeafEvaluatorConfig
+    training: TrainingConfig
+    eval: EvalConfig
+    stockfish: StockfishConfig
+    dataset: ChessDatasetConfig
+
+
 def load_yaml_file(path: str | Path) -> dict[str, Any]:
     path = Path(path)
     if not path.is_absolute():
@@ -273,6 +302,19 @@ def load_experiment_config(
         raw = _deep_merge(raw, overrides)
     raw = _legacy_to_reasoning_schema(raw)
     return _from_dict(ExperimentConfig, raw)
+
+
+def load_av_ppo_config(
+    config_path: str = "ppo_av.yaml",
+    overrides: Optional[dict[str, dict[str, Any]]] = None,
+) -> AVPPOExperimentConfig:
+    # AV-PPO yamls must not pass through _legacy_to_reasoning_schema: it rebuilds
+    # the grpo section and reads ppo_steps, silently degrading ppo_epochs to 1
+    # (the lrreykii under-optimization bug).
+    raw = load_yaml_file(config_path)
+    if overrides:
+        raw = _deep_merge(raw, overrides)
+    return _from_dict(AVPPOExperimentConfig, raw)
 
 
 def load_grpo_config(
