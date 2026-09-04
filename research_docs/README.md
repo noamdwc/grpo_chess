@@ -1,6 +1,6 @@
 # Research Documentation Directory
 
-This directory contains structured research insights, analysis documents, and findings generated during the development of the GRPO Chess project. It is designed to be used by both **AI agents** and **human researchers**.
+This directory contains structured research insights, experiment plans, run reports, and findings from the development of the GRPO Chess project. It is intended to make the experimental record readable to both humans and automated tooling.
 
 ## Purpose
 
@@ -33,7 +33,9 @@ Examples:
 research_docs/
 ├── README.md           # This file
 ├── TEMPLATE.md         # Template for new documents
-└── *.md                # Research documents (dated)
+├── *.md                # Research analyses and debugging notes
+├── experiments/        # Planned experiments and success criteria
+└── runs/               # Historical run reports and artifacts
 ```
 
 ## Document Requirements
@@ -113,11 +115,9 @@ When referencing WandB runs:
 
 ### Agent Prompts
 
-For complex research or implementation tasks, see the specialized agent prompts:
-- **Research tasks**: `.claude/agents/research-insights.md`
-- **Code changes**: `.claude/agents/code-implementation.md`
-
-These prompts define workflows with discussion checkpoints before finalizing work.
+The repository does not ship private agent prompt files. For a reproducible
+workflow, start from the relevant experiment plan or run report, record the
+configuration and commit SHA, and use the commands in the root README.
 
 ### Reading Existing Documents
 
@@ -189,8 +189,8 @@ Based on the [ML Reproducibility Checklist](https://www.cs.mcgill.ca/~jpineau/Re
 | Model | Eval opponent | Score | W / D / L | Elo diff | Doc |
 |-------|---------------|-------|-----------|----------|-----|
 | DeepMind 136M teacher | Stockfish skill=2 | 0.688 | 12/20/0 | +137 | [2026-02-24](./2026-02-24_deepmind-136m-teacher-baseline.md) |
-| DeepMind 270M teacher | Stockfish skill=2 | 0.656 | 10/22/0 | +112 | [2026-02-26](./2026-02-24_deepmind-136m-teacher-baseline.md) |
-| DeepMind 9M teacher | Stockfish skill=2 | 0.625 | 8/24/0 | +89 | [2026-02-26](./2026-02-24_deepmind-136m-teacher-baseline.md) |
+| DeepMind 270M teacher | Stockfish skill=2 | 0.656 | 10/22/0 | +112 | [baseline report](./2026-02-24_deepmind-136m-teacher-baseline.md) |
+| DeepMind 9M teacher | Stockfish skill=2 | 0.625 | 8/24/0 | +89 | [baseline report](./2026-02-24_deepmind-136m-teacher-baseline.md) |
 
 These are reference points for distillation evaluation. A student model that matches the teacher score has preserved playing strength.
 

@@ -9,7 +9,9 @@ This document explains how to run GRPO/Distill/Pretrain jobs for this project on
     - `LIGHTNING_STUDIO_NAME`
     - `LIGHTNING_TEAMSPACE`
     - `LIGHTNING_USER`
-- MCP server configured in `.mcp.json` under `"lightning"`.
+- A local Lightning MCP configuration is available in your environment. The
+  repository intentionally does not commit `.mcp.json` because it contains
+  machine-specific connection details.
 - Repo branch with your changes pushed to GitHub (jobs clone from remote).
 - Teamspace secret for W&B:
   - `WANDB_KEY` (recommended)
@@ -179,7 +181,7 @@ Use predictable names:
 
 This makes `list_jobs`, log pulls, and run reports much easier.
 
-## 10) New Session + `$experiment-cycle` (Lightning Quickstart)
+## 10) New Session Workflow (Lightning Quickstart)
 
 Use this when you open a fresh chat/session and want the full cycle to run in Lightning without losing critical context.
 
@@ -196,8 +198,8 @@ Use this when you open a fresh chat/session and want the full cycle to run in Li
 
 Give the assistant these items up front:
 
-- Skill + intent:
-  - “Use `$experiment-cycle` and run on Lightning.”
+- Workflow + intent:
+  - “Run the documented experiment workflow on Lightning.”
 - Branch/commit target:
   - branch name and optional pinned commit SHA
 - Entry point:
@@ -210,7 +212,7 @@ Give the assistant these items up front:
 ### Copy-paste kickoff prompt (new session)
 
 ```text
-Use $experiment-cycle. Run on Lightning only.
+Run the documented experiment workflow on Lightning only.
 Start from: run
 Branch: feature/lightning_training
 Config: src/configs/distill_labelsafe.yaml
@@ -248,7 +250,7 @@ In a new session, ask to:
 Example:
 
 ```text
-Use $experiment-cycle.
+Run the documented experiment workflow.
 Pull latest, inspect latest failed Lightning job logs, fix, push, and resubmit.
 Resume from cycle step: run.
 Plan doc: research_docs/experiments/<file>.md

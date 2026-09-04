@@ -1,9 +1,18 @@
+# Core runtime and test dependencies
 numpy==1.26.4
-pytorch_lightning
-mcp>=0.9.0
+torch
+pytorch-lightning
+pytest
 wandb>=0.16.0
-python-chess 
+python-chess
 jaxtyping
 datasets
 watchdog
+
+# Optional cloud/MCP tooling
+mcp>=0.9.0
 lightning-sdk
+huggingface_hub
+
+# DeepMind checkpoint conversion may require the additional dependencies listed
+# in searchless_chess/requirements.txt.

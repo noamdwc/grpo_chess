@@ -170,7 +170,7 @@ def example():
 
 <!-- Link to related research_docs files -->
 
-- [Previous analysis](./YYYY-MM-DD_related-topic.md)
+- Previous analysis: add a relative link to a related research document here.
 
 ---
 
