@@ -1,289 +1,149 @@
 # GRPO Chess
 
-Training chess-playing transformers using **Group Relative Policy Optimization (GRPO)** through self-play.
+Research engineering project exploring whether chess transformers can improve through GRPO-based self-play.
 
-## Overview
+The project adapts a fixed-action-space, searchless chess policy into a PyTorch training pipeline. It includes supervised pretraining, teacher-policy distillation, on-policy trajectory generation, Stockfish-based rewards, and checkpoint/evaluation tooling. The infrastructure is implemented and tested; whether GRPO reliably improves the policy remains an open experimental question.
 
-This project implements a reinforcement learning pipeline for training neural network chess policies. The system learns to play chess by:
+## What I Built
 
-1. **Self-Play**: Sampling multiple trajectory groups from diverse starting positions
-2. **Reward Computation**: Using Stockfish evaluations to compute rewards
-3. **Policy Optimization**: Applying GRPO with PPO clipping and KL divergence penalties
-4. **Evaluation**: Benchmarking against Stockfish at multiple skill levels
+The project-owned layer adds:
 
-## Model Architecture
+- An encoder-only `ChessTransformer` policy over the 1,968-action chess move space, with FEN tokenization and legal-action masking.
+- A GRPO/PPO-style training loop that samples grouped trajectories, computes per-step Stockfish reward deltas, normalizes advantages across each group, and applies clipped policy updates with a KL penalty.
+- Configurable supervised pretraining on high-Elo game positions and soft-label distillation from DeepMind Searchless Chess teacher checkpoints.
+- Stockfish process management, randomized-opening evaluation, checkpoint conversion/compatibility checks, and W&B/CSV experiment logging.
+- Tests for GRPO invariants, numerical stability, legal moves, dataset behavior, checkpoint loading, Stockfish integration, and training smoke paths.
 
-The policy model in `src/models.py` is an encoder-only transformer that maps tokenized board states to logits over the fixed chess action space (`action_dim=1968`).
+The upstream relationship is described in [Attribution](#attribution); the model checkpoints and original Searchless Chess implementation are not presented as original work here.
 
-1. **Input tokens**: `board_tokens` with shape `[B, T]` (padding token id `0` by default)
-2. **Embeddings**: token embedding + learnable absolute positional embedding
-3. **Transformer encoder**: configurable depth/width (`embed_dim`, `num_layers`, `num_heads`, `ffn_mult`, `activation`, `dropout`)
-4. **Sequence readout** (`transformer.readout`):
-   - `"mean"`: masked mean pooling over non-pad tokens
-   - `"last"`: hidden state of the last non-pad token
-   - `"cls"`: prepends a CLS token and reads position `0`
-5. **Policy head**: MLP from readout vector to move logits
-   - hidden size = `head_mult * embed_dim`
-   - activation = `transformer.activation`
-   - output shape = `[B, action_dim]`
+## Current Status / Results
 
-Notes:
-- Legal-move masking is applied outside the base forward pass during training/eval loss and action selection.
-- The same core architecture is used across GRPO, pretraining, and distillation entry points, configured from YAML (`src/configs/*.yaml`).
-- Warm-start compatibility: `transformer.readout: "cls"` can increase `embedding.weight` rows (default `cls_token_id=vocab_size`), so loading older non-CLS checkpoints will fail with an explicit compatibility error.
+The training and evaluation code is functional enough for smoke tests and research runs. The central research result is not yet a success claim: the committed evidence does not demonstrate that GRPO reliably improves the chess policy.
 
-## Quick Start
+| Track | Verified evidence | Interpretation |
+| --- | --- | --- |
+| Teacher baseline | DeepMind 136M: **0.688 score**, **12/20/0 W/D/L**, **+137 approximate Elo** against Stockfish skill 2 over 32 games | Reference baseline only; this is not GRPO performance. [Report](research_docs/2026-02-24_deepmind-136m-teacher-baseline.md) |
+| Distillation | A documented weak run reached `val/top1_match=0.049`; its downstream evaluation was **0.015625**, **0/2/62 W/D/L** against Stockfish skill 2 | The converted-label path produced near-singleton targets and weak student quality. [Analysis](research_docs/2026-02-20_distill-grpo-collapse-analysis.md) |
+| GRPO | The best older documented run reached **0.047 score**, **0/3/29 W/D/L**, **-523 approximate Elo**; later warm-start evidence reached **0/2/62** | These are weak/failed outcomes, not evidence of reliable improvement. [Analysis](research_docs/2026-01-14_per-step-rewards-analysis.md) |
 
-### Running in Google Colab (Primary Method)
+The most useful result so far is methodological: the repository records entropy collapse, weak reward signal, temperature mismatch, sparse distillation labels, and infrastructure failures as dated analyses rather than hiding them. See [research notes](research_docs/README.md).
 
-The main way to run this code is through the `chess_model_run_git.ipynb` notebook in Google Colab:
+## System Architecture
 
-1. Open `chess_model_run_git.ipynb` in Google Colab
-2. The notebook handles:
-   - Repository cloning and setup
-   - Dependency installation
-   - Stockfish installation
-   - Model training and evaluation
+```mermaid
+flowchart LR
+    S[Starting FEN positions] --> T[FEN tokenizer]
+    T --> P[Transformer policy]
+    P --> M[Legal-action mask]
+    M --> R[Grouped trajectory sampling]
+    R --> E[Stockfish reward deltas]
+    E --> A[Group-relative advantages]
+    A --> L[PPO clip + KL objective]
+    L --> U[Policy update]
+    U --> P
+    U --> V[Stockfish evaluation]
+    PT[Supervised pretraining] --> P
+    DT[Teacher-policy distillation] --> P
+    Q[DeepMind Searchless Chess teacher] --> DT
+```
 
-### Local Development
+The GRPO path samples multiple trajectories per starting position. Each valid step records the selected action, old-policy log-probability, legal-action mask, and Stockfish-based reward delta. The loss standardizes rewards across the trajectory-group dimension, then applies the PPO clipped surrogate and KL penalty. Pretraining and distillation are separate initialization paths for the same policy family.
+
+## Technical Highlights
+
+- Legal-action masking is applied before policy sampling and loss evaluation.
+- Group-relative, per-step advantage normalization handles padding and avoids a learned value head in the main GRPO path.
+- Importance ratios are computed from log-probabilities with finite-value and overflow guards.
+- PPO clip fraction, ratio, KL, entropy proxy, reward statistics, trajectory length, and teacher-forcing fraction are logged for failure diagnosis.
+- Stockfish engines are managed through named processes and cached reward evaluations.
+- Checkpoint loaders handle raw state dictionaries and Lightning checkpoints, with compatibility checks for known formats.
+- YAML configuration is converted into typed dataclasses so training, evaluation, model, policy, and dataset settings remain configurable.
+
+## Evaluation
+
+The evaluation harness plays the policy against Stockfish and reports wins, draws, losses, score, termination reasons, and an approximate Elo difference. The score is `(wins + 0.5 * draws) / games`. The documented teacher baseline uses Stockfish skill 2, a 50 ms move limit, 32 games, alternating colors, and randomized six-ply openings. GRPO defaults use 64 games; other configs use 32 or 4 games for smoke tests.
+
+The reported Elo is a logistic transform of match score, not a calibrated rating. Small game counts, randomized openings, time-limited Stockfish, and changing configurations make historical scores noisy and unsuitable for claiming a stable ranking. The research reports discuss these limitations and do not provide a controlled multi-seed ablation table.
+
+## Code Tour
+
+- [GRPO training module](src/grpo_logic/model.py) — Lightning orchestration, grouped rollouts, reward logging, and PPO updates.
+- [GRPO/PPO objective](src/grpo_logic/loss.py) — advantage normalization, clipping, KL penalty, and diagnostics.
+- [Trajectory sampler](src/grpo_logic/sampling.py) — batched policy trajectories, legal moves, reward deltas, and optional teacher forcing.
+- [Policy architecture](src/models.py) — token embeddings, transformer encoder, policy head, and legal-action probabilities.
+- [Stockfish rewards](src/chess/rewards.py) — normalized and cached reward calculations.
+- [Evaluation harness](src/evaluator.py) — policy-vs-Stockfish games and Lightning evaluation callback.
+- [Distillation module](src/distill/distill.py) — soft-label objective, diagnostics, and checkpoint export.
+- [GRPO tests](tests/grpo/test_group_advantage_invariants.py) — mathematical and padding invariants for the learning signal.
+
+## Repository Structure
+
+```text
+src/
+├── grpo_logic/       # GRPO/PPO loss, rollout sampling, Lightning module
+├── chess/            # board encoding, rewards, Stockfish integration
+├── distill/          # teacher data, distillation, checkpoint conversion
+├── pretrain/         # supervised policy pretraining
+├── models.py         # transformer policy
+├── models_9m.py      # Searchless Chess 9M-compatible policy path
+└── configs/          # YAML experiment configurations
+tests/                # unit, integration-style, and smoke tests
+research_docs/        # experiment plans, run reports, debugging analyses
+searchless_chess/     # DeepMind project submodule
+scripts/              # evaluation, conversion, and cloud-job helpers
+interview_presentation/ # optional technical presentation and plots
+```
+
+## Reproducing
+
+The shortest credible local path is:
 
 ```bash
-# Clone the repository
-git clone https://github.com/noamdwc/grpo_chess.git
+git clone --recurse-submodules https://github.com/noamdwc/grpo_chess.git
 cd grpo_chess
-git submodule update --init
-
-# Install dependencies
-pip install torch pytorch-lightning wandb python-chess jaxtyping datasets huggingface_hub
-
-# Install Stockfish
-# Ubuntu/Debian: sudo apt-get install stockfish
-# macOS: brew install stockfish
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 ```
 
-### Automatic File Metadata Normalization
+Install Stockfish separately and set `stockfish.path` in the selected YAML config if it is not found automatically.
 
-Use this when you want files moved into the project folder to get fresh `mtime` and `atime`.
+Run a focused CPU smoke suite:
 
 ```bash
-# Install dependencies (includes watchdog)
-pip install -r requirements.txt
-
-# Watch project folder recursively and normalize incoming files
-~/miniconda3/envs/grpo_chess/bin/python scripts/watch_and_touch_metadata.py --root /Users/noamc/repos/grpo_chess
-
-# Preview actions without modifying files
-~/miniconda3/envs/grpo_chess/bin/python scripts/watch_and_touch_metadata.py --root /Users/noamc/repos/grpo_chess --dry-run
-
-# One-shot mode for a single file (no watcher loop)
-~/miniconda3/envs/grpo_chess/bin/python scripts/watch_and_touch_metadata.py --root /Users/noamc/repos/grpo_chess --once path/to/file.txt
+python -m pytest tests/grpo tests/test_checkpoint_compat.py tests/test_models_readout.py -q
 ```
 
-## Project Structure
-
-```
-grpo_chess/
-├── chess_model_run_git.ipynb    # Main training notebook (Colab)
-├── src/
-│   ├── models.py                # Chess transformer architecture
-│   ├── trainer.py               # PyTorch Lightning trainer
-│   ├── evaluator.py             # Stockfish evaluation
-│   ├── train_self_play.py       # Training entry point
-│   ├── grpo_logic/              # GRPO algorithm
-│   │   ├── model.py             # Lightning module
-│   │   ├── loss.py              # GRPO/PPO loss functions
-│   │   └── sampling.py          # Trajectory sampling
-│   ├── chess/                   # Chess utilities
-│   │   ├── rewards.py           # Stockfish reward computation
-│   │   ├── boards_dataset.py    # Position generation
-│   │   └── stockfish.py         # Engine integration
-│   ├── distill/                 # Knowledge distillation pipeline
-│   ├── pretrain/                # Supervised pretraining pipeline
-│   └── configs/                 # YAML configuration files
-├── searchless_chess/            # DeepMind submodule (tokenizer, move tables)
-├── research_docs/               # Research documentation
-│   ├── experiments/             # Experiment plan docs (per /plan-experiment)
-│   ├── runs/                    # Run reports (per /run-experiment)
-│   └── TEMPLATE.md              # Research doc template
-└── tests/                       # Test suite
-```
-
-## Documentation
-
-### For Detailed Module Documentation
-See [src/README.md](src/README.md) for comprehensive documentation of the GRPO implementation.
-
-### For Lightning Cloud Job Operations
-See [docs/lightning_cloud_jobs.md](docs/lightning_cloud_jobs.md) for setup, submission, monitoring, GPU usage, and troubleshooting on Lightning.ai.
-
-### For Research Insights (AI Agents & Humans)
-See [research_docs/](research_docs/) for structured analysis documents, debugging insights, and research findings.
-
-## Configuration System
-
-This project uses a **YAML-based configuration system** to manage all hyperparameters and experiment settings.
-
-### Configuration Files
-
-Configuration files are located in `src/configs/`. The default configuration is `default.yaml`, which contains all hyperparameters for a training run:
-
-- **Training hyperparameters**: Learning rate, batch size, number of epochs, steps per epoch
-- **GRPO algorithm settings**: Trajectory count, depth, PPO clipping ratio, KL coefficient
-- **Model architecture**: Transformer dimensions, layers, attention heads, vocabulary size
-- **Evaluation settings**: Number of games, Stockfish skill levels, evaluation frequency
-- **Dataset configuration**: Position sampling, phase distribution, quality filters
-- **Stockfish settings**: Engine path, skill level, time limits, resource usage
-
-### Using Configurations
-
-```python
-from src.train_self_play import train
-
-# Use default configuration
-train()
-
-# Override specific hyperparameters
-train(
-    config_path="default.yaml",
-    overrides={
-        "grpo": {"lr": 1e-4},
-        "training": {"num_epochs": 100},
-        "stockfish": {"skill_level": 5},
-    }
-)
-```
-
-#### Command-Line Usage
+Run the full test suite when Stockfish and the optional data/model dependencies are available:
 
 ```bash
-# Use default config
-python -m src.train_self_play
-
-# Use custom config file
-python -m src.train_self_play --config my_experiment.yaml
+python -m pytest tests/ -q
 ```
 
-### Key Hyperparameters
+Training and teacher evaluation are compute- and data-intensive. Representative commands are:
 
-- **Learning rate** (`grpo.lr`): Controls optimization step size
-- **Trajectory settings** (`grpo.num_trajectories`, `grpo.trajectory_depth`): Number and depth of self-play trajectories
-- **PPO clipping** (`grpo.clip_ratio`): Prevents large policy updates
-- **KL penalty** (`grpo.kl_coef`): Regularizes policy divergence
-- **Model size** (`transformer.embed_dim`, `transformer.num_layers`): Transformer architecture dimensions
-
-See `src/configs/default.yaml` for the complete list of all hyperparameters and their default values.
-
-## Baselines
-
-### DeepMind 136M Teacher (2026-02-24)
-
-Evaluated against Stockfish skill level 2 (32 games, randomized openings):
-
-| Model | Score | W / D / L | Elo diff |
-|-------|-------|-----------|----------|
-| DeepMind 136M teacher | **0.688** | 12 / 20 / 0 | **+137** |
-| DeepMind 270M teacher | 0.656 | 10 / 22 / 0 | +112 |
-| DeepMind 9M teacher | 0.625 | 8 / 24 / 0 | +89 |
-
-These are the distillation **success thresholds**: a student model should match its teacher's score to demonstrate preserved playing strength. See [`research_docs/2026-02-24_deepmind-136m-teacher-baseline.md`](research_docs/2026-02-24_deepmind-136m-teacher-baseline.md) for full details.
-
-To reproduce:
 ```bash
-python -m src.distill.eval_teacher --config src/configs/distill.yaml
+python -m src.train_self_play --config default.yaml
+python -m src.distill.eval_teacher --config distill.yaml --teacher_model 136M
+python -m src.distill.distill --config distill.yaml
 ```
 
-## Distillation v2 Update
+The DeepMind teacher checkpoints and generated datasets are external artifacts; follow the submodule and experiment-report instructions rather than expecting them in Git.
 
-The focused v2 distillation upgrade is captured in:
-- `src/configs/distill_labelsafe_v2.yaml`
+## Research Notes
 
-### Student model changes (`src/models.py`)
+[`research_docs/`](research_docs/) contains experiment plans, run reports, failure analyses, debugging notes, and a known-not-implemented list. Negative results are retained because they document what was tested, what failed, and which follow-up experiments are justified.
 
-- Added configurable readout mode via `transformer.readout`:
-  - `"mean"`: legacy masked mean pooling
-  - `"last"`: last non-pad token readout (v2 default)
-  - `"cls"`: prepends CLS token and reads position 0
-  - Note: warm-starting CLS models from legacy non-CLS checkpoints is not shape-compatible unless `cls_token_id` keeps embedding size unchanged.
-- Added configurable transformer FFN width/activation:
-  - `transformer.ffn_mult` controls `dim_feedforward = ffn_mult * embed_dim`
-  - `transformer.activation` supports `"relu"` and `"gelu"`
-- Added configurable policy head width:
-  - `transformer.head_mult` controls head hidden size `head_mult * embed_dim`
-- Existing configs remain backward-compatible (legacy behavior if new fields are unset).
+## Attribution
 
-### Distillation config changes (`distill_labelsafe_v2.yaml`)
+This project builds on Google DeepMind's [Searchless Chess](https://github.com/google-deepmind/searchless_chess), included as the `searchless_chess` Git submodule. The upstream project supplies the original searchless chess model family, tokenizer/action-space conventions, and teacher checkpoints/data formats. The surrounding PyTorch GRPO, pretraining, distillation, Stockfish reward/evaluation, configuration, compatibility, and test infrastructure lives in this repository. Upstream licensing and attribution remain applicable to the submodule and any derived assets.
 
-- Unified label regime:
-  - `generate.top_k = deepmind_data.top_k = dataset.top_k = 32`
-  - `generate.teacher_temperature = deepmind_data.temperature = 2.0`
-- Disabled score shaping for ablation:
-  - `generate.teacher_target_score_norm: "plain"`
-- Rebalanced loss weights:
-  - `distill_lambda_soft: 0.50`
-  - `distill_lambda_hard: 0.50`
-  - `distill_target_top1_mix_alpha: 0.05`
-- Increased position diversity:
-  - `deepmind_data.min_win_prob: 0.50`
-- Strengthened quality gate:
-  - `quality_gate_min_val_top1: 0.20`
-  - `quality_gate_epoch: 3`
+## Limitations / Current Work
 
-### Additional distillation diagnostics (`src/distill/distill.py`)
+- No committed experiment establishes a reliable GRPO strength improvement.
+- Evaluation is relatively low-sample and time-limited; approximate Elo should be read as a comparison statistic, not a calibrated rating.
+- Distillation quality depends strongly on the data-generation path; sparse converted labels caused a documented collapse.
+- Full reproduction requires Stockfish, DeepMind checkpoints, external datasets, and — for cloud runs — separate credentials and infrastructure.
+- Planned work includes controlled multi-seed evaluation, stronger data-quality gates, and clearer comparisons against supervised controls.
 
-New logged metrics:
-- `teacher_topk_mass`
-- `teacher_entropy_mean`
-- `teacher_top1_prob_mean`
-- (Existing) `teacher_legal_fraction`, `teacher_valid_sample_fraction`
-
-### Parameter counting utility
-
-A reusable wrapper is available at `src/parameter_counter.py`:
-
-```python
-from src.parameter_counter import ParameterCounter
-from src.models import ChessTransformer, ChessTransformerConfig
-
-model = ChessTransformer(ChessTransformerConfig())
-counter = ParameterCounter(model)
-print(counter.summary())  # total/trainable/frozen
-```
-
-## Experiment Tracking
-
-Training runs are tracked with [Weights & Biases](https://wandb.ai). Key metrics:
-- `train/reward_mean`: Average trajectory reward
-- `eval_stockfish/score`: Win rate vs Stockfish
-- `eval_stockfish/elo_diff`: Approximate Elo difference
-- `train/clip_fraction`: PPO clipping statistics
-- `train/kl_divergence`: Policy divergence
-
-## Experiment Workflow
-
-The project uses a structured four-step experiment loop, driven by Claude Code skills:
-
-```
-/research-insights  →  /plan-experiment  →  /code-implementation  →  /run-experiment
-        ↑                                                                      |
-        └──────────────────────── /experiment-cycle ────────────────────────────┘
-```
-
-Each step produces a structured artifact:
-- **Research**: `research_docs/YYYY-MM-DD_*.md`
-- **Plan**: `research_docs/experiments/YYYY-MM-DD_<slug>.md` + `src/configs/<name>.yaml`
-- **Run report**: `research_docs/runs/YYYY-MM-DD_<job>.md`
-
-Use `/experiment-cycle` to orchestrate all steps automatically, or invoke each skill standalone.
-
-## Contributing
-
-1. Check existing [research_docs/](research_docs/) for context on current issues
-2. Use `/research-insights` to analyze a question and produce a findings document
-3. Use `/plan-experiment` to design an experiment and save a plan doc before writing any config
-4. Reference specific code with file paths and line numbers
-5. Include WandB run IDs for metric references
-
-## Acknowledgments
-
-- Based on DeepMind's [Searchless Chess](https://github.com/google-deepmind/searchless_chess) project
-- Uses Stockfish for evaluation and reward computation
+There is no repository-level software license specified at present.

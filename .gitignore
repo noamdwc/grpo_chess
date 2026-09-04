@@ -1,4 +1,29 @@
-# Cursor MCP configuration (contains API keys)
+# Local environment and editor state
 .cursor-mcp-config.json
-*__pycache__/
 .env
+.env.*
+!.env.example
+.DS_Store
+__pycache__/
+.pytest_cache/
+.claude/
+.codex/
+.cursor/
+.agents/
+CLAUDE.md
+.mcp.json
+
+# Generated experiment outputs and credentials
+artifacts/
+checkpoints/
+searchless_chess_model/
+lightning_logs/
+tmp/
+tmp_logs/
+wandb/
+job-*.log
+interview_presentation/build/
+
+# Internal planning and placeholder files
+docs/superpowers/plans/
+src/configs/Untitled
